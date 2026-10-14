@@ -3,6 +3,16 @@
 @layer base {
   :root {
     font-family: 'Plus Jakarta Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+    --mediai-primary: #059669;
+    --mediai-teal: #0D9488;
+    --mediai-green-hover: #047857;
+    --mediai-green-light: #ECFDF5;
+    --mediai-bg: #F5F8FA;
+    --mediai-card: #FFFFFF;
+    --mediai-text-primary: #172B4D;
+    --mediai-text-secondary: #526581;
+    --mediai-text-muted: #64748B;
+    --mediai-border: #DCE5EC;
   }
 
   code, pre {
@@ -20,21 +30,22 @@
   }
 }
 
-/* Custom scrollbars */
+/* Custom clean scrollbars */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
 }
 
 ::-webkit-scrollbar-track {
-  background: rgba(15, 23, 42, 0.6);
+  background: #F1F5F9;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(56, 189, 248, 0.25);
+  background: #CBD5E1;
   border-radius: 9999px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(56, 189, 248, 0.4);
+  background: #94A3B8;
 }
+

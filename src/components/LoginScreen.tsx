@@ -275,6 +275,51 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
               Patient accounts use Patient IDs as usernames (e.g. P182162), not email addresses.
             </p>
           )}
+
+          {/* Quick Demo Patient ID Chips */}
+          {isPatient && (
+            <div className="mt-3 p-3 rounded-xl bg-slate-900/60 border border-slate-800/80 space-y-2">
+              <div className="flex items-center justify-between text-[11px]">
+                <span className="font-semibold text-slate-300">10 Verified Demo Patients</span>
+                <span className="text-slate-500 text-[10px]">Tap to fill ID</span>
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-1.5">
+                {[
+                  { id: 'P182162', name: 'Eleanor V.' },
+                  { id: 'P195909', name: 'David S.' },
+                  { id: 'P198226', name: 'Maya L.' },
+                  { id: 'P151076', name: 'Lucas T.' },
+                  { id: 'P164835', name: 'Sophia R.' },
+                  { id: 'P115937', name: 'James W.' },
+                  { id: 'P171467', name: 'Aisha P.' },
+                  { id: 'P167834', name: 'Benjamin H.' },
+                  { id: 'P144799', name: 'Chloe B.' },
+                  { id: 'P118969', name: 'Thomas M.' },
+                ].map((p) => {
+                  const isSelected = identifier.trim().toUpperCase() === p.id;
+                  return (
+                    <button
+                      key={p.id}
+                      type="button"
+                      onClick={() => {
+                        setIdentifier(p.id);
+                        if (error) setError(null);
+                      }}
+                      className={`px-2 py-1.5 rounded-lg text-left text-[11px] font-mono transition-all cursor-pointer border ${
+                        isSelected
+                          ? 'bg-teal-500/20 text-teal-300 border-teal-400/60 font-bold'
+                          : 'bg-slate-900/90 text-slate-400 border-slate-800 hover:text-slate-200 hover:border-slate-700'
+                      }`}
+                      title={`Select demo patient ${p.id} (${p.name})`}
+                    >
+                      <div className="font-bold text-slate-200 text-[11px] leading-tight">{p.id}</div>
+                      <div className="text-[10px] text-slate-500 truncate leading-tight">{p.name}</div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Password Field */}

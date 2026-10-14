@@ -8,6 +8,7 @@ import {
   HospitalBranch,
   DoctorInfo,
   AppointmentRecord,
+  FeedbackRecord,
 } from '../types/patient';
 
 const TOKEN_KEY = 'mediai_patient_auth_token';
@@ -330,6 +331,42 @@ class PatientService {
       return Boolean(res.ok && data.success);
     } catch {
       return false;
+    }
+  }
+
+  /**
+   * Submit patient care feedback (stores into silver_feedback)
+   */
+  public async submitFeedback(payload: {
+    appointmentId?: string;
+    encounterId?: string;
+    doctorId?: string;
+    rating: number;
+    doctorRating?: number;
+    staffRating?: number;
+    waitingTimeRating?: number;
+    facilityRating?: number;
+    cleanlinessRating?: number;
+    communicationRating?: number;
+    comments: string;
+  }): Promise<{ success: boolean; message: string; feedback?: FeedbackRecord }> {
+    try {
+      const res = await fetch('/api/patient/feedback', {
+        method: 'POST',
+        headers: this.getAuthHeaders(),
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      return {
+        success: res.ok && data.success,
+        message: data.message || 'Feedback submitted.',
+        feedback: data.feedback,
+      };
+    } catch {
+      return {
+        success: false,
+        message: 'Network error submitting feedback.',
+      };
     }
   }
 }
