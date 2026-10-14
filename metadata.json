@@ -1,0 +1,6 @@
+{
+  "name": "MediAI — AI Hospital Patient Experience & Operations Platform",
+  "description": "Intelligent healthcare platform unifying patient access, clinical workflows, staff operations, and executive hospital intelligence.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,337 @@
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+import {
+  PatientDashboardData,
+  HospitalBranch,
+  DoctorInfo,
+  AppointmentRecord,
+} from '../types/patient';
+
+const TOKEN_KEY = 'mediai_patient_auth_token';
+const CURRENT_PATIENT_KEY = 'mediai_current_patient_id';
+
+class PatientService {
+  private getToken(): string | null {
+    try {
+      return sessionStorage.getItem(TOKEN_KEY);
+    } catch {
+      return null;
+    }
+  }
+
+  public setSession(token: string, patientId: string): void {
+    try {
+      sessionStorage.setItem(TOKEN_KEY, token);
+      sessionStorage.setItem(CURRENT_PATIENT_KEY, patientId);
+    } catch (e) {
+      console.error('Session storage failed', e);
+    }
+  }
+
+  public clearSession(): void {
+    try {
+      sessionStorage.removeItem(TOKEN_KEY);
+      sessionStorage.removeItem(CURRENT_PATIENT_KEY);
+    } catch (e) {
+      console.error('Session clearance failed', e);
+    }
+  }
+
+  public getSavedPatientId(): string | null {
+    try {
+      return sessionStorage.getItem(CURRENT_PATIENT_KEY);
+    } catch {
+      return null;
+    }
+  }
+
+  public isAuthenticated(): boolean {
+    return Boolean(this.getToken());
+  }
+
+  private getAuthHeaders(): HeadersInit {
+    const token = this.getToken();
+    return {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    };
+  }
+
+  /**
+   * Authenticate patient using Patient ID / username and password
+   */
+  public async login(
+    patientId: string,
+    password: string
+  ): Promise<{
+    success: boolean;
+    message: string;
+    patient?: any;
+    patientId?: string;
+    token?: string;
+    mustChangePassword?: boolean;
+    tempToken?: string;
+    errorType?: string;
+  }> {
+    try {
+      const res = await fetch('/api/auth/patient/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ patientId, password }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+
+      // Check for forced password change policy
+      if (res.ok && data.success && data.mustChangePassword) {
+        return {
+          success: true,
+          mustChangePassword: true,
+          tempToken: data.tempToken,
+          patientId: data.patientId || patientId,
+          patient: data.patient,
+          message: data.message || 'Password update required.',
+        };
+      }
+
+      if (res.ok && data.success && data.token) {
+        this.setSession(data.token, data.patient?.patient_id || patientId);
+        return {
+          success: true,
+          message: data.message || 'Login successful',
+          patient: data.patient,
+          token: data.token,
+        };
+      }
+
+      // If backend reports explicit database or connection error
+      if (data.errorType === 'DATABASE_UNAVAILABLE' || res.status === 503) {
+        return {
+          success: false,
+          errorType: 'DATABASE_UNAVAILABLE',
+          message: data.message || 'Database connection error: Unable to connect to MySQL hospital_db. Please verify server availability.',
+        };
+      }
+
+      return {
+        success: false,
+        errorType: data.errorType,
+        message: data.message || 'Authentication failed. Please verify your credentials.',
+      };
+    } catch (err) {
+      return {
+        success: false,
+        errorType: 'NETWORK_ERROR',
+        message: 'Backend connection error: The MediAI hospital server is currently unreachable. Please check backend connectivity.',
+      };
+    }
+  }
+
+  /**
+   * Change patient password
+   */
+  public async changePassword(payload: {
+    patientId: string;
+    currentPassword: string;
+    newPassword: string;
+    tempToken?: string;
+  }): Promise<{ success: boolean; message: string; token?: string }> {
+    try {
+      const res = await fetch('/api/auth/patient/change-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.success && data.token) {
+        this.setSession(data.token, payload.patientId);
+        return {
+          success: true,
+          message: data.message || 'Password updated successfully.',
+          token: data.token,
+        };
+      }
+      return {
+        success: false,
+        message: data.message || 'Failed to update password. Please check your credentials.',
+      };
+    } catch {
+      return {
+        success: false,
+        message: 'Network error connecting to hospital authentication service.',
+      };
+    }
+  }
+
+  /**
+   * Logout patient
+   */
+  public async logout(): Promise<void> {
+    try {
+      await fetch('/api/auth/logout', {
+        method: 'POST',
+        headers: this.getAuthHeaders(),
+      });
+    } catch {
+      // Ignore network errors on logout
+    } finally {
+      this.clearSession();
+    }
+  }
+
+  /**
+   * Fetch authenticated patient dashboard records
+   */
+  public async getDashboardData(): Promise<{
+    success: boolean;
+    data?: PatientDashboardData;
+    message?: string;
+  }> {
+    try {
+      const res = await fetch('/api/patient/dashboard', {
+        method: 'GET',
+        headers: this.getAuthHeaders(),
+      });
+
+      if (res.status === 401) {
+        this.clearSession();
+        return {
+          success: false,
+          message: 'Your session has expired. Please sign in again.',
+        };
+      }
+
+      const json = await res.json();
+      if (res.ok && json.success) {
+        return {
+          success: true,
+          data: json.data,
+        };
+      }
+      return {
+        success: false,
+        message: json.message || 'Failed to retrieve patient dashboard.',
+      };
+    } catch (err) {
+      return {
+        success: false,
+        message: 'Network error communicating with hospital services.',
+      };
+    }
+  }
+
+  /**
+   * Get hospital branches
+   */
+  public async getBranches(): Promise<HospitalBranch[]> {
+    try {
+      const res = await fetch('/api/booking/branches');
+      const data = await res.json();
+      return data.branches || [];
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Get medical specialties
+   */
+  public async getSpecialties(): Promise<string[]> {
+    try {
+      const res = await fetch('/api/booking/specialties');
+      const data = await res.json();
+      return data.specialties || [];
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Search doctors by branch & specialty
+   */
+  public async getDoctors(branchId?: string, specialty?: string): Promise<DoctorInfo[]> {
+    try {
+      const params = new URLSearchParams();
+      if (branchId) params.append('branchId', branchId);
+      if (specialty) params.append('specialty', specialty);
+
+      const res = await fetch(`/api/booking/doctors?${params.toString()}`);
+      const data = await res.json();
+      return data.doctors || [];
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Check real-time doctor availability slots
+   */
+  public async getAvailability(
+    doctorId: string,
+    date: string
+  ): Promise<{ time: string; isAvailable: boolean }[]> {
+    try {
+      const res = await fetch(
+        `/api/booking/availability?doctorId=${encodeURIComponent(doctorId)}&date=${encodeURIComponent(date)}`
+      );
+      const data = await res.json();
+      return data.slots || [];
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Book appointment
+   */
+  public async bookAppointment(payload: {
+    doctorId: string;
+    branchId: string;
+    date: string;
+    timeSlot: string;
+    reason?: string;
+  }): Promise<{ success: boolean; message: string; appointment?: AppointmentRecord }> {
+    try {
+      const res = await fetch('/api/booking/create', {
+        method: 'POST',
+        headers: this.getAuthHeaders(),
+        body: JSON.stringify(payload),
+      });
+
+      const data = await res.json();
+      return {
+        success: res.ok && data.success,
+        message: data.message || 'Appointment booking failed.',
+        appointment: data.appointment,
+      };
+    } catch {
+      return {
+        success: false,
+        message: 'Network error booking appointment.',
+      };
+    }
+  }
+
+  /**
+   * Cancel an appointment
+   */
+  public async cancelAppointment(appointmentId: string): Promise<boolean> {
+    try {
+      const res = await fetch('/api/booking/cancel', {
+        method: 'POST',
+        headers: this.getAuthHeaders(),
+        body: JSON.stringify({ appointmentId }),
+      });
+      const data = await res.json();
+      return Boolean(res.ok && data.success);
+    } catch {
+      return false;
+    }
+  }
+}
+
+export const patientService = new PatientService();
