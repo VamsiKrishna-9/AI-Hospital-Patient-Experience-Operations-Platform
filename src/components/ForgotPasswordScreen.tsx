@@ -39,7 +39,7 @@ export const ForgotPasswordScreen: React.FC<ForgotPasswordScreenProps> = ({
   onRoleChange,
 }) => {
   const [step, setStep] = useState<ResetStep>('request');
-  const [email, setEmail] = useState(ROLES_CONFIG[selectedRole].demoCredentials.email);
+  const [email, setEmail] = useState('');
   const [code, setCode] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -52,7 +52,7 @@ export const ForgotPasswordScreen: React.FC<ForgotPasswordScreenProps> = ({
 
   const handleRoleSelect = (role: HospitalRole) => {
     onRoleChange(role);
-    setEmail(ROLES_CONFIG[role].demoCredentials.email);
+    setEmail('');
     setError(null);
   };
 
@@ -89,7 +89,7 @@ export const ForgotPasswordScreen: React.FC<ForgotPasswordScreenProps> = ({
     setError(null);
 
     if (!code.trim() || code.trim().length !== 6) {
-      setError('Please enter the 6-digit security code (Use demo code 849201).');
+      setError('Please enter the 6-digit security code.');
       return;
     }
 
@@ -220,7 +220,7 @@ export const ForgotPasswordScreen: React.FC<ForgotPasswordScreenProps> = ({
               />
             </div>
             <p className="mt-1 text-[11px] text-slate-400">
-              For demo testing, any valid email format will trigger the test recovery code.
+              Enter the email address associated with your registered hospital account.
             </p>
           </div>
 
@@ -287,18 +287,11 @@ export const ForgotPasswordScreen: React.FC<ForgotPasswordScreenProps> = ({
             </div>
           </div>
 
-          <div className="flex gap-3">
-            <button
-              type="button"
-              onClick={() => setCode('849201')}
-              className="flex-1 py-2.5 px-3 rounded-xl border border-slate-800 bg-slate-900 text-slate-300 hover:text-white text-xs font-medium transition-colors cursor-pointer"
-            >
-              Auto-fill Received Code
-            </button>
+          <div>
             <button
               type="submit"
               disabled={isLoading}
-              className="flex-[2] flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl font-semibold text-xs text-slate-950 bg-gradient-to-r from-teal-400 to-cyan-400 hover:from-teal-300 hover:to-cyan-300 transition-colors disabled:opacity-60 cursor-pointer"
+              className="w-full flex items-center justify-center gap-2 py-3 px-4 rounded-xl font-semibold text-xs text-slate-950 bg-gradient-to-r from-teal-400 to-cyan-400 hover:from-teal-300 hover:to-cyan-300 transition-colors disabled:opacity-60 cursor-pointer shadow-lg shadow-teal-500/20"
             >
               {isLoading ? (
                 <Loader2 size={15} className="animate-spin text-slate-950" />

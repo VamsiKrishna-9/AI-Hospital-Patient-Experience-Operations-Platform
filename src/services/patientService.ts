@@ -109,11 +109,11 @@ class PatientService {
       }
 
       // If backend reports explicit database or connection error
-      if (data.errorType === 'DATABASE_UNAVAILABLE' || res.status === 503) {
+      if (data.errorType === 'DATABASE_UNAVAILABLE' || data.errorType === 'DATABASE_NOT_CONFIGURED' || res.status === 503) {
         return {
           success: false,
-          errorType: 'DATABASE_UNAVAILABLE',
-          message: data.message || 'Database connection error: Unable to connect to MySQL hospital_db. Please verify server availability.',
+          errorType: 'DATABASE_NOT_CONFIGURED',
+          message: data.message || 'Database not configured. Connect Supabase to load this information.',
         };
       }
 

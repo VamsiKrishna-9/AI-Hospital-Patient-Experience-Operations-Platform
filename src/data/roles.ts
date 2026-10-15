@@ -14,10 +14,6 @@ export const ROLES_CONFIG: Record<HospitalRole, RoleConfig> = {
     accentColor: 'teal',
     iconName: 'HeartPulse',
     description: 'Access medical history, virtual appointments, lab test results, and direct clinician communication.',
-    demoCredentials: {
-      email: 'P182162',
-      label: 'Patient ID: P182162',
-    },
   },
   doctor: {
     id: 'doctor',
@@ -27,10 +23,6 @@ export const ROLES_CONFIG: Record<HospitalRole, RoleConfig> = {
     accentColor: 'cyan',
     iconName: 'Stethoscope',
     description: 'Review clinical encounters, digital prescriptions, laboratory telemetry, and AI diagnosis assistance.',
-    demoCredentials: {
-      email: 'dr.marcus.chen@hospital.mediai.health',
-      label: 'Physician: Dr. Marcus Chen, MD',
-    },
   },
   staff: {
     id: 'staff',
@@ -40,10 +32,6 @@ export const ROLES_CONFIG: Record<HospitalRole, RoleConfig> = {
     accentColor: 'violet',
     iconName: 'ClipboardCheck',
     description: 'Manage ward assignments, patient admissions, shift schedules, triage queue, and unit logistics.',
-    demoCredentials: {
-      email: 'sarah.jenkins@ops.mediai.health',
-      label: 'Staff: Sarah Jenkins, RN Unit Lead',
-    },
   },
   admin: {
     id: 'admin',
@@ -53,10 +41,6 @@ export const ROLES_CONFIG: Record<HospitalRole, RoleConfig> = {
     accentColor: 'indigo',
     iconName: 'ShieldAlert',
     description: 'Configure hospital units, audit security logs, provision role credentials, and oversee Medallion analytics.',
-    demoCredentials: {
-      email: 'admin.director@medicare.mediai.health',
-      label: 'Director: Chief Medical Information Officer',
-    },
   },
 };
 

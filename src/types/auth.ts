@@ -15,10 +15,6 @@ export interface RoleConfig {
   accentColor: string; // Tailwind color class key
   iconName: string;
   description: string;
-  demoCredentials: {
-    email: string;
-    label: string;
-  };
 }
 
 export interface LoginFormData {
@@ -93,7 +89,7 @@ export interface PasswordStrength {
 export interface AuthResponse {
   success: boolean;
   message: string;
-  isDemoMode: boolean;
+  isDemoMode?: boolean;
   user?: {
     id: string;
     name: string;

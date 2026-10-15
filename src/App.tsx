@@ -11,7 +11,6 @@ import { SignupScreen } from './components/SignupScreen';
 import { ForgotPasswordScreen } from './components/ForgotPasswordScreen';
 import { ChangePasswordScreen } from './components/ChangePasswordScreen';
 import { PatientDashboard } from './components/PatientDashboard';
-import { DemoModeBanner } from './components/DemoModeBanner';
 import { patientService } from './services/patientService';
 
 export default function App() {
@@ -56,11 +55,8 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-teal-500/30 selection:text-teal-200">
-      {/* Top Prototype Banner */}
-      <DemoModeBanner />
-
       {/* Main Split Screen Container */}
-      <main className="flex-1 flex flex-col lg:flex-row min-h-[calc(100vh-41px)] w-full relative">
+      <main className="flex-1 flex flex-col lg:flex-row min-h-screen w-full relative">
         {/* Left Side: Brand, Healthcare AI Graphic, Medallion Architecture Badges */}
         <div className="w-full lg:w-1/2 xl:w-5/12 flex-shrink-0">
           <LeftBrandPanel />

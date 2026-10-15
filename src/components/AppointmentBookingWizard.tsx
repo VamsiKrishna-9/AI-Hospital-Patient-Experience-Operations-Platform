@@ -310,6 +310,10 @@ export const AppointmentBookingWizard: React.FC<AppointmentBookingWizardProps> =
                   <Loader2 size={24} className="animate-spin text-[#059669]" />
                   <span className="text-xs">Loading hospital branches...</span>
                 </div>
+              ) : branches.length === 0 ? (
+                <div className="text-center py-10 text-[#526581] text-xs space-y-2">
+                  <p>No hospital branches currently configured.</p>
+                </div>
               ) : (
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
                   {branches.map((b) => {
@@ -549,17 +553,17 @@ export const AppointmentBookingWizard: React.FC<AppointmentBookingWizardProps> =
                 </div>
               </div>
 
-              {/* Patient feedback highlight card */}
+              {/* Physician Practice Summary */}
               <div className="p-4 rounded-xl bg-[#F5F8FA] border border-[#DCE5EC] text-xs space-y-2">
                 <span className="font-bold text-[#172B4D] flex items-center gap-1.5 text-xs">
                   <Award size={15} className="text-[#047857]" />
-                  Verified Patient Feedback Summary
+                  Physician Credentials & Consultation Practice
                 </span>
                 <p className="text-[#334155] leading-relaxed text-xs font-normal">
-                  "Dr. {wizardState.doctor.name.replace('Dr. ', '')} is highly attentive, thorough in diagnostic explanations, and takes ample time to address all health concerns."
+                  Board-certified specialist practicing in {wizardState.doctor.specialty} at {wizardState.branchName}. Consultations include clinical evaluation, diagnostic examination, and personalized care planning.
                 </p>
                 <div className="text-xs text-[#526581] font-medium">
-                  Based on {wizardState.doctor.rating_count || 100}+ verified hospital visit encounters.
+                  Credentials: {wizardState.doctor.qualification}
                 </div>
               </div>
             </div>
@@ -633,6 +637,10 @@ export const AppointmentBookingWizard: React.FC<AppointmentBookingWizardProps> =
                 <div className="flex flex-col items-center justify-center py-12 text-[#526581] gap-2">
                   <Loader2 size={24} className="animate-spin text-[#059669]" />
                   <span className="text-xs">Validating doctor clinic schedule...</span>
+                </div>
+              ) : availabilitySlots.length === 0 ? (
+                <div className="text-center py-10 text-[#526581] text-xs space-y-2">
+                  <p>No appointment slots available for this date.</p>
                 </div>
               ) : (
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">

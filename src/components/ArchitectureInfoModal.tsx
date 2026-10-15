@@ -56,8 +56,8 @@ export const ArchitectureInfoModal: React.FC<ArchitectureInfoModalProps> = ({
         <div className="mb-6 p-3.5 rounded-xl bg-teal-950/40 border border-teal-500/30 text-xs text-teal-200 flex items-start gap-3">
           <ShieldCheck size={18} className="text-teal-400 shrink-0 mt-0.5" />
           <div className="leading-relaxed">
-            <strong className="font-semibold text-teal-100">Standalone Client Demo Mode Active: </strong>
-            All four role flows (Patient, Doctor, Staff, Admin) validate strictly on the frontend and are wired to dispatch to the service layer. No real backend, database, or Power BI connection is claimed.
+            <strong className="font-semibold text-teal-100">Clean Platform State: </strong>
+            All demo records and prototype fallback caches have been cleared. Application services are prepared for direct Supabase PostgreSQL integration across all hospital workflows.
           </div>
         </div>
 

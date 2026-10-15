@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { Eye, EyeOff, Lock, Mail, IdCard, ArrowRight, Loader2, AlertCircle, CheckCircle2 } from 'lucide-react';
+import { Eye, EyeOff, Lock, Mail, IdCard, ArrowRight, Loader2, AlertCircle } from 'lucide-react';
 import { HospitalRole, LoginFormData, ScreenState, AuthResponse } from '../types/auth';
 import { ROLES_CONFIG } from '../data/roles';
 import { RoleSelector } from './RoleSelector';
@@ -42,7 +42,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
     const remembered = authService.getRememberedIdentity();
     if (remembered) {
       if (remembered.role === 'patient') {
-        // Patient usernames are Patient IDs (e.g. P182162), not email addresses.
+        // Patient usernames are Patient IDs, not email addresses.
         // If an old or invalid email was stored, clear it to avoid populating an email.
         if (remembered.email && !remembered.email.includes('@')) {
           setIdentifier(remembered.email.toUpperCase());
@@ -87,11 +87,11 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
     if (selectedRole === 'patient') {
       const cleanPatientId = identifier.trim().toUpperCase();
       if (!cleanPatientId) {
-        setError('Please enter your Patient ID (e.g. P182162).');
+        setError('Please enter your Patient ID.');
         return;
       }
       if (cleanPatientId.includes('@')) {
-        setError('Please enter your Patient ID username (e.g. P182162), not an email address.');
+        setError('Please enter your Patient ID username, not an email address.');
         return;
       }
       if (!password) {
@@ -202,23 +202,6 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
         />
       </div>
 
-      {/* Clean Feedback Banner if form submitted (non-patient) */}
-      {authResult && authResult.success && !isPatient && (
-        <div className="mb-5 p-3.5 rounded-xl bg-teal-950/60 border border-teal-500/40 text-xs text-teal-200 animate-in fade-in duration-200">
-          <div className="flex items-start gap-2.5">
-            <CheckCircle2 size={16} className="text-teal-400 shrink-0 mt-0.5" />
-            <div className="space-y-0.5">
-              <p className="font-semibold text-teal-100">
-                Sign In Verified — {ROLES_CONFIG[selectedRole].title} Portal
-              </p>
-              <p className="text-[11px] text-teal-300/90 leading-relaxed">
-                Credentials validated successfully for {identifier}.
-              </p>
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* Error Banner */}
       {error && (
         <div
@@ -241,7 +224,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
             {isPatient ? (
               <span className="flex items-center justify-between">
                 <span>Patient ID (Username)</span>
-                <span className="text-[10px] text-teal-400 font-mono">e.g. P182162</span>
+                <span className="text-[10px] text-teal-400 font-mono">Patient Portal ID</span>
               </span>
             ) : selectedRole === 'admin' ? (
               'Institutional Administrator Email'
@@ -263,7 +246,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
                 if (error) setError(null);
               }}
               disabled={isLoading}
-              placeholder={isPatient ? 'Enter your Patient ID (e.g. P182162)' : 'name@example.com'}
+              placeholder={isPatient ? 'Enter your Patient ID' : 'name@example.com'}
               className={`w-full pl-10 pr-4 py-2.5 rounded-xl bg-slate-900/90 border border-slate-800 text-white placeholder-slate-500 text-sm focus:outline-none focus:border-teal-500 focus:ring-1 focus:ring-teal-500 transition-colors ${
                 isPatient ? 'font-mono tracking-wider' : ''
               }`}
@@ -272,53 +255,8 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
           {isPatient && identifier.includes('@') && (
             <p className="mt-1.5 text-[11px] text-amber-400 flex items-center gap-1 font-medium animate-in fade-in duration-150">
               <AlertCircle size={12} className="shrink-0" />
-              Patient accounts use Patient IDs as usernames (e.g. P182162), not email addresses.
+              Patient accounts use Patient IDs as usernames, not email addresses.
             </p>
-          )}
-
-          {/* Quick Demo Patient ID Chips */}
-          {isPatient && (
-            <div className="mt-3 p-3 rounded-xl bg-slate-900/60 border border-slate-800/80 space-y-2">
-              <div className="flex items-center justify-between text-[11px]">
-                <span className="font-semibold text-slate-300">10 Verified Demo Patients</span>
-                <span className="text-slate-500 text-[10px]">Tap to fill ID</span>
-              </div>
-              <div className="grid grid-cols-2 sm:grid-cols-5 gap-1.5">
-                {[
-                  { id: 'P182162', name: 'Eleanor V.' },
-                  { id: 'P195909', name: 'David S.' },
-                  { id: 'P198226', name: 'Maya L.' },
-                  { id: 'P151076', name: 'Lucas T.' },
-                  { id: 'P164835', name: 'Sophia R.' },
-                  { id: 'P115937', name: 'James W.' },
-                  { id: 'P171467', name: 'Aisha P.' },
-                  { id: 'P167834', name: 'Benjamin H.' },
-                  { id: 'P144799', name: 'Chloe B.' },
-                  { id: 'P118969', name: 'Thomas M.' },
-                ].map((p) => {
-                  const isSelected = identifier.trim().toUpperCase() === p.id;
-                  return (
-                    <button
-                      key={p.id}
-                      type="button"
-                      onClick={() => {
-                        setIdentifier(p.id);
-                        if (error) setError(null);
-                      }}
-                      className={`px-2 py-1.5 rounded-lg text-left text-[11px] font-mono transition-all cursor-pointer border ${
-                        isSelected
-                          ? 'bg-teal-500/20 text-teal-300 border-teal-400/60 font-bold'
-                          : 'bg-slate-900/90 text-slate-400 border-slate-800 hover:text-slate-200 hover:border-slate-700'
-                      }`}
-                      title={`Select demo patient ${p.id} (${p.name})`}
-                    >
-                      <div className="font-bold text-slate-200 text-[11px] leading-tight">{p.id}</div>
-                      <div className="text-[10px] text-slate-500 truncate leading-tight">{p.name}</div>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
           )}
         </div>
 

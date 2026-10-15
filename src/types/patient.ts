@@ -203,8 +203,9 @@ export interface PatientDashboardData {
   prescriptions: PrescriptionRecord[];
   feedbackList: FeedbackRecord[];
   notifications: NotificationItem[];
-  backendStatus: {
-    isLiveMySQL: boolean;
+  backendStatus?: {
+    connected?: boolean;
+    isLiveMySQL?: boolean;
     engine: string;
     schema: string;
     notice?: string;
