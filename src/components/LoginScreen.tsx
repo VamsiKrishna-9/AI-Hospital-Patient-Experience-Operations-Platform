@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { Eye, EyeOff, Lock, Mail, IdCard, ArrowRight, Loader2, AlertCircle } from 'lucide-react';
+import { Eye, EyeOff, Lock, Mail, IdCard, ArrowRight, Loader2, AlertCircle, CheckCircle2 } from 'lucide-react';
 import { HospitalRole, LoginFormData, ScreenState, AuthResponse } from '../types/auth';
 import { ROLES_CONFIG } from '../data/roles';
 import { RoleSelector } from './RoleSelector';
@@ -35,10 +35,47 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
 
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [verificationNotice, setVerificationNotice] = useState<string | null>(null);
   const [authResult, setAuthResult] = useState<AuthResponse | null>(null);
 
-  // Check remembered identity on mount if saved previously
+  // Check remembered identity and handle email verification redirect on mount
   useEffect(() => {
+    // 1. Inspect URL hash or search params for Supabase email confirmation callback
+    if (typeof window !== 'undefined') {
+      const hash = window.location.hash;
+      const search = window.location.search;
+
+      if (hash || search) {
+        const hashParams = new URLSearchParams(hash.startsWith('#') ? hash.substring(1) : hash);
+        const searchParams = new URLSearchParams(search);
+
+        const isSignupConfirmation =
+          hashParams.get('type') === 'signup' ||
+          searchParams.get('type') === 'signup' ||
+          hashParams.has('access_token');
+
+        const errorDesc =
+          hashParams.get('error_description') ||
+          searchParams.get('error_description');
+
+        if (isSignupConfirmation) {
+          setVerificationNotice(
+            'Email verified successfully! Your account is active. Please enter your Patient ID and password to sign in.'
+          );
+          onRoleChange('patient');
+          // Sanitize URL: clear tokens from browser address bar and history to prevent credential exposure
+          window.history.replaceState(null, '', window.location.pathname);
+        } else if (errorDesc) {
+          setError(
+            decodeURIComponent(errorDesc).replace(/\+/g, ' ') ||
+              'Email verification link is invalid or has expired.'
+          );
+          window.history.replaceState(null, '', window.location.pathname);
+        }
+      }
+    }
+
+    // 2. Check remembered identity
     const remembered = authService.getRememberedIdentity();
     if (remembered) {
       if (remembered.role === 'patient') {
@@ -201,6 +238,17 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
           disabled={isLoading}
         />
       </div>
+
+      {/* Verification Success Notice Banner */}
+      {verificationNotice && (
+        <div
+          role="status"
+          className="mb-5 p-3.5 rounded-xl bg-teal-950/60 border border-teal-500/40 text-xs text-teal-200 animate-in fade-in duration-200 flex items-start gap-2.5"
+        >
+          <CheckCircle2 size={16} className="text-teal-400 shrink-0 mt-0.5" />
+          <div className="leading-relaxed">{verificationNotice}</div>
+        </div>
+      )}
 
       {/* Error Banner */}
       {error && (

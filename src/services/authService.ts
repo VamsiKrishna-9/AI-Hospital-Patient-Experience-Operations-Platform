@@ -117,6 +117,8 @@ class AuthService {
         isDemoMode: false,
         message: result.message || 'Registration successful.',
         user: result.user,
+        patientId: result.patientId || result.user?.patient_id,
+        requiresEmailConfirmation: result.requiresEmailConfirmation,
       };
     } catch {
       return {

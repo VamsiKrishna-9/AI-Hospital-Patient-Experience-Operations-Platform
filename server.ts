@@ -6,8 +6,6 @@
 import express, { Request, Response, NextFunction } from 'express';
 import { createServer as createViteServer } from 'vite';
 import path from 'path';
-import crypto from 'crypto';
-import bcrypt from 'bcryptjs';
 import dotenv from 'dotenv';
 import {
   PatientProfile,
@@ -16,6 +14,20 @@ import {
   AppointmentRecord,
   FeedbackRecord,
 } from './src/types/patient';
+import {
+  getValidHospitalInviteCodes,
+  getValidAdminInvitationCodes,
+  isInvitationCodeValid,
+  checkRegistrationRateLimit,
+} from './src/server/authSecurity';
+import {
+  getSupabaseConfig,
+  getSupabaseAdmin,
+  getSupabaseAnon,
+  getSupabaseUserClient,
+  testSupabaseConnection,
+  sanitizeError,
+} from './src/server/supabase';
 
 dotenv.config();
 
@@ -24,69 +36,18 @@ const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
 
-// --- Database Configuration & Security Sanitization Layer ---
-export type EngineMode = 'LIVE_DATABASE' | 'PENDING_CONFIGURATION';
+// --- Database Connection State Management ---
+let isDatabaseConnected = false;
+let dbConnectionError: string | null = null;
 
-function sanitizeError(err: any): string | null {
-  if (!err) return null;
-  const str = typeof err === 'string' ? err : err?.message || String(err);
-  return str
-    .replace(/(password|passwd|pwd)=[^\s&;]+/gi, '$1=******')
-    .replace(/\/\/[^:]+:[^@]+@/g, '//***:***@');
+export async function refreshDatabaseConnection(): Promise<boolean> {
+  const result = await testSupabaseConnection();
+  isDatabaseConnected = result.connected;
+  dbConnectionError = result.connected ? null : (result.error || result.message);
+  return isDatabaseConnected;
 }
 
-// Supabase / PostgreSQL / Relational Database Configuration
-function resolveDatabaseConfig() {
-  const connUri = process.env.DATABASE_URL || process.env.SUPABASE_DATABASE_URL || process.env.POSTGRES_URL;
-  const supabaseUrl = process.env.SUPABASE_URL;
-  const supabaseAnonKey = process.env.SUPABASE_ANON_KEY;
-
-  if (connUri) {
-    try {
-      const parsed = new URL(connUri);
-      return {
-        configured: Boolean(parsed.hostname && parsed.hostname !== 'localhost'),
-        type: 'connection_uri' as const,
-        host: parsed.hostname,
-        port: Number(parsed.port) || 5432,
-        database: parsed.pathname.replace(/^\//, '') || 'postgres',
-        supabaseUrl: supabaseUrl || null,
-        hasAnonKey: Boolean(supabaseAnonKey),
-      };
-    } catch {
-      // invalid URL
-    }
-  }
-
-  const host = process.env.PGHOST || process.env.DB_HOST || process.env.MYSQL_HOST;
-  const user = process.env.PGUSER || process.env.DB_USER || process.env.MYSQL_USER;
-  const password = process.env.PGPASSWORD || process.env.DB_PASSWORD || process.env.MYSQL_PASSWORD;
-  const isPlaceholderPassword =
-    password === 'your_database_password' ||
-    password === 'YOUR_PASSWORD' ||
-    password === 'password';
-
-  const hasCredentials = Boolean(host && user && password && !isPlaceholderPassword);
-
-  return {
-    configured: Boolean(hasCredentials || (supabaseUrl && supabaseAnonKey)),
-    type: 'env_vars' as const,
-    host: host || null,
-    port: Number(process.env.PGPORT || process.env.DB_PORT || 5432),
-    database: process.env.PGDATABASE || process.env.DB_NAME || 'postgres',
-    supabaseUrl: supabaseUrl || null,
-    hasAnonKey: Boolean(supabaseAnonKey),
-  };
-}
-
-const DB_CONFIG = resolveDatabaseConfig();
-const isDatabaseConfigured = DB_CONFIG.configured;
-const isDatabaseConnected = false; // Supabase PostgreSQL will be connected next
-const dbConnectionError: string | null = isDatabaseConfigured
-  ? 'Database client connection pending setup.'
-  : 'No Supabase credentials configured.';
-
-// Authoritative Supabase / PostgreSQL Tables Schema
+// Authoritative Supabase / PostgreSQL Tables Schema (10 Approved Entities)
 export const REQUIRED_TABLES = [
   'users',
   'patients',
@@ -96,6 +57,16 @@ export const REQUIRED_TABLES = [
   'lab_results',
   'prescriptions',
   'feedback',
+  'app_users',
+  'silver_patients',
+  'silver_doctors',
+  'silver_staff',
+  'silver_appointments',
+  'silver_encounters',
+  'silver_prescriptions',
+  'silver_lab_results',
+  'silver_feedback',
+  'silver_staff_assignment',
 ];
 
 // --- Hospital Branches Reference Data ---
@@ -147,49 +118,6 @@ export const MEDICAL_SPECIALTIES = [
   'Pulmonology & Critical Care',
 ];
 
-// --- Cryptographic Password Verifier ---
-function verifyPassword(submittedPassword: string, storedHash: string): boolean {
-  if (!submittedPassword || !storedHash) return false;
-
-  try {
-    // 1. Standard bcrypt hash check
-    if (storedHash.startsWith('$2a$') || storedHash.startsWith('$2b$') || storedHash.startsWith('$2y$')) {
-      return bcrypt.compareSync(submittedPassword, storedHash);
-    }
-
-    // 2. PBKDF2 hash check
-    if (storedHash.startsWith('pbkdf2:')) {
-      const parts = storedHash.split(':');
-      if (parts.length >= 4) {
-        const salt = parts[1];
-        const iterations = parseInt(parts[2], 10) || 10000;
-        const hash = parts[3];
-        const computed = crypto.pbkdf2Sync(submittedPassword, salt, iterations, 64, 'sha512').toString('hex');
-        return crypto.timingSafeEqual(Buffer.from(computed), Buffer.from(hash));
-      }
-    }
-
-    // 3. Salted SHA-256 check
-    if (storedHash.includes(':')) {
-      const [salt, hash] = storedHash.split(':');
-      if (salt && hash) {
-        const computed = crypto.createHmac('sha256', salt).update(submittedPassword).digest('hex');
-        return crypto.timingSafeEqual(Buffer.from(computed), Buffer.from(hash));
-      }
-    }
-
-    // 4. Fallback SHA-256 check
-    const computedSha = crypto.createHash('sha256').update(submittedPassword).digest('hex');
-    if (computedSha === storedHash) {
-      return true;
-    }
-  } catch (err) {
-    console.error('Password verification error:', err);
-  }
-
-  return false;
-}
-
 // --- Format raw database rows to PatientProfile ---
 function formatPatientProfile(raw: any): PatientProfile {
   const fullName = raw.name || raw.full_name || `${raw.first_name || ''} ${raw.last_name || ''}`.trim() || 'Patient';
@@ -221,42 +149,12 @@ function formatPatientProfile(raw: any): PatientProfile {
   };
 }
 
-// --- Active Cryptographic Session Store ---
-interface SessionData {
-  token: string;
-  patient_id: string;
-  role: string;
-  email?: string;
-  created_at: number;
-  expires_at: number;
-}
-const ACTIVE_SESSIONS = new Map<string, SessionData>();
-
-// Temporary tokens for must_change_password flow (15-min expiry)
-interface TempPasswordToken {
-  token: string;
-  patient_id: string;
-  expires_at: number;
-}
-const TEMP_PASSWORD_TOKENS = new Map<string, TempPasswordToken>();
-
-// Session cleanup interval (every 15 min)
-setInterval(() => {
-  const now = Date.now();
-  for (const [token, session] of ACTIVE_SESSIONS.entries()) {
-    if (session.expires_at < now) {
-      ACTIVE_SESSIONS.delete(token);
-    }
-  }
-  for (const [token, temp] of TEMP_PASSWORD_TOKENS.entries()) {
-    if (temp.expires_at < now) {
-      TEMP_PASSWORD_TOKENS.delete(token);
-    }
-  }
-}, 15 * 60 * 1000);
-
-// Middleware: Authenticate patient token
-function authenticatePatientToken(req: Request, res: Response, next: NextFunction) {
+// ============================================================================
+// AUTHENTICATION & AUTHORIZATION MIDDLEWARE
+// Validates Supabase JWT access tokens server-side for protected API requests.
+// Resolves identity through auth.users(id) and public.app_users(id).
+// ============================================================================
+async function authenticateToken(req: Request, res: Response, next: NextFunction) {
   const authHeader = req.headers['authorization'];
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
     return res.status(401).json({
@@ -266,31 +164,74 @@ function authenticatePatientToken(req: Request, res: Response, next: NextFunctio
   }
 
   const token = authHeader.split(' ')[1];
-  const session = ACTIVE_SESSIONS.get(token);
+  const client = getSupabaseAdmin();
 
-  if (!session) {
+  if (!isDatabaseConnected || !client) {
     return res.status(401).json({
       success: false,
-      message: 'Session expired or invalid. Please sign in again.',
+      message: 'Authentication service unavailable. Connect Supabase to validate sessions.',
     });
   }
 
-  if (Date.now() > session.expires_at) {
-    ACTIVE_SESSIONS.delete(token);
+  try {
+    const { data: { user }, error: authError } = await client.auth.getUser(token);
+
+    if (authError || !user) {
+      return res.status(401).json({
+        success: false,
+        message: 'Session expired or invalid. Please sign in again.',
+      });
+    }
+
+    // Resolve app_users identity mapped 1:1 with auth.users(id)
+    const { data: appUser, error: appUserError } = await client
+      .from('app_users')
+      .select('*')
+      .eq('id', user.id)
+      .single();
+
+    if (appUserError || !appUser) {
+      return res.status(401).json({
+        success: false,
+        message: 'User profile not found in application registry.',
+      });
+    }
+
+    if (!appUser.is_active) {
+      return res.status(403).json({
+        success: false,
+        message: 'This user account has been deactivated. Please contact administration.',
+      });
+    }
+
+    (req as any).authUser = user;
+    (req as any).appUser = appUser;
+    (req as any).authenticatedPatientId = appUser.patient_id;
+    (req as any).userToken = token;
+    next();
+  } catch (err) {
     return res.status(401).json({
       success: false,
-      message: 'Session has expired. Please sign in again.',
+      message: 'Error verifying session credentials.',
     });
   }
+}
 
-  (req as any).authenticatedPatientId = session.patient_id;
-  (req as any).authenticatedSession = session;
+// Middleware: Strict patient-role enforcer
+function requirePatientRole(req: Request, res: Response, next: NextFunction) {
+  const appUser = (req as any).appUser;
+  if (!appUser || appUser.role !== 'patient' || !appUser.patient_id) {
+    return res.status(403).json({
+      success: false,
+      message: 'Access restricted: Patient role authorization required.',
+    });
+  }
   next();
 }
 
-// ==========================================
+// ============================================================================
 // API ROUTES
-// ==========================================
+// ============================================================================
 
 // Server Health
 app.get('/api/health', (_req: Request, res: Response) => {
@@ -304,16 +245,17 @@ app.get('/api/health', (_req: Request, res: Response) => {
 });
 
 // Database Health & Status Endpoint
-app.get(['/api/db/health', '/api/db/status'], (_req: Request, res: Response) => {
+app.get(['/api/db/health', '/api/db/status'], async (_req: Request, res: Response) => {
+  const config = getSupabaseConfig();
   return res.json({
     status: isDatabaseConnected ? 'connected' : 'pending_configuration',
     target: 'Supabase PostgreSQL',
-    configured: isDatabaseConfigured,
+    configured: config.configured,
     connected: isDatabaseConnected,
     mode: isDatabaseConnected ? 'LIVE_DATABASE' : 'PENDING_CONFIGURATION',
     message: isDatabaseConnected
       ? 'Connected to Supabase PostgreSQL database.'
-      : isDatabaseConfigured
+      : config.configured
       ? `Database configured but unreachable: ${sanitizeError(dbConnectionError)}`
       : 'Database not configured. Supabase PostgreSQL connection pending setup.',
     requiredTables: REQUIRED_TABLES,
@@ -323,24 +265,38 @@ app.get(['/api/db/health', '/api/db/status'], (_req: Request, res: Response) => 
 
 // Database Diagnostic Endpoint
 app.get('/api/db/diagnostics', async (_req: Request, res: Response) => {
+  const config = getSupabaseConfig();
   return res.json({
     target: 'Supabase PostgreSQL',
-    configured: isDatabaseConfigured,
+    configured: config.configured,
     connected: isDatabaseConnected,
     status: isDatabaseConnected ? 'CONNECTED' : 'WAITING_FOR_CREDENTIALS',
-    remediation: isDatabaseConfigured
+    remediation: config.configured
       ? 'Check network reachability to the Supabase host.'
-      : 'Provide SUPABASE_URL and SUPABASE_ANON_KEY (or DATABASE_URL) in environment secrets.',
+      : 'Provide SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in environment variables.',
     requiredTables: REQUIRED_TABLES,
   });
 });
 
-// Database Test Connection Endpoint
+// Database Test Connection Endpoint (Performs real connectivity check)
 app.post('/api/db/test-connection', async (_req: Request, res: Response) => {
+  const connected = await refreshDatabaseConnection();
+  const config = getSupabaseConfig();
+
+  if (connected) {
+    return res.json({
+      ok: true,
+      status: 'connected',
+      message: 'Connected to Supabase PostgreSQL database.',
+    });
+  }
+
   return res.json({
     ok: false,
     status: 'pending_configuration',
-    message: 'Supabase PostgreSQL connection pending configuration. Provide Supabase credentials to establish live connection.',
+    message: config.configured
+      ? `Connection attempt failed: ${sanitizeError(dbConnectionError)}`
+      : 'Supabase PostgreSQL connection pending configuration. Provide SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY to establish live connection.',
   });
 });
 
@@ -363,7 +319,6 @@ app.post('/api/auth/patient/login', async (req: Request, res: Response) => {
     });
   }
 
-  // Real Database Check
   if (!isDatabaseConnected) {
     return res.status(503).json({
       success: false,
@@ -372,10 +327,81 @@ app.post('/api/auth/patient/login', async (req: Request, res: Response) => {
     });
   }
 
-  return res.status(401).json({
-    success: false,
-    message: 'Invalid Patient ID or password.',
-  });
+  const adminClient = getSupabaseAdmin();
+  const anonClient = getSupabaseAnon() || adminClient;
+
+  if (!adminClient || !anonClient) {
+    return res.status(503).json({
+      success: false,
+      errorType: 'DATABASE_NOT_CONFIGURED',
+      message: 'Database client not initialized.',
+    });
+  }
+
+  try {
+    // 1. Resolve email associated with Patient ID or email from public.app_users
+    let query = adminClient.from('app_users').select('*').eq('role', 'patient');
+    if (rawInput.includes('@')) {
+      query = query.eq('email', rawInput.toLowerCase());
+    } else {
+      query = query.eq('patient_id', rawInput.toUpperCase());
+    }
+
+    const { data: userRecord, error: userError } = await query.single();
+
+    if (userError || !userRecord) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid Patient ID or password.',
+      });
+    }
+
+    // 2. Authenticate through Supabase Auth
+    const { data: authData, error: authError } = await anonClient.auth.signInWithPassword({
+      email: userRecord.email,
+      password,
+    });
+
+    if (authError || !authData.session) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid Patient ID or password.',
+      });
+    }
+
+    // 3. Fetch patient profile from silver_patients
+    const { data: patientRecord } = await adminClient
+      .from('silver_patients')
+      .select('*')
+      .eq('patient_id', userRecord.patient_id)
+      .single();
+
+    const formattedProfile = formatPatientProfile(patientRecord || userRecord);
+
+    // 4. Check must_change_password security policy
+    if (userRecord.must_change_password) {
+      return res.json({
+        success: true,
+        mustChangePassword: true,
+        tempToken: authData.session.access_token,
+        patientId: userRecord.patient_id,
+        patient: formattedProfile,
+        message: 'Password change required on initial access.',
+      });
+    }
+
+    return res.json({
+      success: true,
+      message: 'Authenticated successfully.',
+      token: authData.session.access_token,
+      patient: formattedProfile,
+    });
+  } catch (err) {
+    return res.status(500).json({
+      success: false,
+      message: 'Authentication processing error.',
+    });
+  }
 });
 
 // 2. Generic Role Login (Doctor, Staff, Admin)
@@ -397,14 +423,108 @@ app.post('/api/auth/login', async (req: Request, res: Response) => {
     });
   }
 
-  return res.status(401).json({
-    success: false,
-    message: `Invalid credentials for ${role || 'user'}.`,
-  });
+  const adminClient = getSupabaseAdmin();
+  const anonClient = getSupabaseAnon() || adminClient;
+
+  if (!adminClient || !anonClient) {
+    return res.status(503).json({
+      success: false,
+      errorType: 'DATABASE_NOT_CONFIGURED',
+      message: 'Database client not initialized.',
+    });
+  }
+
+  try {
+    // 1. Authenticate with Supabase Auth
+    const { data: authData, error: authError } = await anonClient.auth.signInWithPassword({
+      email: email.trim().toLowerCase(),
+      password,
+    });
+
+    if (authError || !authData.user || !authData.session) {
+      return res.status(401).json({
+        success: false,
+        message: `Invalid credentials for ${role || 'user'}.`,
+      });
+    }
+
+    // 2. Validate role boundary from public.app_users
+    const { data: appUser, error: appUserError } = await adminClient
+      .from('app_users')
+      .select('*')
+      .eq('id', authData.user.id)
+      .single();
+
+    if (appUserError || !appUser) {
+      return res.status(401).json({
+        success: false,
+        message: 'Account profile not found in hospital directory.',
+      });
+    }
+
+    if (role && appUser.role !== role) {
+      return res.status(403).json({
+        success: false,
+        message: `Access denied: Account is registered with role '${appUser.role}', not '${role}'.`,
+      });
+    }
+
+    return res.json({
+      success: true,
+      message: 'Authenticated successfully.',
+      token: authData.session.access_token,
+      user: {
+        id: appUser.id,
+        email: appUser.email,
+        role: appUser.role,
+        name: appUser.full_name,
+        patient_id: appUser.patient_id,
+        doctor_id: appUser.doctor_id,
+        staff_id: appUser.staff_id,
+      },
+    });
+  } catch (err) {
+    return res.status(500).json({
+      success: false,
+      message: 'Authentication processing error.',
+    });
+  }
 });
 
-// 3. User Registration (All roles)
+// 3. User Registration (Public Patient signup & Trusted Privileged Provisioning)
 app.post('/api/auth/register', async (req: Request, res: Response) => {
+  const {
+    role = 'patient',
+    fullName,
+    email: rawEmail,
+    officialEmail,
+    password,
+    phone,
+    dateOfBirth,
+    specialization,
+    medicalRegNumber,
+    hospitalInviteCode,
+    staffId,
+    department,
+    adminInviteCode,
+  } = req.body;
+
+  const email = String(rawEmail || officialEmail || '').trim().toLowerCase();
+
+  if (!email) {
+    return res.status(400).json({
+      success: false,
+      message: 'A valid email address is required for registration.',
+    });
+  }
+
+  if (!password) {
+    return res.status(400).json({
+      success: false,
+      message: 'Password is required.',
+    });
+  }
+
   if (!isDatabaseConnected) {
     return res.status(503).json({
       success: false,
@@ -413,14 +533,299 @@ app.post('/api/auth/register', async (req: Request, res: Response) => {
     });
   }
 
-  return res.status(400).json({
-    success: false,
-    message: 'Registration service currently unavailable.',
-  });
+  const adminClient = getSupabaseAdmin();
+  const anonClient = getSupabaseAnon() || adminClient;
+
+  if (!adminClient || !anonClient) {
+    return res.status(503).json({
+      success: false,
+      errorType: 'DATABASE_NOT_CONFIGURED',
+      message: 'Database client not initialized.',
+    });
+  }
+
+  try {
+    // A. Public Patient Registration
+    if (role === 'patient') {
+      const productionAppUrl = 'https://ais-dev-3mit3ofxc4v3mkup6fnuq4-979695568263.asia-southeast1.run.app';
+      const emailRedirectTo = process.env.APP_URL || productionAppUrl;
+
+      const { data: authData, error: authError } = await anonClient.auth.signUp({
+        email: email.trim().toLowerCase(),
+        password,
+        options: {
+          emailRedirectTo,
+          data: {
+            full_name: fullName,
+            phone,
+            date_of_birth: dateOfBirth,
+          },
+        },
+      });
+
+      if (authError || !authData.user) {
+        return res.status(400).json({
+          success: false,
+          message: authError?.message || 'Patient registration failed.',
+        });
+      }
+
+      // Wait briefly for trigger handle_new_auth_user to finalize app_users record
+      let appUser: any = null;
+      for (let i = 0; i < 5; i++) {
+        const { data } = await adminClient
+          .from('app_users')
+          .select('*')
+          .eq('id', authData.user.id)
+          .single();
+        if (data) {
+          appUser = data;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      }
+
+      const requiresEmailConfirmation = !authData.session && !authData.user.confirmed_at;
+      const patientId = appUser?.patient_id;
+
+      const message = requiresEmailConfirmation
+        ? `Registration successful! Your official Patient ID is ${patientId || 'assigned'}. A confirmation email has been sent. Please confirm your email address before signing in.`
+        : `Registration successful! Your official Patient ID is ${patientId || 'assigned'}. You can now sign in using your Patient ID or email.`;
+
+      return res.json({
+        success: true,
+        message,
+        requiresEmailConfirmation,
+        patientId,
+        user: {
+          id: authData.user.id,
+          name: fullName,
+          email: authData.user.email || email,
+          role: 'patient',
+          patient_id: patientId,
+        },
+      });
+    }
+
+    // B. Trusted Server-Side Privileged Provisioning (Doctor, Staff, Admin)
+    if (['doctor', 'staff', 'admin'].includes(role)) {
+      // 1. Rate Limiting Protection
+      const clientIp = String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown-client');
+      const rateLimit = checkRegistrationRateLimit(clientIp);
+      if (!rateLimit.allowed) {
+        return res.status(429).json({
+          success: false,
+          message: 'Too many registration attempts. Please try again after 15 minutes.',
+        });
+      }
+    }
+
+    if (role === 'doctor') {
+      if (!isInvitationCodeValid(hospitalInviteCode, getValidHospitalInviteCodes())) {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid registration credentials or authorization key.',
+        });
+      }
+
+      const { data: newUser, error: createError } = await adminClient.auth.admin.createUser({
+        email,
+        password,
+        email_confirm: true,
+        app_metadata: { server_provisioned: true },
+        user_metadata: { full_name: fullName, role: 'doctor' },
+      });
+
+      if (createError || !newUser.user) {
+        return res.status(400).json({
+          success: false,
+          message: 'Registration request could not be processed.',
+        });
+      }
+
+      let docRecord: any = null;
+      try {
+        const { data, error: docError } = await adminClient
+          .from('silver_doctors')
+          .insert({
+            user_id: newUser.user.id,
+            doctor_name: fullName,
+            specialty: specialization || 'General Internal Medicine',
+            email,
+            phone_number: phone,
+            qualification: medicalRegNumber ? `Reg: ${medicalRegNumber}` : 'MD',
+          })
+          .select()
+          .single();
+
+        if (docError) throw docError;
+        docRecord = data;
+
+        const { error: appUserError } = await adminClient.from('app_users').insert({
+          id: newUser.user.id,
+          doctor_id: docRecord.doctor_id,
+          email,
+          role: 'doctor',
+          full_name: fullName,
+          phone,
+          is_active: true,
+        });
+
+        if (appUserError) throw appUserError;
+      } catch (err: any) {
+        // Compensating transaction: roll back created auth user and silver record to prevent orphan
+        await adminClient.auth.admin.deleteUser(newUser.user.id);
+        if (docRecord?.doctor_id) {
+          await adminClient.from('silver_doctors').delete().eq('doctor_id', docRecord.doctor_id);
+        }
+        return res.status(500).json({
+          success: false,
+          message: `Doctor account provisioning failed. State rolled back: ${sanitizeError(err)}`,
+        });
+      }
+
+      return res.json({
+        success: true,
+        message: 'Doctor account provisioned successfully.',
+        user: { id: newUser.user.id, name: fullName, email, role: 'doctor', doctor_id: docRecord.doctor_id },
+      });
+    }
+
+    if (role === 'staff') {
+      if (!isInvitationCodeValid(hospitalInviteCode, getValidHospitalInviteCodes())) {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid registration credentials or authorization key.',
+        });
+      }
+
+      const { data: newUser, error: createError } = await adminClient.auth.admin.createUser({
+        email,
+        password,
+        email_confirm: true,
+        app_metadata: { server_provisioned: true },
+        user_metadata: { full_name: fullName, role: 'staff' },
+      });
+
+      if (createError || !newUser.user) {
+        return res.status(400).json({
+          success: false,
+          message: 'Registration request could not be processed.',
+        });
+      }
+
+      let stfRecord: any = null;
+      try {
+        const { data, error: stfError } = await adminClient
+          .from('silver_staff')
+          .insert({
+            user_id: newUser.user.id,
+            staff_name: fullName,
+            role: 'Clinical Support',
+            department: department || 'General Ward',
+            email,
+            contact_number: phone,
+          })
+          .select()
+          .single();
+
+        if (stfError) throw stfError;
+        stfRecord = data;
+
+        const { error: appUserError } = await adminClient.from('app_users').insert({
+          id: newUser.user.id,
+          staff_id: stfRecord.staff_id,
+          email,
+          role: 'staff',
+          full_name: fullName,
+          phone,
+          is_active: true,
+        });
+
+        if (appUserError) throw appUserError;
+      } catch (err: any) {
+        await adminClient.auth.admin.deleteUser(newUser.user.id);
+        if (stfRecord?.staff_id) {
+          await adminClient.from('silver_staff').delete().eq('staff_id', stfRecord.staff_id);
+        }
+        return res.status(500).json({
+          success: false,
+          message: `Staff account provisioning failed. State rolled back: ${sanitizeError(err)}`,
+        });
+      }
+
+      return res.json({
+        success: true,
+        message: 'Staff account provisioned successfully.',
+        user: { id: newUser.user.id, name: fullName, email, role: 'staff', staff_id: stfRecord.staff_id },
+      });
+    }
+
+    if (role === 'admin') {
+      if (!isInvitationCodeValid(adminInviteCode, getValidAdminInvitationCodes())) {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid registration credentials or authorization key.',
+        });
+      }
+
+      const { data: newUser, error: createError } = await adminClient.auth.admin.createUser({
+        email,
+        password,
+        email_confirm: true,
+        app_metadata: { server_provisioned: true },
+        user_metadata: { full_name: fullName, role: 'admin' },
+      });
+
+      if (createError || !newUser.user) {
+        return res.status(400).json({
+          success: false,
+          message: 'Registration request could not be processed.',
+        });
+      }
+
+      try {
+        const { error: appUserError } = await adminClient.from('app_users').insert({
+          id: newUser.user.id,
+          email,
+          role: 'admin',
+          full_name: fullName,
+          phone,
+          is_active: true,
+        });
+
+        if (appUserError) throw appUserError;
+      } catch (err: any) {
+        await adminClient.auth.admin.deleteUser(newUser.user.id);
+        return res.status(500).json({
+          success: false,
+          message: `Admin account provisioning failed. State rolled back: ${sanitizeError(err)}`,
+        });
+      }
+
+      return res.json({
+        success: true,
+        message: 'Administrative account provisioned successfully.',
+        user: { id: newUser.user.id, name: fullName, email, role: 'admin' },
+      });
+    }
+
+    return res.status(400).json({ success: false, message: 'Invalid role requested.' });
+  } catch (err: any) {
+    return res.status(500).json({
+      success: false,
+      message: `Registration processing error: ${sanitizeError(err)}`,
+    });
+  }
 });
 
-// 4. Forgot Password / OTP Flow
-app.post('/api/auth/forgot-password', async (_req: Request, res: Response) => {
+// 4. Password Recovery & Verification Endpoints
+app.post('/api/auth/forgot-password', async (req: Request, res: Response) => {
+  const { email } = req.body;
+  if (!email) {
+    return res.status(400).json({ success: false, message: 'Email address is required.' });
+  }
+
   if (!isDatabaseConnected) {
     return res.status(503).json({
       success: false,
@@ -428,10 +833,24 @@ app.post('/api/auth/forgot-password', async (_req: Request, res: Response) => {
       message: 'Database not configured. Connect Supabase to manage passwords.',
     });
   }
-  return res.status(400).json({ success: false, message: 'Password recovery unavailable.' });
+
+  const anonClient = getSupabaseAnon() || getSupabaseAdmin();
+  if (anonClient) {
+    await anonClient.auth.resetPasswordForEmail(email.trim().toLowerCase());
+  }
+
+  return res.json({
+    success: true,
+    message: 'If an account matches that address, password reset instructions have been sent.',
+  });
 });
 
-app.post('/api/auth/verify-code', async (_req: Request, res: Response) => {
+app.post('/api/auth/verify-code', async (req: Request, res: Response) => {
+  const { email, code } = req.body;
+  if (!email || !code) {
+    return res.status(400).json({ success: false, message: 'Email and verification code are required.' });
+  }
+
   if (!isDatabaseConnected) {
     return res.status(503).json({
       success: false,
@@ -439,10 +858,31 @@ app.post('/api/auth/verify-code', async (_req: Request, res: Response) => {
       message: 'Database not configured. Connect Supabase to verify codes.',
     });
   }
-  return res.status(400).json({ success: false, message: 'Code verification unavailable.' });
+
+  const anonClient = getSupabaseAnon() || getSupabaseAdmin();
+  if (!anonClient) {
+    return res.status(503).json({ success: false, message: 'Database client unavailable.' });
+  }
+
+  const { error } = await anonClient.auth.verifyOtp({
+    email: email.trim().toLowerCase(),
+    token: code.trim(),
+    type: 'recovery',
+  });
+
+  if (error) {
+    return res.status(400).json({ success: false, message: error.message });
+  }
+
+  return res.json({ success: true, message: 'Verification code confirmed.' });
 });
 
-app.post('/api/auth/reset-password', async (_req: Request, res: Response) => {
+app.post('/api/auth/reset-password', async (req: Request, res: Response) => {
+  const { email, newPassword } = req.body;
+  if (!email || !newPassword) {
+    return res.status(400).json({ success: false, message: 'Email and new password are required.' });
+  }
+
   if (!isDatabaseConnected) {
     return res.status(503).json({
       success: false,
@@ -450,18 +890,19 @@ app.post('/api/auth/reset-password', async (_req: Request, res: Response) => {
       message: 'Database not configured. Connect Supabase to reset passwords.',
     });
   }
-  return res.status(400).json({ success: false, message: 'Password reset unavailable.' });
+
+  return res.status(400).json({
+    success: false,
+    message: 'Please complete password reset via the secure email verification link.',
+  });
 });
 
 // 5. Change Password Endpoint
 app.post('/api/auth/patient/change-password', async (req: Request, res: Response) => {
-  const { patientId, currentPassword, newPassword } = req.body;
+  const { patientId, newPassword, tempToken } = req.body;
 
-  if (!patientId || !currentPassword || !newPassword) {
-    return res.status(400).json({
-      success: false,
-      message: 'Patient ID, current password, and new password are required.',
-    });
+  if (!newPassword) {
+    return res.status(400).json({ success: false, message: 'New password is required.' });
   }
 
   if (!isDatabaseConnected) {
@@ -472,73 +913,257 @@ app.post('/api/auth/patient/change-password', async (req: Request, res: Response
     });
   }
 
-  return res.status(400).json({
-    success: false,
-    message: 'Password change service unavailable.',
-  });
+  const adminClient = getSupabaseAdmin();
+  if (!adminClient) {
+    return res.status(503).json({ success: false, message: 'Database client unavailable.' });
+  }
+
+  try {
+    // If tempToken is provided from initial login
+    let userId: string | null = null;
+    if (tempToken) {
+      const { data: { user } } = await adminClient.auth.getUser(tempToken);
+      if (user) userId = user.id;
+    }
+
+    if (!userId && patientId) {
+      const { data: appUser } = await adminClient
+        .from('app_users')
+        .select('id')
+        .eq('patient_id', patientId)
+        .single();
+      if (appUser) userId = appUser.id;
+    }
+
+    if (!userId) {
+      return res.status(400).json({ success: false, message: 'User verification failed.' });
+    }
+
+    // Update password via Supabase Auth Admin
+    const { error: updateError } = await adminClient.auth.admin.updateUserById(userId, {
+      password: newPassword,
+    });
+
+    if (updateError) {
+      return res.status(400).json({ success: false, message: updateError.message });
+    }
+
+    // Clear must_change_password flag in public.app_users
+    await adminClient
+      .from('app_users')
+      .update({ must_change_password: false })
+      .eq('id', userId);
+
+    return res.json({
+      success: true,
+      message: 'Password updated successfully.',
+    });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: 'Password update processing error.' });
+  }
 });
 
 // 6. Token Verification Endpoint
-app.get('/api/auth/verify', authenticatePatientToken, (req: Request, res: Response) => {
-  const session = (req as any).authenticatedSession;
+app.get('/api/auth/verify', authenticateToken, (req: Request, res: Response) => {
+  const appUser = (req as any).appUser;
   return res.json({
     success: true,
-    patientId: session.patient_id,
-    expiresAt: session.expires_at,
+    patientId: appUser.patient_id,
+    user: {
+      id: appUser.id,
+      email: appUser.email,
+      role: appUser.role,
+      name: appUser.full_name,
+    },
   });
 });
 
 // 7. Logout Endpoint
-app.post('/api/auth/logout', (req: Request, res: Response) => {
+app.post('/api/auth/logout', async (req: Request, res: Response) => {
   const authHeader = req.headers['authorization'];
   if (authHeader && authHeader.startsWith('Bearer ')) {
     const token = authHeader.split(' ')[1];
-    ACTIVE_SESSIONS.delete(token);
+    const userClient = getSupabaseUserClient(token);
+    if (userClient) {
+      try {
+        await userClient.auth.signOut();
+      } catch {
+        // ignore signout errors
+      }
+    }
   }
   return res.json({ success: true, message: 'Logged out successfully.' });
 });
 
 // 8. Patient Dashboard Endpoint
-app.get('/api/patient/dashboard', authenticatePatientToken, async (req: Request, res: Response) => {
+app.get('/api/patient/dashboard', authenticateToken, requirePatientRole, async (req: Request, res: Response) => {
   const patientId = (req as any).authenticatedPatientId;
+  const adminClient = getSupabaseAdmin();
 
-  // Clean empty state when database is not connected or patient has no records
-  const patient = formatPatientProfile({ patient_id: patientId });
-
-  return res.json({
-    success: true,
-    data: {
-      patient,
-      upcomingAppointments: [],
-      completedEncounters: [],
-      labReports: [],
-      prescriptions: [],
-      feedbackList: [],
-      notifications: [],
-      backendStatus: {
-        connected: isDatabaseConnected,
-        engine: isDatabaseConnected ? 'Supabase PostgreSQL' : 'Supabase PostgreSQL (Pending Configuration)',
-        schema: 'PostgreSQL Schema (Ready for Supabase)',
-        notice: isDatabaseConnected ? 'Live Database' : 'Database not connected yet. Showing clean empty state.',
-      },
-    },
-  });
-});
-
-// 9. Submit Patient Feedback
-app.post('/api/patient/feedback', authenticatePatientToken, async (req: Request, res: Response) => {
-  if (!isDatabaseConnected) {
+  if (!adminClient) {
     return res.status(503).json({
       success: false,
-      errorType: 'DATABASE_NOT_CONFIGURED',
-      message: 'Database not configured. Connect Supabase to submit feedback.',
+      message: 'Database connection unavailable.',
     });
   }
 
-  return res.status(400).json({
-    success: false,
-    message: 'Feedback service currently unavailable.',
-  });
+  try {
+    // 1. Fetch Patient Demographics
+    const { data: patientRecord } = await adminClient
+      .from('silver_patients')
+      .select('*')
+      .eq('patient_id', patientId)
+      .single();
+
+    const patient = formatPatientProfile(patientRecord || { patient_id: patientId });
+
+    // 2. Fetch Appointments
+    const { data: appointmentsRaw } = await adminClient
+      .from('silver_appointments')
+      .select('*')
+      .eq('patient_id', patientId)
+      .order('appointment_date', { ascending: true });
+
+    // Fetch doctors referenced in appointments to enrich display
+    const doctorIds = Array.from(new Set((appointmentsRaw || []).map((a) => a.doctor_id)));
+    let doctorMap: Record<string, any> = {};
+    if (doctorIds.length > 0) {
+      const { data: doctors } = await adminClient
+        .from('silver_doctors')
+        .select('*')
+        .in('doctor_id', doctorIds);
+      (doctors || []).forEach((d) => {
+        doctorMap[d.doctor_id] = d;
+      });
+    }
+
+    const upcomingAppointments: AppointmentRecord[] = (appointmentsRaw || []).map((a) => {
+      const doc = doctorMap[a.doctor_id];
+      return {
+        appointment_id: a.appointment_id,
+        patient_id: a.patient_id,
+        doctor_id: a.doctor_id,
+        doctor_name: doc?.doctor_name || 'Assigned Physician',
+        specialty: doc?.specialty || 'General Practice',
+        hospital_branch: doc?.hospital_branch || 'Main Campus',
+        appointment_date: a.appointment_date,
+        appointment_time: a.appointment_time,
+        status: a.status,
+        consultation_type: a.consultation_type || 'In-Person',
+        consultation_duration_minutes: a.consultation_duration_minutes || 30,
+        consultation_fee: Number(a.consultation_fee) || 0,
+        payment_status: a.payment_status || 'Pending',
+        reason: a.reason || '',
+        symptoms: a.symptoms || '',
+        notes: a.notes || '',
+      };
+    });
+
+    // 3. Fetch Encounters
+    const { data: encountersRaw } = await adminClient
+      .from('silver_encounters')
+      .select('*')
+      .eq('patient_id', patientId)
+      .order('encounter_date', { ascending: false });
+
+    // 4. Fetch Prescriptions
+    const { data: prescriptionsRaw } = await adminClient
+      .from('silver_prescriptions')
+      .select('*')
+      .eq('patient_id', patientId)
+      .order('prescribed_date', { ascending: false });
+
+    // 5. Fetch Lab Results
+    const { data: labsRaw } = await adminClient
+      .from('silver_lab_results')
+      .select('*')
+      .eq('patient_id', patientId)
+      .order('test_date', { ascending: false });
+
+    // 6. Fetch Feedback
+    const { data: feedbackRaw } = await adminClient
+      .from('silver_feedback')
+      .select('*')
+      .eq('patient_id', patientId)
+      .order('feedback_date', { ascending: false });
+
+    return res.json({
+      success: true,
+      data: {
+        patient,
+        upcomingAppointments,
+        completedEncounters: encountersRaw || [],
+        labReports: labsRaw || [],
+        prescriptions: prescriptionsRaw || [],
+        feedbackList: feedbackRaw || [],
+        notifications: [],
+        backendStatus: {
+          connected: true,
+          engine: 'Supabase PostgreSQL',
+          schema: 'Canonical Silver Schema',
+          notice: 'Live Database',
+        },
+      },
+    });
+  } catch (err: any) {
+    return res.status(500).json({
+      success: false,
+      message: `Failed to load patient dashboard: ${sanitizeError(err)}`,
+    });
+  }
+});
+
+// 9. Submit Patient Feedback
+app.post('/api/patient/feedback', authenticateToken, requirePatientRole, async (req: Request, res: Response) => {
+  const patientId = (req as any).authenticatedPatientId;
+  const { doctorId, encounterId, rating, waitRating, cleanlinessRating, staffRating, comments } = req.body;
+
+  if (!doctorId || !rating) {
+    return res.status(400).json({
+      success: false,
+      message: 'Doctor selection and overall rating are required.',
+    });
+  }
+
+  const client = getSupabaseAdmin();
+  if (!client) {
+    return res.status(503).json({
+      success: false,
+      message: 'Database unavailable.',
+    });
+  }
+
+  try {
+    const { data, error } = await client
+      .from('silver_feedback')
+      .insert({
+        patient_id: patientId,
+        doctor_id: doctorId,
+        encounter_id: encounterId || null,
+        rating: Math.min(5, Math.max(1, Number(rating))),
+        wait_time_rating: waitRating ? Math.min(5, Math.max(1, Number(waitRating))) : null,
+        cleanliness_rating: cleanlinessRating ? Math.min(5, Math.max(1, Number(cleanlinessRating))) : null,
+        staff_behavior_rating: staffRating ? Math.min(5, Math.max(1, Number(staffRating))) : null,
+        comments: comments || null,
+      })
+      .select()
+      .single();
+
+    if (error) {
+      return res.status(400).json({ success: false, message: error.message });
+    }
+
+    return res.json({
+      success: true,
+      message: 'Patient feedback registered successfully.',
+      feedback: data,
+    });
+  } catch (err: any) {
+    return res.status(500).json({
+      success: false,
+      message: `Failed to submit feedback: ${sanitizeError(err)}`,
+    });
+  }
 });
 
 // 10. Booking Wizard: Branches
@@ -557,7 +1182,7 @@ app.get('/api/booking/specialties', (_req: Request, res: Response) => {
   });
 });
 
-// 12. Booking Wizard: Doctors (filtered by branch and specialty)
+// 12. Booking Wizard: Doctors (Filtered by branch and specialty)
 app.get('/api/booking/doctors', async (req: Request, res: Response) => {
   if (!isDatabaseConnected) {
     return res.json({
@@ -567,10 +1192,44 @@ app.get('/api/booking/doctors', async (req: Request, res: Response) => {
     });
   }
 
-  return res.json({
-    success: true,
-    doctors: [],
-  });
+  const client = getSupabaseAdmin();
+  if (!client) {
+    return res.json({ success: true, doctors: [] });
+  }
+
+  try {
+    let query = client.from('silver_doctors').select('*').eq('is_active', true);
+
+    const { branch, specialty } = req.query;
+    if (branch) query = query.eq('hospital_branch', String(branch));
+    if (specialty) query = query.eq('specialty', String(specialty));
+
+    const { data, error } = await query;
+    if (error) {
+      return res.status(500).json({ success: false, message: error.message });
+    }
+
+    const doctors: DoctorInfo[] = (data || []).map((d) => ({
+      doctor_id: d.doctor_id,
+      doctor_name: d.doctor_name,
+      name: d.doctor_name || 'Dr. Physician',
+      specialty: d.specialty,
+      qualification: d.qualification || 'MD',
+      experience_years: Number(d.experience_years) || 0,
+      hospital_branch: d.hospital_branch || 'Main Campus',
+      consultation_fee: Number(d.consultation_fee) || 0,
+      availability_schedule: d.availability_schedule || '',
+      rating: Number(d.rating) || 5.0,
+      is_active: d.is_active,
+    }));
+
+    return res.json({
+      success: true,
+      doctors,
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, message: sanitizeError(err) });
+  }
 });
 
 // 13. Booking Wizard: Doctor Availability Slots
@@ -593,51 +1252,158 @@ app.get('/api/booking/availability', async (req: Request, res: Response) => {
     });
   }
 
-  return res.json({
-    success: true,
-    date: String(date),
-    doctorId: String(doctorId),
-    slots: [],
-  });
+  const client = getSupabaseAdmin();
+  if (!client) {
+    return res.json({ success: true, date: String(date), doctorId: String(doctorId), slots: [] });
+  }
+
+  try {
+    const { data: booked } = await client
+      .from('silver_appointments')
+      .select('appointment_time')
+      .eq('doctor_id', String(doctorId))
+      .eq('appointment_date', String(date))
+      .in('status', ['Scheduled', 'Confirmed']);
+
+    const bookedTimes = new Set((booked || []).map((b) => b.appointment_time?.slice(0, 5)));
+
+    // Standard clinic schedule: 09:00 to 17:00 at 30-min increments
+    const standardSlots = [
+      '09:00', '09:30', '10:00', '10:30', '11:00', '11:30',
+      '14:00', '14:30', '15:00', '15:30', '16:00', '16:30'
+    ];
+
+    const slots = standardSlots.map((time) => ({
+      time,
+      available: !bookedTimes.has(time),
+    }));
+
+    return res.json({
+      success: true,
+      date: String(date),
+      doctorId: String(doctorId),
+      slots,
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, message: sanitizeError(err) });
+  }
 });
 
 // 14. Booking Wizard: Create Appointment
-app.post('/api/booking/create', authenticatePatientToken, async (req: Request, res: Response) => {
-  if (!isDatabaseConnected) {
-    return res.status(503).json({
+app.post('/api/booking/create', authenticateToken, requirePatientRole, async (req: Request, res: Response) => {
+  const patientId = (req as any).authenticatedPatientId;
+  const { doctorId, appointmentDate, appointmentTime, consultationType, reason, symptoms, notes } = req.body;
+
+  if (!doctorId || !appointmentDate || !appointmentTime) {
+    return res.status(400).json({
       success: false,
-      errorType: 'DATABASE_NOT_CONFIGURED',
-      message: 'Database not configured. Connect Supabase to schedule appointments.',
+      message: 'Doctor ID, appointment date, and appointment time are required.',
     });
   }
 
-  return res.status(400).json({
-    success: false,
-    message: 'Appointment creation unavailable.',
-  });
+  const client = getSupabaseAdmin();
+  if (!client) {
+    return res.status(503).json({
+      success: false,
+      message: 'Database unavailable.',
+    });
+  }
+
+  try {
+    const { data, error } = await client
+      .from('silver_appointments')
+      .insert({
+        patient_id: patientId,
+        doctor_id: doctorId,
+        appointment_date: appointmentDate,
+        appointment_time: appointmentTime,
+        consultation_type: consultationType || 'In-Person',
+        reason: reason || null,
+        symptoms: symptoms || null,
+        notes: notes || null,
+        status: 'Scheduled',
+      })
+      .select()
+      .single();
+
+    if (error) {
+      return res.status(400).json({ success: false, message: error.message });
+    }
+
+    return res.json({
+      success: true,
+      message: 'Appointment scheduled successfully.',
+      appointment: data,
+    });
+  } catch (err: any) {
+    return res.status(500).json({
+      success: false,
+      message: `Appointment creation error: ${sanitizeError(err)}`,
+    });
+  }
 });
 
 // 15. Cancel Appointment
-app.post('/api/booking/cancel', authenticatePatientToken, async (req: Request, res: Response) => {
-  if (!isDatabaseConnected) {
-    return res.status(503).json({
+app.post('/api/booking/cancel', authenticateToken, requirePatientRole, async (req: Request, res: Response) => {
+  const patientId = (req as any).authenticatedPatientId;
+  const { appointmentId, reason } = req.body;
+
+  if (!appointmentId) {
+    return res.status(400).json({
       success: false,
-      errorType: 'DATABASE_NOT_CONFIGURED',
-      message: 'Database not configured. Connect Supabase to cancel appointments.',
+      message: 'Appointment ID is required.',
     });
   }
 
-  return res.status(400).json({
-    success: false,
-    message: 'Appointment cancellation unavailable.',
-  });
+  const client = getSupabaseAdmin();
+  if (!client) {
+    return res.status(503).json({
+      success: false,
+      message: 'Database unavailable.',
+    });
+  }
+
+  try {
+    const { data, error } = await client
+      .from('silver_appointments')
+      .update({
+        status: 'Cancelled',
+        cancellation_reason: reason || 'Cancelled by patient',
+      })
+      .eq('appointment_id', appointmentId)
+      .eq('patient_id', patientId)
+      .in('status', ['Scheduled', 'Confirmed'])
+      .select()
+      .single();
+
+    if (error || !data) {
+      return res.status(400).json({
+        success: false,
+        message: error?.message || 'Appointment not found or not in cancellable state.',
+      });
+    }
+
+    return res.json({
+      success: true,
+      message: 'Appointment cancelled successfully.',
+      appointment: data,
+    });
+  } catch (err: any) {
+    return res.status(500).json({
+      success: false,
+      message: `Cancellation error: ${sanitizeError(err)}`,
+    });
+  }
 });
 
-// ==========================================
+// ============================================================================
 // STATIC ASSETS & VITE INTEGRATION
-// ==========================================
+// ============================================================================
 
 async function startServer() {
+  // Probe initial Supabase connection at server startup
+  await refreshDatabaseConnection();
+
   if (process.env.NODE_ENV === 'production') {
     app.use(express.static(path.resolve('dist')));
     app.get('*', (_req: Request, res: Response) => {
@@ -656,7 +1422,11 @@ async function startServer() {
 
   app.listen(Number(PORT), '0.0.0.0', () => {
     console.log(`[MediAI] Clean hospital application server running on port ${PORT}`);
-    console.log(`[MediAI] Status: Ready for Supabase PostgreSQL database integration.`);
+    if (isDatabaseConnected) {
+      console.log(`[MediAI] Status: Live Supabase PostgreSQL connection established.`);
+    } else {
+      console.log(`[MediAI] Status: Ready for Supabase PostgreSQL database integration.`);
+    }
   });
 }
 

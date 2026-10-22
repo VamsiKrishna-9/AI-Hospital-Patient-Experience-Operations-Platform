@@ -44,18 +44,6 @@ export const ROLES_CONFIG: Record<HospitalRole, RoleConfig> = {
   },
 };
 
-export const VALID_ADMIN_INVITATION_CODES = [
-  'MEDIAI-SUPERADMIN-2026',
-  'HOSPITAL-GOVERNANCE-EXEC-99',
-  'CHIEF-MED-DIRECTOR-4401',
-];
-
-export const VALID_HOSPITAL_INVITE_CODES = [
-  'MED-CLINIC-7721',
-  'STJUDE-HOSPITAL-2026',
-  'NEURO-SURG-8802',
-];
-
 export const MEDICAL_SPECIALIZATIONS = [
   'Cardiology & Vascular Medicine',
   'Neurology & Neurosciences',

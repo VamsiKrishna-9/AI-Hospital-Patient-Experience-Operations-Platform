@@ -223,3 +223,53 @@ export interface BookingWizardState {
   timeSlot: string;
   reason: string;
 }
+
+// Authoritative Schema: silver_staff
+// staff_id, user_id, staff_name, role, department, hospital_branch, shift, contact_number, email, is_active
+export interface StaffInfo {
+  staff_id: string;
+  user_id?: string | null;
+  staff_name: string;
+  role: string;
+  department: string;
+  hospital_branch?: string | null;
+  shift?: string | null;
+  contact_number?: string | null;
+  email?: string | null;
+  is_active: boolean;
+  created_at?: string;
+  updated_at?: string;
+}
+
+// Authoritative Schema: silver_staff_assignment (EXACTLY 14 columns in canonical order)
+// 1. assignment_id
+// 2. staff_id
+// 3. patient_id
+// 4. doctor_id
+// 5. encounter_id
+// 6. appointment_id
+// 7. assignment_type
+// 8. assignment_date
+// 9. start_time
+// 10. end_time
+// 11. priority
+// 12. assignment_status
+// 13. assigned_by
+// 14. notes
+export interface StaffAssignmentRecord {
+  assignment_id: string;
+  staff_id: string;
+  patient_id?: string | null;
+  doctor_id?: string | null;
+  encounter_id?: string | null;
+  appointment_id?: string | null;
+  assignment_type: string;
+  assignment_date: string;
+  start_time?: string | null;
+  end_time?: string | null;
+  priority?: 'Low' | 'Normal' | 'High' | 'Urgent' | 'Critical' | string;
+  assignment_status: 'Scheduled' | 'Active' | 'In Progress' | 'Completed' | 'Cancelled' | 'Reassigned' | string;
+  assigned_by?: string | null;
+  notes?: string | null;
+}
+

@@ -95,7 +95,10 @@ export interface AuthResponse {
     name: string;
     email: string;
     role: HospitalRole;
+    patient_id?: string;
   };
+  patientId?: string;
+  requiresEmailConfirmation?: boolean;
   token?: string;
   errors?: Record<string, string>;
   targetEndpoint?: string;
@@ -175,3 +178,37 @@ export const BRONZE_TABLES = [
   'bronze_staff_assignment',
   'bronze_appointments'
 ] as const;
+
+/**
+ * Authoritative Supabase Silver Identity Mapping: app_users
+ * Linked 1:1 with auth.users(id) as primary key.
+ */
+export interface AppUser {
+  id: string; // Linked directly to auth.users(id)
+  patient_id?: string | null;
+  doctor_id?: string | null;
+  staff_id?: string | null;
+  must_change_password: boolean;
+  email: string;
+  role: HospitalRole;
+  full_name?: string | null;
+  phone?: string | null;
+  is_active: boolean;
+  last_login?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export const SILVER_TABLES = [
+  'app_users',
+  'silver_patients',
+  'silver_doctors',
+  'silver_staff',
+  'silver_appointments',
+  'silver_encounters',
+  'silver_prescriptions',
+  'silver_lab_results',
+  'silver_feedback',
+  'silver_staff_assignment',
+] as const;
+

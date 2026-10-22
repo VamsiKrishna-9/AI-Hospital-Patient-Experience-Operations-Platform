@@ -33,8 +33,6 @@ import {
   ROLES_CONFIG,
   MEDICAL_SPECIALIZATIONS,
   HOSPITAL_DEPARTMENTS,
-  VALID_ADMIN_INVITATION_CODES,
-  VALID_HOSPITAL_INVITE_CODES,
 } from '../data/roles';
 import { RoleSelector } from './RoleSelector';
 import { PasswordStrengthIndicator } from './PasswordStrengthIndicator';
@@ -294,16 +292,45 @@ export const SignupScreen: React.FC<SignupScreenProps> = ({
 
       {/* Success Feedback Banner */}
       {authResult && authResult.success && (
-        <div className="mb-5 p-3.5 rounded-xl bg-teal-950/60 border border-teal-500/40 text-xs text-teal-200 animate-in fade-in duration-200">
-          <div className="flex items-start gap-2.5">
-            <CheckCircle2 size={16} className="text-teal-400 shrink-0 mt-0.5" />
-            <div className="space-y-0.5">
-              <p className="font-semibold text-teal-100">
-                Account Created — {ROLES_CONFIG[selectedRole].title} Portal
-              </p>
-              <p className="text-[11px] text-teal-300/90 leading-relaxed">
-                Welcome to MediAI. Your registration for {fullName || 'your account'} has been submitted.
-              </p>
+        <div className="mb-5 p-4 rounded-xl bg-teal-950/70 border border-teal-500/50 text-xs text-teal-200 animate-in fade-in duration-200">
+          <div className="flex items-start gap-3">
+            <CheckCircle2 size={18} className="text-teal-400 shrink-0 mt-0.5" />
+            <div className="space-y-2 w-full">
+              <div>
+                <p className="font-semibold text-teal-100 text-sm">
+                  Registration Complete — {ROLES_CONFIG[selectedRole].title} Portal
+                </p>
+                <p className="text-[12px] text-teal-300/90 leading-relaxed mt-0.5">
+                  {authResult.message || `Welcome to MediAI. Your registration for ${fullName || 'your account'} has been submitted.`}
+                </p>
+              </div>
+
+              {(authResult.patientId || authResult.user?.patient_id) && (
+                <div className="p-2.5 rounded-lg bg-slate-900/80 border border-teal-500/30 flex items-center justify-between">
+                  <div>
+                    <span className="text-[10px] text-slate-400 uppercase tracking-wider block font-medium">Your Official Patient ID</span>
+                    <span className="text-sm font-mono font-bold text-teal-300">{authResult.patientId || authResult.user?.patient_id}</span>
+                  </div>
+                  <span className="text-[11px] text-slate-400">Save for login</span>
+                </div>
+              )}
+
+              {authResult.requiresEmailConfirmation ? (
+                <div className="p-2.5 rounded-lg bg-amber-950/40 border border-amber-500/30 text-amber-200 text-[11px]">
+                  <strong>Action Required:</strong> A verification link has been sent to your email. Please verify your email before logging in.
+                </div>
+              ) : (
+                <div className="pt-1">
+                  <button
+                    type="button"
+                    onClick={() => onNavigate('login', selectedRole)}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-teal-400 text-slate-950 font-semibold text-xs hover:bg-teal-300 transition-colors cursor-pointer"
+                  >
+                    <span>Proceed to Sign In</span>
+                    <ArrowRight size={13} />
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -589,7 +616,7 @@ export const SignupScreen: React.FC<SignupScreenProps> = ({
                 value={adminInviteCode}
                 onChange={(e) => setAdminInviteCode(e.target.value)}
                 disabled={isLoading}
-                placeholder="MEDIAI-SUPERADMIN-2026"
+                placeholder="Enter institutional governance authorization key"
                 className="w-full pl-10 pr-4 py-2 rounded-xl bg-slate-900/90 border border-amber-600/50 text-amber-100 placeholder-slate-600 text-xs font-mono tracking-wider uppercase focus:outline-none focus:border-amber-400 focus:ring-1 focus:ring-amber-400"
               />
             </div>
