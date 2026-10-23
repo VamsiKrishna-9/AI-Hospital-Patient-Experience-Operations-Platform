@@ -78,7 +78,7 @@ export function checkRegistrationRateLimit(key: string): { allowed: boolean; rem
   return { allowed: true, remaining: MAX_ATTEMPTS - bucket.count };
 }
 
-// Cleanup expired rate limit buckets periodically
+// Cleanup expired rate limit buckets periodically (unref so timer does not block process exit)
 setInterval(() => {
   const now = Date.now();
   for (const [key, bucket] of REGISTRATION_RATE_LIMITS.entries()) {
@@ -86,4 +86,4 @@ setInterval(() => {
       REGISTRATION_RATE_LIMITS.delete(key);
     }
   }
-}, 5 * 60 * 1000);
+}, 5 * 60 * 1000).unref();

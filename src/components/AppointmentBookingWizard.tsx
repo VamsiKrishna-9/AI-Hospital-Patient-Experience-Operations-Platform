@@ -189,6 +189,8 @@ export const AppointmentBookingWizard: React.FC<AppointmentBookingWizardProps> =
       const res = await patientService.bookAppointment({
         doctorId: wizardState.doctor.doctor_id,
         branchId: wizardState.branchId,
+        appointmentDate: wizardState.date,
+        appointmentTime: wizardState.timeSlot,
         date: wizardState.date,
         timeSlot: wizardState.timeSlot,
         reason: wizardState.reason || undefined,
