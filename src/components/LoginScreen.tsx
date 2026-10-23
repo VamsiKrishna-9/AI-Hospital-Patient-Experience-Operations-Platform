@@ -4,7 +4,17 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { Eye, EyeOff, Lock, Mail, IdCard, ArrowRight, Loader2, AlertCircle, CheckCircle2 } from 'lucide-react';
+import {
+  Eye,
+  EyeOff,
+  Lock,
+  Mail,
+  IdCard,
+  ArrowRight,
+  Loader2,
+  AlertCircle,
+  CheckCircle2,
+} from 'lucide-react';
 import { HospitalRole, LoginFormData, ScreenState, AuthResponse } from '../types/auth';
 import { ROLES_CONFIG } from '../data/roles';
 import { RoleSelector } from './RoleSelector';
@@ -27,8 +37,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
   selectedRole,
   onRoleChange,
 }) => {
-  // Login fields start empty
-  const [identifier, setIdentifier] = useState(''); // Patient ID or Email
+  const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [rememberMe, setRememberMe] = useState(false);
@@ -38,15 +47,15 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
   const [verificationNotice, setVerificationNotice] = useState<string | null>(null);
   const [authResult, setAuthResult] = useState<AuthResponse | null>(null);
 
-  // Check remembered identity and handle email verification redirect on mount
   useEffect(() => {
-    // 1. Inspect URL hash or search params for Supabase email confirmation callback
     if (typeof window !== 'undefined') {
       const hash = window.location.hash;
       const search = window.location.search;
 
       if (hash || search) {
-        const hashParams = new URLSearchParams(hash.startsWith('#') ? hash.substring(1) : hash);
+        const hashParams = new URLSearchParams(
+          hash.startsWith('#') ? hash.substring(1) : hash
+        );
         const searchParams = new URLSearchParams(search);
 
         const isSignupConfirmation =
@@ -60,10 +69,9 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
 
         if (isSignupConfirmation) {
           setVerificationNotice(
-            'Email verified successfully! Your account is active. Please enter your Patient ID and password to sign in.'
+            'Email verified successfully! Your account is active. Please sign in.'
           );
           onRoleChange('patient');
-          // Sanitize URL: clear tokens from browser address bar and history to prevent credential exposure
           window.history.replaceState(null, '', window.location.pathname);
         } else if (errorDesc) {
           setError(
@@ -75,12 +83,9 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
       }
     }
 
-    // 2. Check remembered identity
     const remembered = authService.getRememberedIdentity();
     if (remembered) {
       if (remembered.role === 'patient') {
-        // Patient usernames are Patient IDs, not email addresses.
-        // If an old or invalid email was stored, clear it to avoid populating an email.
         if (remembered.email && !remembered.email.includes('@')) {
           setIdentifier(remembered.email.toUpperCase());
           onRoleChange('patient');
@@ -102,16 +107,12 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
     setError(null);
     setAuthResult(null);
 
-    // If switching to patient, clear any email address previously in the field
     if (newRole === 'patient') {
       if (identifier.includes('@')) {
         setIdentifier('');
       }
-    } else {
-      // If switching to clinical/staff/admin and field has a patient ID, clear it
-      if (/^P\d+$/i.test(identifier.trim())) {
-        setIdentifier('');
-      }
+    } else if (/^P\d+$/i.test(identifier.trim())) {
+      setIdentifier('');
     }
   };
 
@@ -120,25 +121,36 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
     setError(null);
     setAuthResult(null);
 
-    // --- PATIENT ROLE AUTHENTICATION ---
+    const normalizedIdentifier = identifier.trim();
+
+    if (!normalizedIdentifier) {
+      setError(
+        selectedRole === 'patient'
+          ? 'Please enter your Patient ID.'
+          : 'Please enter your official email address.'
+      );
+      return;
+    }
+
+    // Patient uses dedicated patient login flow
     if (selectedRole === 'patient') {
-      const cleanPatientId = identifier.trim().toUpperCase();
-      if (!cleanPatientId) {
-        setError('Please enter your Patient ID.');
-        return;
-      }
+      const cleanPatientId = normalizedIdentifier.toUpperCase();
+
       if (cleanPatientId.includes('@')) {
         setError('Please enter your Patient ID username, not an email address.');
         return;
       }
+
       if (!password) {
         setError('Please enter your patient portal password.');
         return;
       }
 
       setIsLoading(true);
+
       try {
         const response = await patientService.login(cleanPatientId, password);
+
         if (response.success) {
           if (rememberMe) {
             authService.saveRememberedIdentity('patient', cleanPatientId);
@@ -146,7 +158,6 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
             authService.clearRememberedIdentity();
           }
 
-          // Check if security policy requires setting a new password first
           if (response.mustChangePassword) {
             onNavigate('change-password', 'patient', {
               patientId: response.patientId || cleanPatientId,
@@ -155,12 +166,11 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
             return;
           }
 
-          // Direct navigation into Patient Dashboard
           onNavigate('patient-dashboard');
           return;
-        } else {
-          setError(response.message || 'Invalid Patient ID or password.');
         }
+
+        setError(response.message || 'Invalid Patient ID or password.');
       } catch {
         setError('An unexpected error occurred during patient authentication.');
       } finally {
@@ -169,19 +179,17 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
       return;
     }
 
-    // --- CLINICAL / STAFF / ADMIN AUTHENTICATION ---
-    if (!identifier.trim()) {
-      setError('Please enter your official email address.');
-      return;
-    }
-    if (!isValidEmail(identifier)) {
+    // Common form for all non-patient roles
+    if (!isValidEmail(normalizedIdentifier)) {
       setError('Please provide a valid email format (e.g. name@hospital.org).');
       return;
     }
+
     if (!password) {
       setError('Please enter your password.');
       return;
     }
+
     if (password.length < 6) {
       setError('Password must contain at least 6 characters.');
       return;
@@ -192,7 +200,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
     try {
       const payload: LoginFormData = {
         role: selectedRole,
-        email: identifier.trim(),
+        email: normalizedIdentifier,
         password,
         rememberMe,
       };
@@ -214,7 +222,6 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
 
   return (
     <div className="flex flex-col justify-center min-h-full py-8 px-6 sm:px-10 lg:px-14 max-w-xl mx-auto w-full">
-      {/* Welcome Heading */}
       <div className="mb-6 space-y-1.5">
         <span className="text-xs font-semibold text-teal-400 tracking-wider uppercase">
           {isPatient ? 'Patient Care Portal' : 'Hospital Operations Portal'}
@@ -229,7 +236,6 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
         </p>
       </div>
 
-      {/* Role Selection Matrix */}
       <div className="mb-6">
         <RoleSelector
           selectedRole={selectedRole}
@@ -239,7 +245,6 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
         />
       </div>
 
-      {/* Verification Success Notice Banner */}
       {verificationNotice && (
         <div
           role="status"
@@ -250,7 +255,6 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
         </div>
       )}
 
-      {/* Error Banner */}
       {error && (
         <div
           role="alert"
@@ -261,18 +265,13 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
         </div>
       )}
 
-      {/* Form */}
       <form onSubmit={handleSubmit} className="space-y-4" noValidate>
-        {/* Identifier Field (Patient ID vs Email) */}
         <div>
-          <label
-            htmlFor="login-identifier"
-            className="block text-xs font-medium text-slate-300 mb-1.5"
-          >
+          <label htmlFor="login-identifier" className="block text-xs font-medium text-slate-300 mb-1.5">
             {isPatient ? (
               <span className="flex items-center justify-between">
-                <span>Patient ID (Username)</span>
-                <span className="text-[10px] text-teal-400 font-mono">Patient Portal ID</span>
+                <span>Patient ID</span>
+                <span className="text-[10px] text-teal-400 font-mono">Username</span>
               </span>
             ) : selectedRole === 'admin' ? (
               'Institutional Administrator Email'
@@ -280,6 +279,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
               `${ROLES_CONFIG[selectedRole].title} Email Address`
             )}
           </label>
+
           <div className="relative">
             <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-500">
               {isPatient ? <IdCard size={16} /> : <Mail size={16} />}
@@ -295,11 +295,12 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
               }}
               disabled={isLoading}
               placeholder={isPatient ? 'Enter your Patient ID' : 'name@example.com'}
-              className={`w-full pl-10 pr-4 py-2.5 rounded-xl bg-slate-900/90 border border-slate-800 text-white placeholder-slate-500 text-sm focus:outline-none focus:border-teal-500 focus:ring-1 focus:ring-teal-500 transition-colors ${
+              className={`w-full pl-10 pr-4 py-2.5 rounded-xl bg-slate-900/90 border border-slate-800 text-white placeholder-slate-500 text-sm focus:outline-none focus:border-teal-500 focus:ring-1 focus:ring-teal-500/40 ${
                 isPatient ? 'font-mono tracking-wider' : ''
               }`}
             />
           </div>
+
           {isPatient && identifier.includes('@') && (
             <p className="mt-1.5 text-[11px] text-amber-400 flex items-center gap-1 font-medium animate-in fade-in duration-150">
               <AlertCircle size={12} className="shrink-0" />
@@ -308,13 +309,9 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
           )}
         </div>
 
-        {/* Password Field */}
         <div>
           <div className="flex items-center justify-between mb-1.5">
-            <label
-              htmlFor="login-password"
-              className="block text-xs font-medium text-slate-300"
-            >
+            <label htmlFor="login-password" className="block text-xs font-medium text-slate-300">
               Password
             </label>
             <button
@@ -325,6 +322,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
               Forgot password?
             </button>
           </div>
+
           <div className="relative">
             <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-500">
               <Lock size={16} />
@@ -337,7 +335,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
               onChange={(e) => setPassword(e.target.value)}
               disabled={isLoading}
               placeholder={isPatient ? 'Enter patient portal password' : 'Enter your password'}
-              className="w-full pl-10 pr-11 py-2.5 rounded-xl bg-slate-900/90 border border-slate-800 text-white placeholder-slate-500 text-sm focus:outline-none focus:border-teal-500 focus:ring-1 focus:ring-teal-500 transition-colors font-mono tracking-tight"
+              className="w-full pl-10 pr-11 py-2.5 rounded-xl bg-slate-900/90 border border-slate-800 text-white placeholder-slate-500 text-sm focus:outline-none focus:border-teal-500 focus:ring-1 focus:ring-teal-500/40"
             />
             <button
               type="button"
@@ -350,7 +348,6 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
           </div>
         </div>
 
-        {/* Remember Me Checkbox */}
         <div className="flex items-center justify-between pt-1">
           <label className="flex items-center gap-2 text-xs text-slate-400 cursor-pointer select-none">
             <input
@@ -362,17 +359,14 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
             />
             <span>Remember this device</span>
           </label>
-          <span className="text-[11px] text-slate-500">
-            Encrypted Session
-          </span>
+          <span className="text-[11px] text-slate-500">Encrypted Session</span>
         </div>
 
-        {/* Prominent Gradient Sign In Button */}
         <div className="pt-2">
           <button
             type="submit"
             disabled={isLoading}
-            className="w-full relative group flex items-center justify-center gap-2 py-3 px-6 rounded-xl font-semibold text-sm text-slate-950 bg-gradient-to-r from-teal-400 via-cyan-400 to-teal-300 hover:from-teal-300 hover:via-cyan-300 hover:to-teal-200 active:scale-[0.99] transition-all duration-150 shadow-lg shadow-teal-500/25 hover:shadow-teal-500/35 disabled:opacity-60 disabled:cursor-not-allowed cursor-pointer"
+            className="w-full relative group flex items-center justify-center gap-2 py-3 px-6 rounded-xl font-semibold text-sm text-slate-950 bg-gradient-to-r from-teal-400 via-cyan-400 to-teal-300 hover:from-teal-300 hover:via-cyan-300 hover:to-teal-200 transition-all duration-200 disabled:opacity-70 disabled:cursor-not-allowed"
           >
             {isLoading ? (
               <>
@@ -382,14 +376,16 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
             ) : (
               <>
                 <span>{isPatient ? 'Sign In to Patient Dashboard' : 'Sign In to MediAI'}</span>
-                <ArrowRight size={16} className="text-slate-950 group-hover:translate-x-0.5 transition-transform" />
+                <ArrowRight
+                  size={16}
+                  className="text-slate-950 group-hover:translate-x-0.5 transition-transform"
+                />
               </>
             )}
           </button>
         </div>
       </form>
 
-      {/* Footer Navigation: Create Account */}
       <div className="mt-8 pt-6 border-t border-slate-800/80 text-center text-xs text-slate-400">
         <span>Don't have an account? </span>
         <button
