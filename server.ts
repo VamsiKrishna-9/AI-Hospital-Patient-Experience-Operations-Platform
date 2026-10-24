@@ -547,8 +547,8 @@ app.post('/api/auth/register', async (req: Request, res: Response) => {
   try {
     // A. Public Patient Registration
     if (role === 'patient') {
-      const productionAppUrl = 'https://ais-dev-3mit3ofxc4v3mkup6fnuq4-979695568263.asia-southeast1.run.app';
-      const emailRedirectTo = process.env.APP_URL || productionAppUrl;
+      const defaultAppUrl = 'https://ais-dev-nncaxpb3lbbj7vb6hsyltf-933048657426.asia-southeast1.run.app';
+      const emailRedirectTo = process.env.APP_URL || defaultAppUrl;
 
       const { data: authData, error: authError } = await anonClient.auth.signUp({
         email: email.trim().toLowerCase(),
