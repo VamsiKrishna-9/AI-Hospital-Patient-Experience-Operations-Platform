@@ -5,7 +5,27 @@
 
 export type HospitalRole = 'patient' | 'doctor' | 'staff' | 'admin';
 
-export type ScreenState = 'login' | 'signup' | 'forgot-password' | 'patient-dashboard' | 'change-password';
+export type ScreenState =
+  | 'login'
+  | 'signup'
+  | 'forgot-password'
+  | 'patient-dashboard'
+  | 'doctor-dashboard'
+  | 'staff-dashboard'
+  | 'admin-dashboard'
+  | 'change-password';
+
+export interface AuthUser {
+  id: string;
+  name: string;
+  email: string;
+  role: HospitalRole;
+  patient_id?: string;
+  doctor_id?: string;
+  staff_id?: string;
+  specialty?: string;
+  department?: string;
+}
 
 export interface RoleConfig {
   id: HospitalRole;
@@ -18,8 +38,9 @@ export interface RoleConfig {
 }
 
 export interface LoginFormData {
-  role: HospitalRole;
-  email: string;
+  role?: HospitalRole;
+  email?: string;
+  identifier?: string;
   password: string;
   rememberMe: boolean;
 }
@@ -90,14 +111,11 @@ export interface AuthResponse {
   success: boolean;
   message: string;
   isDemoMode?: boolean;
-  user?: {
-    id: string;
-    name: string;
-    email: string;
-    role: HospitalRole;
-    patient_id?: string;
-  };
+  user?: AuthUser;
+  patient?: any;
   patientId?: string;
+  mustChangePassword?: boolean;
+  tempToken?: string;
   requiresEmailConfirmation?: boolean;
   token?: string;
   errors?: Record<string, string>;

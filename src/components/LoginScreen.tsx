@@ -14,19 +14,22 @@ import {
   Loader2,
   AlertCircle,
   CheckCircle2,
+  Stethoscope,
+  HeartPulse,
+  ShieldCheck,
+  User,
+  Sparkles,
 } from 'lucide-react';
-import { HospitalRole, LoginFormData, ScreenState, AuthResponse } from '../types/auth';
+import { HospitalRole, ScreenState, AuthResponse, AuthUser } from '../types/auth';
 import { ROLES_CONFIG } from '../data/roles';
-import { RoleSelector } from './RoleSelector';
 import { authService } from '../services/authService';
 import { patientService } from '../services/patientService';
-import { isValidEmail } from '../utils/validation';
 
 interface LoginScreenProps {
   onNavigate: (
     screen: ScreenState,
     role?: HospitalRole,
-    extra?: { patientId?: string; tempToken?: string }
+    extra?: { patientId?: string; tempToken?: string; user?: AuthUser }
   ) => void;
   selectedRole: HospitalRole;
   onRoleChange: (role: HospitalRole) => void;
@@ -45,7 +48,50 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [verificationNotice, setVerificationNotice] = useState<string | null>(null);
-  const [authResult, setAuthResult] = useState<AuthResponse | null>(null);
+
+  // Auto-detect role from typed identifier
+  const detectRoleFromInput = (input: string): {
+    role: HospitalRole;
+    label: string;
+    icon: React.ReactNode;
+  } => {
+    const clean = input.trim().toLowerCase();
+    if (/^p\d+/i.test(clean) || clean.includes('patient')) {
+      return {
+        role: 'patient',
+        label: 'Patient Care Portal',
+        icon: <IdCard size={13} className="text-teal-400" />,
+      };
+    }
+    if (clean.includes('doc') || clean.includes('physician')) {
+      return {
+        role: 'doctor',
+        label: 'Clinical Physician Workspace',
+        icon: <Stethoscope size={13} className="text-cyan-400" />,
+      };
+    }
+    if (clean.includes('staff') || clean.includes('nurse')) {
+      return {
+        role: 'staff',
+        label: 'Nursing & Ward Operations',
+        icon: <HeartPulse size={13} className="text-emerald-400" />,
+      };
+    }
+    if (clean.includes('admin') || clean.includes('gov')) {
+      return {
+        role: 'admin',
+        label: 'Hospital Governance & Executive',
+        icon: <ShieldCheck size={13} className="text-indigo-400" />,
+      };
+    }
+    return {
+      role: 'patient',
+      label: 'MediAI Hospital Identity',
+      icon: <User size={13} className="text-slate-400" />,
+    };
+  };
+
+  const detected = detectRoleFromInput(identifier);
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -71,7 +117,6 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
           setVerificationNotice(
             'Email verified successfully! Your account is active. Please sign in.'
           );
-          onRoleChange('patient');
           window.history.replaceState(null, '', window.location.pathname);
         } else if (errorDesc) {
           setError(
@@ -84,166 +129,175 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
     }
 
     const remembered = authService.getRememberedIdentity();
-    if (remembered) {
-      if (remembered.role === 'patient') {
-        if (remembered.email && !remembered.email.includes('@')) {
-          setIdentifier(remembered.email.toUpperCase());
-          onRoleChange('patient');
-          setRememberMe(true);
-        } else {
-          authService.clearRememberedIdentity();
-          setIdentifier('');
-        }
-      } else {
-        setIdentifier(remembered.email);
-        onRoleChange(remembered.role);
-        setRememberMe(true);
-      }
+    if (remembered && remembered.email) {
+      setIdentifier(remembered.email);
+      setRememberMe(true);
     }
   }, []);
 
-  const handleRoleSelect = (newRole: HospitalRole) => {
-    onRoleChange(newRole);
-    setError(null);
-    setAuthResult(null);
-
-    if (newRole === 'patient') {
-      if (identifier.includes('@')) {
-        setIdentifier('');
-      }
-    } else if (/^P\d+$/i.test(identifier.trim())) {
-      setIdentifier('');
-    }
-  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
-    setAuthResult(null);
 
-    const normalizedIdentifier = identifier.trim();
+    const cleanInput = identifier.trim();
 
-    if (!normalizedIdentifier) {
-      setError(
-        selectedRole === 'patient'
-          ? 'Please enter your Patient ID.'
-          : 'Please enter your official email address.'
-      );
-      return;
-    }
-
-    // Patient uses dedicated patient login flow
-    if (selectedRole === 'patient') {
-      const cleanPatientId = normalizedIdentifier.toUpperCase();
-
-      if (cleanPatientId.includes('@')) {
-        setError('Please enter your Patient ID username, not an email address.');
-        return;
-      }
-
-      if (!password) {
-        setError('Please enter your patient portal password.');
-        return;
-      }
-
-      setIsLoading(true);
-
-      try {
-        const response = await patientService.login(cleanPatientId, password);
-
-        if (response.success) {
-          if (rememberMe) {
-            authService.saveRememberedIdentity('patient', cleanPatientId);
-          } else {
-            authService.clearRememberedIdentity();
-          }
-
-          if (response.mustChangePassword) {
-            onNavigate('change-password', 'patient', {
-              patientId: response.patientId || cleanPatientId,
-              tempToken: response.tempToken,
-            });
-            return;
-          }
-
-          onNavigate('patient-dashboard');
-          return;
-        }
-
-        setError(response.message || 'Invalid Patient ID or password.');
-      } catch {
-        setError('An unexpected error occurred during patient authentication.');
-      } finally {
-        setIsLoading(false);
-      }
-      return;
-    }
-
-    // Common form for all non-patient roles
-    if (!isValidEmail(normalizedIdentifier)) {
-      setError('Please provide a valid email format (e.g. name@hospital.org).');
+    if (!cleanInput) {
+      setError('Please enter your Patient ID or official email address.');
       return;
     }
 
     if (!password) {
-      setError('Please enter your password.');
-      return;
-    }
-
-    if (password.length < 6) {
-      setError('Password must contain at least 6 characters.');
+      setError('Please enter your account password.');
       return;
     }
 
     setIsLoading(true);
 
     try {
-      const payload: LoginFormData = {
-        role: selectedRole,
-        email: normalizedIdentifier,
+      const response = await authService.commonLogin({
+        identifier: cleanInput,
         password,
         rememberMe,
-      };
+      });
 
-      const response = await authService.login(payload);
-      setAuthResult(response);
+      if (response.success) {
+        const userRole = response.user?.role || detected.role;
+        onRoleChange(userRole);
 
-      if (!response.success) {
-        setError(response.message);
+        if (response.mustChangePassword) {
+          onNavigate('change-password', userRole, {
+            patientId: response.patientId || cleanInput,
+            tempToken: response.tempToken,
+          });
+          return;
+        }
+
+        // Dedicated post-login routing for each role
+        if (userRole === 'patient') {
+          onNavigate('patient-dashboard', 'patient', {
+            patientId: response.patientId || cleanInput,
+            user: response.user,
+          });
+        } else if (userRole === 'doctor') {
+          onNavigate('doctor-dashboard', 'doctor', {
+            user: response.user,
+          });
+        } else if (userRole === 'staff') {
+          onNavigate('staff-dashboard', 'staff', {
+            user: response.user,
+          });
+        } else if (userRole === 'admin') {
+          onNavigate('admin-dashboard', 'admin', {
+            user: response.user,
+          });
+        } else {
+          onNavigate('patient-dashboard', 'patient');
+        }
+        return;
       }
+
+      setError(response.message || 'Authentication failed. Please verify your credentials.');
     } catch {
-      setError('An unexpected error occurred during verification.');
+      setError('An unexpected error occurred while connecting to hospital authentication.');
     } finally {
       setIsLoading(false);
     }
   };
 
-  const isPatient = selectedRole === 'patient';
+  const handleGoogleLogin = async () => {
+    setError(null);
+    setIsLoading(true);
+    try {
+      const response = await authService.googleLogin({
+        email: identifier.includes('@') ? identifier.trim() : undefined,
+      });
+
+      if (response.success && response.user) {
+        const userRole = response.user.role || 'patient';
+        onRoleChange(userRole);
+
+        if (userRole === 'doctor') {
+          onNavigate('doctor-dashboard', 'doctor', { user: response.user });
+        } else if (userRole === 'staff') {
+          onNavigate('staff-dashboard', 'staff', { user: response.user });
+        } else if (userRole === 'admin') {
+          onNavigate('admin-dashboard', 'admin', { user: response.user });
+        } else {
+          onNavigate('patient-dashboard', 'patient', {
+            patientId: response.patientId || response.user.patient_id,
+            user: response.user,
+          });
+        }
+        return;
+      }
+
+      setError(response.message || 'Google authentication failed. Please try again.');
+    } catch {
+      setError('Failed to authenticate with Google identity provider.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
   return (
     <div className="flex flex-col justify-center min-h-full py-8 px-6 sm:px-10 lg:px-14 max-w-xl mx-auto w-full">
+      {/* Header */}
       <div className="mb-6 space-y-1.5">
-        <span className="text-xs font-semibold text-teal-400 tracking-wider uppercase">
-          {isPatient ? 'Patient Care Portal' : 'Hospital Operations Portal'}
+        <span className="text-xs font-semibold text-teal-400 tracking-wider uppercase flex items-center gap-1.5">
+          <ShieldCheck size={14} />
+          <span>Unified Hospital Access</span>
         </span>
         <h2 className="text-2xl sm:text-3xl font-bold tracking-tight text-white">
-          {isPatient ? 'Patient Sign In' : 'Welcome back'}
+          Sign In to MediAI
         </h2>
         <p className="text-xs sm:text-sm text-slate-400">
-          {isPatient
-            ? 'Access your upcoming appointments, medical encounters, and digital lab reports.'
-            : 'Select your authorized hospital role to sign in to your dashboard.'}
+          Enter your Patient ID or hospital email. The platform automatically routes you to your authorized care or clinical workspace.
         </p>
       </div>
 
-      <div className="mb-6">
-        <RoleSelector
-          selectedRole={selectedRole}
-          onSelectRole={handleRoleSelect}
-          variant="compact"
+      {/* Google Sign In Direct Action */}
+      <div className="mb-5">
+        <button
+          type="button"
+          onClick={handleGoogleLogin}
           disabled={isLoading}
-        />
+          className="w-full flex items-center justify-center gap-3 py-2.5 px-4 rounded-xl font-medium text-xs sm:text-sm text-slate-200 bg-slate-900 hover:bg-slate-800 border border-slate-700/80 hover:border-slate-600 transition-all shadow-xs disabled:opacity-60 disabled:cursor-not-allowed cursor-pointer"
+        >
+          <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24">
+            <path
+              fill="#4285F4"
+              d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
+            />
+            <path
+              fill="#34A853"
+              d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
+            />
+            <path
+              fill="#FBBC05"
+              d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
+            />
+            <path
+              fill="#EA4335"
+              d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
+            />
+          </svg>
+          <span>Continue with Google</span>
+          <span className="text-[10px] text-teal-400 bg-teal-950/80 px-2 py-0.5 rounded border border-teal-500/30 font-mono">
+            Supabase SSO
+          </span>
+        </button>
+
+        <div className="relative my-4">
+          <div className="absolute inset-0 flex items-center">
+            <div className="w-full border-t border-slate-800" />
+          </div>
+          <div className="relative flex justify-center text-[11px] uppercase">
+            <span className="bg-slate-950 px-2 text-slate-500">or sign in with credentials</span>
+          </div>
+        </div>
       </div>
+
 
       {verificationNotice && (
         <div
@@ -265,48 +319,42 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
         </div>
       )}
 
+      {/* Common Login Form */}
       <form onSubmit={handleSubmit} className="space-y-4" noValidate>
         <div>
-          <label htmlFor="login-identifier" className="block text-xs font-medium text-slate-300 mb-1.5">
-            {isPatient ? (
-              <span className="flex items-center justify-between">
-                <span>Patient ID</span>
-                <span className="text-[10px] text-teal-400 font-mono">Username</span>
+          <div className="flex items-center justify-between mb-1.5">
+            <label htmlFor="common-identifier" className="block text-xs font-medium text-slate-300">
+              Patient ID or Hospital Email
+            </label>
+            {identifier.trim() && (
+              <span className="inline-flex items-center gap-1 text-[11px] text-slate-400 bg-slate-900 px-2 py-0.5 rounded border border-slate-800 font-mono">
+                {detected.icon}
+                <span>{detected.label}</span>
               </span>
-            ) : selectedRole === 'admin' ? (
-              'Institutional Administrator Email'
-            ) : (
-              `${ROLES_CONFIG[selectedRole].title} Email Address`
             )}
-          </label>
+          </div>
 
           <div className="relative">
             <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-500">
-              {isPatient ? <IdCard size={16} /> : <Mail size={16} />}
+              {identifier.includes('@') ? <Mail size={16} /> : <IdCard size={16} />}
             </div>
             <input
-              id="login-identifier"
-              type={isPatient ? 'text' : 'email'}
-              autoComplete={isPatient ? 'username' : 'email'}
+              id="common-identifier"
+              type="text"
+              autoComplete="username"
               value={identifier}
               onChange={(e) => {
                 setIdentifier(e.target.value);
                 if (error) setError(null);
               }}
               disabled={isLoading}
-              placeholder={isPatient ? 'Enter your Patient ID' : 'name@example.com'}
-              className={`w-full pl-10 pr-4 py-2.5 rounded-xl bg-slate-900/90 border border-slate-800 text-white placeholder-slate-500 text-sm focus:outline-none focus:border-teal-500 focus:ring-1 focus:ring-teal-500/40 ${
-                isPatient ? 'font-mono tracking-wider' : ''
-              }`}
+              placeholder="e.g. P182162 or doctor@hospital.org"
+              className="w-full pl-10 pr-4 py-2.5 rounded-xl bg-slate-900/90 border border-slate-800 text-white placeholder-slate-500 text-sm focus:outline-none focus:border-teal-500 focus:ring-1 focus:ring-teal-500/40 font-mono"
             />
           </div>
-
-          {isPatient && identifier.includes('@') && (
-            <p className="mt-1.5 text-[11px] text-amber-400 flex items-center gap-1 font-medium animate-in fade-in duration-150">
-              <AlertCircle size={12} className="shrink-0" />
-              Patient accounts use Patient IDs as usernames, not email addresses.
-            </p>
-          )}
+          <p className="mt-1 text-[11px] text-slate-500">
+            Accepts Patient ID (e.g. P182162) or institutional email (Doctor, Staff, Admin).
+          </p>
         </div>
 
         <div>
@@ -334,7 +382,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               disabled={isLoading}
-              placeholder={isPatient ? 'Enter patient portal password' : 'Enter your password'}
+              placeholder="Enter your account password"
               className="w-full pl-10 pr-11 py-2.5 rounded-xl bg-slate-900/90 border border-slate-800 text-white placeholder-slate-500 text-sm focus:outline-none focus:border-teal-500 focus:ring-1 focus:ring-teal-500/40"
             />
             <button
@@ -359,14 +407,14 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
             />
             <span>Remember this device</span>
           </label>
-          <span className="text-[11px] text-slate-500">Encrypted Session</span>
+          <span className="text-[11px] text-slate-500">Encrypted Hospital Session</span>
         </div>
 
         <div className="pt-2">
           <button
             type="submit"
             disabled={isLoading}
-            className="w-full relative group flex items-center justify-center gap-2 py-3 px-6 rounded-xl font-semibold text-sm text-slate-950 bg-gradient-to-r from-teal-400 via-cyan-400 to-teal-300 hover:from-teal-300 hover:via-cyan-300 hover:to-teal-200 transition-all duration-200 disabled:opacity-70 disabled:cursor-not-allowed"
+            className="w-full relative group flex items-center justify-center gap-2 py-3 px-6 rounded-xl font-semibold text-sm text-slate-950 bg-gradient-to-r from-teal-400 via-cyan-400 to-teal-300 hover:from-teal-300 hover:via-cyan-300 hover:to-teal-200 transition-all duration-200 disabled:opacity-70 disabled:cursor-not-allowed cursor-pointer"
           >
             {isLoading ? (
               <>
@@ -375,7 +423,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
               </>
             ) : (
               <>
-                <span>{isPatient ? 'Sign In to Patient Dashboard' : 'Sign In to MediAI'}</span>
+                <span>Sign In to MediAI</span>
                 <ArrowRight
                   size={16}
                   className="text-slate-950 group-hover:translate-x-0.5 transition-transform"
@@ -387,13 +435,13 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
       </form>
 
       <div className="mt-8 pt-6 border-t border-slate-800/80 text-center text-xs text-slate-400">
-        <span>Don't have an account? </span>
+        <span>Need a new account? </span>
         <button
           type="button"
-          onClick={() => onNavigate('signup', selectedRole)}
+          onClick={() => onNavigate('signup', 'patient')}
           className="font-semibold text-teal-400 hover:text-teal-300 transition-colors ml-1 cursor-pointer"
         >
-          Create account as {ROLES_CONFIG[selectedRole].title}
+          Register as Patient or Staff
         </button>
       </div>
     </div>
