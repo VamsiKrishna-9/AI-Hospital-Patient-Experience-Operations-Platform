@@ -257,7 +257,10 @@ class PatientService {
   public async getDoctors(branchId?: string, specialty?: string): Promise<DoctorInfo[]> {
     try {
       const params = new URLSearchParams();
-      if (branchId) params.append('branchId', branchId);
+      if (branchId) {
+        params.append('branch', branchId);
+        params.append('branchId', branchId);
+      }
       if (specialty) params.append('specialty', specialty);
 
       const res = await fetch(`/api/booking/doctors?${params.toString()}`);
@@ -280,7 +283,10 @@ class PatientService {
         `/api/booking/availability?doctorId=${encodeURIComponent(doctorId)}&date=${encodeURIComponent(date)}`
       );
       const data = await res.json();
-      return data.slots || [];
+      return (data.slots || []).map((s: any) => ({
+        time: s.time,
+        isAvailable: Boolean(s.isAvailable ?? s.available),
+      }));
     } catch {
       return [];
     }
@@ -288,25 +294,61 @@ class PatientService {
 
   /**
    * Book appointment
+   * Uses canonical appointmentDate, appointmentTime, and appointmentType with backwards-compatible aliases
    */
   public async bookAppointment(payload: {
-    doctorId: string;
-    branchId: string;
-    date: string;
-    timeSlot: string;
+    doctorId?: string;
+    doctor_id?: string;
+    branchId?: string;
+    date?: string;
+    timeSlot?: string;
+    appointmentDate?: string;
+    appointmentTime?: string;
+    appointmentType?: string;
+    consultationType?: string;
+    departmentName?: string;
+    department_name?: string;
+    bookingChannel?: string;
+    priority?: string;
     reason?: string;
+    symptoms?: string;
+    notes?: string;
   }): Promise<{ success: boolean; message: string; appointment?: AppointmentRecord }> {
     try {
+      const canonicalDate = payload.appointmentDate || payload.date;
+      const canonicalTime = payload.appointmentTime || payload.timeSlot;
+      const canonicalDoctorId = payload.doctorId || payload.doctor_id;
+      const canonicalType = payload.appointmentType || payload.consultationType || 'In-Person';
+
+      const bodyPayload = {
+        doctorId: canonicalDoctorId,
+        appointmentDate: canonicalDate,
+        appointmentTime: canonicalTime,
+        appointmentType: canonicalType,
+        consultationType: canonicalType,
+        departmentName: payload.departmentName || payload.department_name || null,
+        department_name: payload.departmentName || payload.department_name || null,
+        bookingChannel: payload.bookingChannel || 'Online Portal',
+        priority: payload.priority || 'Normal',
+        reason: payload.reason || null,
+        symptoms: payload.symptoms || null,
+        notes: payload.notes || null,
+        // Legacy aliases for backward compatibility
+        date: canonicalDate,
+        timeSlot: canonicalTime,
+        doctor_id: canonicalDoctorId,
+      };
+
       const res = await fetch('/api/booking/create', {
         method: 'POST',
         headers: this.getAuthHeaders(),
-        body: JSON.stringify(payload),
+        body: JSON.stringify(bodyPayload),
       });
 
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       return {
         success: res.ok && data.success,
-        message: data.message || 'Appointment booking failed.',
+        message: data.message || (res.ok ? 'Appointment scheduled successfully.' : 'Appointment booking failed.'),
         appointment: data.appointment,
       };
     } catch {
@@ -336,25 +378,78 @@ class PatientService {
 
   /**
    * Submit patient care feedback (stores into silver_feedback)
+   * Supports canonical source columns (waiting_time_rating, staff_rating, doctor_rating, appointment_id) and legacy aliases
    */
   public async submitFeedback(payload: {
     appointmentId?: string;
+    appointment_id?: string;
     encounterId?: string;
+    encounter_id?: string;
     doctorId?: string;
+    doctor_id?: string;
     rating: number;
     doctorRating?: number;
+    doctor_rating?: number;
     staffRating?: number;
+    staff_rating?: number;
+    staffBehaviorRating?: number;
     waitingTimeRating?: number;
+    waiting_time_rating?: number;
+    waitRating?: number;
     facilityRating?: number;
+    facility_rating?: number;
     cleanlinessRating?: number;
+    cleanliness_rating?: number;
     communicationRating?: number;
+    communication_rating?: number;
     comments: string;
+    feedbackChannel?: string;
+    feedback_channel?: string;
   }): Promise<{ success: boolean; message: string; feedback?: FeedbackRecord }> {
     try {
+      const canonicalDoctorId = payload.doctorId || payload.doctor_id;
+      const canonicalAppointmentId = payload.appointmentId || payload.appointment_id;
+      const canonicalEncounterId = payload.encounterId || payload.encounter_id;
+      const resolvedDoctorRating = payload.doctorRating ?? payload.doctor_rating;
+      const resolvedStaffRating = payload.staffRating ?? payload.staff_rating ?? payload.staffBehaviorRating;
+      const resolvedWaitRating = payload.waitingTimeRating ?? payload.waiting_time_rating ?? payload.waitRating;
+      const resolvedFacilityRating = payload.facilityRating ?? payload.facility_rating;
+      const resolvedCleanlinessRating = payload.cleanlinessRating ?? payload.cleanliness_rating;
+      const resolvedCommRating = payload.communicationRating ?? payload.communication_rating;
+      const resolvedChannel = payload.feedbackChannel || payload.feedback_channel || 'Online Portal';
+
+      const bodyPayload = {
+        doctorId: canonicalDoctorId,
+        doctor_id: canonicalDoctorId,
+        appointmentId: canonicalAppointmentId,
+        appointment_id: canonicalAppointmentId,
+        encounterId: canonicalEncounterId,
+        encounter_id: canonicalEncounterId,
+        rating: payload.rating,
+        doctorRating: resolvedDoctorRating,
+        doctor_rating: resolvedDoctorRating,
+        staffRating: resolvedStaffRating,
+        staff_rating: resolvedStaffRating,
+        staff_behavior_rating: resolvedStaffRating,
+        waitingTimeRating: resolvedWaitRating,
+        waiting_time_rating: resolvedWaitRating,
+        waitRating: resolvedWaitRating,
+        wait_time_rating: resolvedWaitRating,
+        facilityRating: resolvedFacilityRating,
+        facility_rating: resolvedFacilityRating,
+        cleanlinessRating: resolvedCleanlinessRating,
+        cleanliness_rating: resolvedCleanlinessRating,
+        communicationRating: resolvedCommRating,
+        communication_rating: resolvedCommRating,
+        comments: payload.comments,
+        feedbackChannel: resolvedChannel,
+        feedback_channel: resolvedChannel,
+      };
+
       const res = await fetch('/api/patient/feedback', {
         method: 'POST',
         headers: this.getAuthHeaders(),
-        body: JSON.stringify(payload),
+        body: JSON.stringify(bodyPayload),
       });
       const data = await res.json();
       return {

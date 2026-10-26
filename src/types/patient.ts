@@ -32,26 +32,30 @@ export interface PatientProfile {
 // doctor_id, doctor_name, department_id, department_name, specialization, qualification, experience_years, city, employment_type, availability, joining_date, phone_number, email
 export interface DoctorInfo {
   doctor_id: string;
-  doctor_name?: string;
+  doctor_name: string;
   name: string;
   department_id?: string;
   department_name?: string;
-  specialization?: string;
+  specialization: string;
   specialty: string;
   qualification: string;
   experience_years: number;
   city?: string;
   employment_type?: string;
   availability?: string;
+  availability_schedule?: string;
   joining_date?: string;
   phone_number?: string;
   email?: string;
+  hospital_branch?: string;
   branch_id?: string;
   branch_name?: string;
   consultation_fee?: number;
   rating?: number;
   rating_count?: number;
   avatar_url?: string;
+  is_active?: boolean;
+  user_id?: string | null;
 }
 
 export interface HospitalBranch {
@@ -75,20 +79,28 @@ export interface AppointmentRecord {
   specialty?: string;
   branch_id?: string;
   branch_name?: string;
+  hospital_branch?: string;
   appointment_date: string;
   appointment_time: string;
   appointment_type?: string;
+  consultation_type?: string;
   booking_channel?: string;
   priority?: string;
-  status: 'Confirmed' | 'Scheduled' | 'Completed' | 'Cancelled' | string;
+  status: 'Confirmed' | 'Scheduled' | 'Completed' | 'Cancelled' | 'No Show' | string;
   wait_time_minutes?: number;
   consultation_duration_minutes?: number;
+  consultation_fee?: number;
+  payment_status?: string;
+  cancellation_reason?: string;
   reason?: string;
+  symptoms?: string;
+  notes?: string;
   created_at?: string;
 }
 
 // Authoritative Schema: silver_encounters
 // encounter_id, patient_id, doctor_id, department_id, department_name, encounter_date, symptoms, primary_diagnosis, treatment_type, treatment_outcome, appointment_type, encounter_mode, wait_time_minutes, consultation_duration_minutes
+// CRITICAL: appointment_id is NOT in canonical source MySQL schema, and is strictly optional/nullable in Supabase
 export interface EncounterRecord {
   encounter_id: string;
   patient_id: string;
@@ -100,16 +112,21 @@ export interface EncounterRecord {
   specialty?: string;
   encounter_date: string;
   symptoms?: string;
+  chief_complaint?: string;
   primary_diagnosis?: string;
   diagnosis?: string;
   treatment_type?: string;
   treatment_outcome?: string;
   appointment_type?: string;
   visit_type?: string;
+  encounter_type?: string;
   encounter_mode?: string;
   wait_time_minutes?: number;
   consultation_duration_minutes?: number;
+  appointment_id?: string | null;
   clinical_notes?: string;
+  treatment_plan?: string;
+  notes?: string;
   follow_up_date?: string;
 }
 
@@ -118,7 +135,7 @@ export interface EncounterRecord {
 export interface LabResultRecord {
   lab_id: string;
   patient_id: string;
-  encounter_id?: string;
+  encounter_id?: string | null;
   doctor_id?: string;
   doctor_name?: string;
   test_name: string;
@@ -128,12 +145,14 @@ export interface LabResultRecord {
   collected_date?: string;
   result_date?: string;
   result_value?: string;
+  test_value?: string;
   value?: string;
   unit?: string;
   reference_range?: string;
-  status: 'Ready' | 'Normal' | 'Abnormal' | 'Pending Review' | string;
+  status: 'Ready' | 'Normal' | 'Abnormal' | 'Pending Review' | 'Completed' | 'Pending' | string;
   flag?: 'Normal' | 'High' | 'Low' | 'Critical';
   summary?: string;
+  notes?: string;
 }
 
 // Authoritative Schema: silver_prescriptions
@@ -141,7 +160,7 @@ export interface LabResultRecord {
 export interface PrescriptionRecord {
   prescription_id: string;
   patient_id: string;
-  encounter_id?: string;
+  encounter_id?: string | null;
   doctor_id?: string;
   doctor_name?: string;
   prescription_date: string;
@@ -167,15 +186,17 @@ export interface PrescriptionRecord {
 export interface FeedbackRecord {
   feedback_id: string;
   patient_id: string;
-  appointment_id?: string;
-  encounter_id?: string;
+  appointment_id?: string | null;
+  encounter_id?: string | null;
   doctor_id?: string;
   doctor_name?: string;
   feedback_date: string;
   rating: number; // 1-5 overall
   doctor_rating?: number;
   staff_rating?: number;
+  staff_behavior_rating?: number;
   waiting_time_rating?: number;
+  wait_time_rating?: number;
   facility_rating?: number;
   cleanliness_rating?: number;
   communication_rating?: number;
@@ -225,18 +246,29 @@ export interface BookingWizardState {
 }
 
 // Authoritative Schema: silver_staff
-// staff_id, user_id, staff_name, role, department, hospital_branch, shift, contact_number, email, is_active
+// staff_id, staff_name, staff_type, role, department_name, ward_id, shift_type, shift_start, shift_end, employment_type, experience_years, status, joining_date
+// Persistent application extensions: user_id, hospital_branch, contact_number, email, is_active
 export interface StaffInfo {
   staff_id: string;
   user_id?: string | null;
   staff_name: string;
+  staff_type?: string;
   role: string;
-  department: string;
-  hospital_branch?: string | null;
+  department_name?: string;
+  department?: string;
+  ward_id?: string | null;
+  shift_type?: string | null;
+  shift_start?: string | null;
+  shift_end?: string | null;
   shift?: string | null;
+  employment_type?: string;
+  experience_years?: number;
+  status?: string;
+  joining_date?: string;
+  hospital_branch?: string | null;
   contact_number?: string | null;
   email?: string | null;
-  is_active: boolean;
+  is_active?: boolean;
   created_at?: string;
   updated_at?: string;
 }
