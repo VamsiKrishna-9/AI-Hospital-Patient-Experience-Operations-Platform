@@ -194,28 +194,6 @@ export const PatientDashboard: React.FC<PatientDashboardProps> = ({ user, onLogo
 
           {/* Right actions: Backend status, Notifications, Profile & Logout */}
           <div className="flex items-center gap-3">
-            {/* Database Engine Status Pill */}
-            {dashboardData?.backendStatus && (
-              <div
-                className={`hidden md:flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold border shadow-xs ${
-                  dashboardData.backendStatus.connected || dashboardData.backendStatus.isLiveMySQL
-                    ? 'bg-emerald-50 text-emerald-800 border-emerald-300'
-                    : 'bg-slate-100 text-slate-700 border-slate-300'
-                }`}
-                title={dashboardData.backendStatus.schema}
-              >
-                <span
-                  className={`w-2 h-2 rounded-full shrink-0 ${
-                    dashboardData.backendStatus.connected || dashboardData.backendStatus.isLiveMySQL ? 'bg-[#059669]' : 'bg-slate-400'
-                  }`}
-                />
-                <span className="font-bold text-[11px]">
-                  {dashboardData.backendStatus.connected || dashboardData.backendStatus.isLiveMySQL
-                    ? dashboardData.backendStatus.engine || 'Database: Connected'
-                    : 'Database: Pending Configuration'}
-                </span>
-              </div>
-            )}
 
             {/* Notifications Popover */}
             <div className="relative">
