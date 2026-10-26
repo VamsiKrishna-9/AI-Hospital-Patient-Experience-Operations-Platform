@@ -12,29 +12,18 @@ import {
   User,
   Phone,
   Calendar,
-  Building,
-  KeyRound,
-  ShieldCheck,
-  Stethoscope,
-  IdCard,
   ArrowRight,
   Loader2,
   AlertCircle,
   CheckCircle2,
-  ShieldAlert,
 } from 'lucide-react';
 import {
   HospitalRole,
   ScreenState,
   SignupFormData,
   AuthResponse,
+  AuthUser,
 } from '../types/auth';
-import {
-  ROLES_CONFIG,
-  MEDICAL_SPECIALIZATIONS,
-  HOSPITAL_DEPARTMENTS,
-} from '../data/roles';
-import { RoleSelector } from './RoleSelector';
 import { PasswordStrengthIndicator } from './PasswordStrengthIndicator';
 import { authService } from '../services/authService';
 import {
@@ -45,125 +34,63 @@ import {
 } from '../utils/validation';
 
 interface SignupScreenProps {
-  onNavigate: (screen: ScreenState, role?: HospitalRole) => void;
-  selectedRole: HospitalRole;
-  onRoleChange: (role: HospitalRole) => void;
+  onNavigate: (
+    screen: ScreenState,
+    role?: HospitalRole,
+    extra?: { patientId?: string; tempToken?: string; user?: AuthUser }
+  ) => void;
+  selectedRole?: HospitalRole;
+  onRoleChange?: (role: HospitalRole) => void;
 }
 
 export const SignupScreen: React.FC<SignupScreenProps> = ({
   onNavigate,
-  selectedRole,
+  selectedRole = 'patient',
   onRoleChange,
 }) => {
-  // Shared fields
+  // Form fields (Standard Patient Registration)
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
   const [phone, setPhone] = useState('');
+  const [dateOfBirth, setDateOfBirth] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [acceptTerms, setAcceptTerms] = useState(false);
 
-  // Role-specific fields
-  // Patient
-  const [dateOfBirth, setDateOfBirth] = useState('');
-
-  // Doctor
-  const [specialization, setSpecialization] = useState(MEDICAL_SPECIALIZATIONS[0]);
-  const [medicalRegNumber, setMedicalRegNumber] = useState('');
-  const [doctorInviteCode, setDoctorInviteCode] = useState('');
-
-  // Staff
-  const [staffId, setStaffId] = useState('');
-  const [department, setDepartment] = useState(HOSPITAL_DEPARTMENTS[0]);
-  const [staffInviteCode, setStaffInviteCode] = useState('');
-
-  // Admin
-  const [adminInviteCode, setAdminInviteCode] = useState('');
-
-  // State
+  // Submission state
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [authResult, setAuthResult] = useState<AuthResponse | null>(null);
-
-  const handleRoleSelect = (role: HospitalRole) => {
-    onRoleChange(role);
-    setError(null);
-    setAuthResult(null);
-  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
     setAuthResult(null);
 
-    // Shared Validations
+    // Validation
     if (!fullName.trim()) {
       setError('Please provide your full legal name.');
       return;
     }
 
-    if (selectedRole === 'admin') {
-      if (!email.trim()) {
-        setError('Official administrator institutional email is required.');
-        return;
-      }
-      if (!isValidEmail(email)) {
-        setError('Please provide a valid institutional email format.');
-        return;
-      }
-      if (!adminInviteCode.trim()) {
-        setError('Administrator registration requires an authorized governance invitation code. Unrestricted public admin access is strictly prohibited.');
-        return;
-      }
-    } else {
-      if (!email.trim() || !isValidEmail(email)) {
-        setError('Please provide a valid email address.');
-        return;
-      }
-      if (!phone.trim() || !isValidPhone(phone)) {
-        setError('Please provide a valid contact phone number.');
-        return;
-      }
+    if (!email.trim() || !isValidEmail(email)) {
+      setError('Please provide a valid email address.');
+      return;
     }
 
-    // Role Specific Validations
-    if (selectedRole === 'patient') {
-      const dobCheck = isValidDateOfBirth(dateOfBirth);
-      if (!dobCheck.valid) {
-        setError(dobCheck.message || 'Please provide a valid date of birth.');
-        return;
-      }
-    } else if (selectedRole === 'doctor') {
-      if (!specialization) {
-        setError('Please select your medical specialization.');
-        return;
-      }
-      if (!medicalRegNumber.trim()) {
-        setError('Medical registration license number (NPI / GMC) is required for physician credential verification.');
-        return;
-      }
-      if (!doctorInviteCode.trim()) {
-        setError('Hospital physician invitation code is required.');
-        return;
-      }
-    } else if (selectedRole === 'staff') {
-      if (!staffId.trim()) {
-        setError('Hospital Staff ID is required.');
-        return;
-      }
-      if (!department) {
-        setError('Please select your clinical department.');
-        return;
-      }
-      if (!staffInviteCode.trim()) {
-        setError('Hospital unit invitation code is required.');
-        return;
-      }
+    if (!phone.trim() || !isValidPhone(phone)) {
+      setError('Please provide a valid contact phone number.');
+      return;
     }
 
-    // Password Validations
+    const dobCheck = isValidDateOfBirth(dateOfBirth);
+    if (!dobCheck.valid) {
+      setError(dobCheck.message || 'Please provide a valid date of birth.');
+      return;
+    }
+
     const strength = calculatePasswordStrength(password);
     if (strength.score < 2 || password.length < 8) {
       setError('Password does not meet minimum security requirements (at least 8 characters with mixed case and numbers).');
@@ -183,65 +110,64 @@ export const SignupScreen: React.FC<SignupScreenProps> = ({
     setIsLoading(true);
 
     try {
-      let payload: SignupFormData;
-
-      if (selectedRole === 'patient') {
-        payload = {
-          role: 'patient',
-          fullName: fullName.trim(),
-          email: email.trim(),
-          phone: phone.trim(),
-          dateOfBirth,
-          password,
-          confirmPassword,
-          acceptTerms,
-        };
-      } else if (selectedRole === 'doctor') {
-        payload = {
-          role: 'doctor',
-          fullName: fullName.trim(),
-          email: email.trim(),
-          phone: phone.trim(),
-          specialization,
-          medicalRegNumber: medicalRegNumber.trim(),
-          hospitalInviteCode: doctorInviteCode.trim(),
-          password,
-          confirmPassword,
-          acceptTerms,
-        };
-      } else if (selectedRole === 'staff') {
-        payload = {
-          role: 'staff',
-          fullName: fullName.trim(),
-          email: email.trim(),
-          phone: phone.trim(),
-          staffId: staffId.trim(),
-          department,
-          hospitalInviteCode: staffInviteCode.trim(),
-          password,
-          confirmPassword,
-          acceptTerms,
-        };
-      } else {
-        payload = {
-          role: 'admin',
-          fullName: fullName.trim(),
-          officialEmail: email.trim(),
-          adminInviteCode: adminInviteCode.trim(),
-          password,
-          confirmPassword,
-          acceptTerms,
-        };
-      }
+      // All registrations are strictly Patient role by default
+      const payload: SignupFormData = {
+        role: 'patient',
+        fullName: fullName.trim(),
+        email: email.trim(),
+        phone: phone.trim(),
+        dateOfBirth,
+        password,
+        confirmPassword,
+        acceptTerms,
+      };
 
       const response = await authService.signup(payload);
       setAuthResult(response);
 
       if (!response.success) {
         setError(response.message);
+      } else if (onRoleChange) {
+        onRoleChange('patient');
       }
     } catch {
       setError('An error occurred during account registration dispatch.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleGoogleSignup = async () => {
+    setError(null);
+    setIsLoading(true);
+    try {
+      const response = await authService.googleLogin({
+        email: email.includes('@') ? email.trim() : undefined,
+        name: fullName.trim() || undefined,
+      });
+
+      if (response.success && response.user) {
+        const userRole = response.user.role || 'patient';
+        if (onRoleChange) onRoleChange(userRole);
+
+        if (userRole === 'doctor') {
+          onNavigate('doctor-dashboard', 'doctor', { user: response.user });
+        } else if (userRole === 'staff') {
+          onNavigate('staff-dashboard', 'staff', { user: response.user });
+        } else if (userRole === 'admin') {
+          onNavigate('admin-dashboard', 'admin', { user: response.user });
+        } else {
+          onNavigate('patient-dashboard', 'patient', {
+            patientId: response.patientId || response.user.patient_id,
+            user: response.user,
+          });
+        }
+        return;
+      }
+
+      setError(response.message || 'Google account creation failed.');
+    } catch {
+      setError('Failed to create account via Google identity provider.');
     } finally {
       setIsLoading(false);
     }
@@ -258,37 +184,51 @@ export const SignupScreen: React.FC<SignupScreenProps> = ({
           Join MediAI Platform
         </h2>
         <p className="text-xs sm:text-sm text-slate-400">
-          Create credentials tailored for your specific healthcare responsibilities.
+          Default registration assigns <span className="text-teal-300 font-semibold">Patient</span> status to all new healthcare participants. Institutional role modifications are managed by Hospital Administration.
         </p>
       </div>
 
-      {/* Role Selection */}
+      {/* Google Quick Signup Action */}
       <div className="mb-5">
-        <RoleSelector
-          selectedRole={selectedRole}
-          onSelectRole={handleRoleSelect}
-          variant="compact"
+        <button
+          type="button"
+          onClick={handleGoogleSignup}
           disabled={isLoading}
-        />
-      </div>
+          className="w-full flex items-center justify-center gap-3 py-2.5 px-4 rounded-xl font-medium text-xs sm:text-sm text-slate-200 bg-slate-900 hover:bg-slate-800 border border-slate-700/80 hover:border-slate-600 transition-all shadow-xs disabled:opacity-60 disabled:cursor-not-allowed cursor-pointer"
+        >
+          <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24">
+            <path
+              fill="#4285F4"
+              d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
+            />
+            <path
+              fill="#34A853"
+              d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
+            />
+            <path
+              fill="#FBBC05"
+              d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
+            />
+            <path
+              fill="#EA4335"
+              d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
+            />
+          </svg>
+          <span>Sign up with Google</span>
+          <span className="text-[10px] text-teal-400 bg-teal-950/80 px-2 py-0.5 rounded border border-teal-500/30 font-mono">
+            Default: Patient
+          </span>
+        </button>
 
-      {/* Special Security Advisory for Administrator Role */}
-      {selectedRole === 'admin' && (
-        <div className="mb-4 p-3 rounded-xl bg-amber-950/40 border border-amber-500/40 text-xs text-amber-200 flex items-start gap-2.5">
-          <ShieldAlert size={16} className="text-amber-400 shrink-0 mt-0.5" />
-          <div className="space-y-1">
-            <span className="font-semibold text-amber-100">
-              Restricted Administrator Governance
-            </span>
-            <p className="text-[11px] text-amber-300/90 leading-relaxed">
-              Institutional security protocol: Admin accounts require an authorized verification key issued by Hospital Governance. Public self-registration without a key is blocked.
-            </p>
-            <p className="text-[10px] text-slate-400">
-              Contact your Hospital Governance officer or IT Security Director for authorization credentials.
-            </p>
+        <div className="relative my-4">
+          <div className="absolute inset-0 flex items-center">
+            <div className="w-full border-t border-slate-800" />
+          </div>
+          <div className="relative flex justify-center text-[11px] uppercase">
+            <span className="bg-slate-950 px-2 text-slate-500">or register with email</span>
           </div>
         </div>
-      )}
+      </div>
 
       {/* Success Feedback Banner */}
       {authResult && authResult.success && (
@@ -298,10 +238,10 @@ export const SignupScreen: React.FC<SignupScreenProps> = ({
             <div className="space-y-2 w-full">
               <div>
                 <p className="font-semibold text-teal-100 text-sm">
-                  Registration Complete — {ROLES_CONFIG[selectedRole].title} Portal
+                  Registration Complete — Patient Portal
                 </p>
                 <p className="text-[12px] text-teal-300/90 leading-relaxed mt-0.5">
-                  {authResult.message || `Welcome to MediAI. Your registration for ${fullName || 'your account'} has been submitted.`}
+                  {authResult.message || `Welcome to MediAI. Your patient account has been created successfully.`}
                 </p>
               </div>
 
@@ -320,14 +260,26 @@ export const SignupScreen: React.FC<SignupScreenProps> = ({
                   <strong>Action Required:</strong> A verification link has been sent to your email. Please verify your email before logging in.
                 </div>
               ) : (
-                <div className="pt-1">
+                <div className="pt-2 flex flex-wrap items-center gap-2">
                   <button
                     type="button"
-                    onClick={() => onNavigate('login', selectedRole)}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-teal-400 text-slate-950 font-semibold text-xs hover:bg-teal-300 transition-colors cursor-pointer"
+                    onClick={() => {
+                      onNavigate('patient-dashboard', 'patient', {
+                        patientId: authResult.patientId || authResult.user?.patient_id,
+                        user: authResult.user,
+                      });
+                    }}
+                    className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-teal-400 text-slate-950 font-bold text-xs hover:bg-teal-300 transition-colors shadow-xs cursor-pointer"
                   >
-                    <span>Proceed to Sign In</span>
+                    <span>Enter Patient Portal Now</span>
                     <ArrowRight size={13} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onNavigate('login', 'patient')}
+                    className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-slate-900 border border-slate-700 text-slate-300 font-medium text-xs hover:text-white transition-colors cursor-pointer"
+                  >
+                    <span>Go to Sign In</span>
                   </button>
                 </div>
               )}
@@ -347,12 +299,12 @@ export const SignupScreen: React.FC<SignupScreenProps> = ({
         </div>
       )}
 
-      {/* Dynamic Role-Based Form */}
+      {/* Common Patient Registration Form */}
       <form onSubmit={handleSubmit} className="space-y-3.5" noValidate>
-        {/* Full Name (All Roles) */}
+        {/* Full Name */}
         <div>
           <label htmlFor="reg-fullname" className="block text-xs font-medium text-slate-300 mb-1">
-            Full Name {selectedRole === 'doctor' && '(with credentials, e.g. Dr. Jane Smith, MD)'}
+            Full Legal Name
           </label>
           <div className="relative">
             <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-500">
@@ -364,24 +316,16 @@ export const SignupScreen: React.FC<SignupScreenProps> = ({
               value={fullName}
               onChange={(e) => setFullName(e.target.value)}
               disabled={isLoading}
-              placeholder={
-                selectedRole === 'patient'
-                  ? 'Eleanor Vance'
-                  : selectedRole === 'doctor'
-                  ? 'Dr. Marcus Chen, MD'
-                  : selectedRole === 'staff'
-                  ? 'Sarah Jenkins, RN'
-                  : 'Hospital Director Robert Hayes'
-              }
+              placeholder="Eleanor Vance"
               className="w-full pl-10 pr-4 py-2 rounded-xl bg-slate-900/90 border border-slate-800 text-white placeholder-slate-500 text-sm focus:outline-none focus:border-teal-500 focus:ring-1 focus:ring-teal-500"
             />
           </div>
         </div>
 
-        {/* Email Field (All Roles) */}
+        {/* Email Address */}
         <div>
           <label htmlFor="reg-email" className="block text-xs font-medium text-slate-300 mb-1">
-            {selectedRole === 'admin' ? 'Institutional Administrator Email' : 'Email Address'}
+            Email Address
           </label>
           <div className="relative">
             <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-500">
@@ -393,237 +337,55 @@ export const SignupScreen: React.FC<SignupScreenProps> = ({
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               disabled={isLoading}
-              placeholder={
-                selectedRole === 'admin'
-                  ? 'admin.director@medicare.mediai.health'
-                  : 'user@hospital.mediai.health'
-              }
+              placeholder="user@hospital.mediai.health"
               className="w-full pl-10 pr-4 py-2 rounded-xl bg-slate-900/90 border border-slate-800 text-white placeholder-slate-500 text-sm focus:outline-none focus:border-teal-500 focus:ring-1 focus:ring-teal-500"
             />
           </div>
         </div>
 
-        {/* Phone Field (Patient, Doctor, Staff) */}
-        {selectedRole !== 'admin' && (
-          <div>
-            <label htmlFor="reg-phone" className="block text-xs font-medium text-slate-300 mb-1">
-              Contact Phone Number
-            </label>
-            <div className="relative">
-              <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-500">
-                <Phone size={15} />
-              </div>
-              <input
-                id="reg-phone"
-                type="tel"
-                value={phone}
-                onChange={(e) => setPhone(e.target.value)}
-                disabled={isLoading}
-                placeholder="+1 (555) 000-0000"
-                className="w-full pl-10 pr-4 py-2 rounded-xl bg-slate-900/90 border border-slate-800 text-white placeholder-slate-500 text-sm focus:outline-none focus:border-teal-500 focus:ring-1 focus:ring-teal-500"
-              />
+        {/* Contact Phone Number */}
+        <div>
+          <label htmlFor="reg-phone" className="block text-xs font-medium text-slate-300 mb-1">
+            Contact Phone Number
+          </label>
+          <div className="relative">
+            <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-500">
+              <Phone size={15} />
             </div>
+            <input
+              id="reg-phone"
+              type="tel"
+              value={phone}
+              onChange={(e) => setPhone(e.target.value)}
+              disabled={isLoading}
+              placeholder="+1 (555) 000-0000"
+              className="w-full pl-10 pr-4 py-2 rounded-xl bg-slate-900/90 border border-slate-800 text-white placeholder-slate-500 text-sm focus:outline-none focus:border-teal-500 focus:ring-1 focus:ring-teal-500"
+            />
           </div>
-        )}
+        </div>
 
-        {/* ROLE SPECIFIC: PATIENT -> Date of Birth */}
-        {selectedRole === 'patient' && (
-          <div>
-            <label htmlFor="reg-dob" className="block text-xs font-medium text-slate-300 mb-1">
-              Date of Birth (Required for Medical Record Matching)
-            </label>
-            <div className="relative">
-              <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-500">
-                <Calendar size={15} />
-              </div>
-              <input
-                id="reg-dob"
-                type="date"
-                value={dateOfBirth}
-                onChange={(e) => setDateOfBirth(e.target.value)}
-                disabled={isLoading}
-                max={new Date().toISOString().split('T')[0]}
-                className="w-full pl-10 pr-4 py-2 rounded-xl bg-slate-900/90 border border-slate-800 text-white placeholder-slate-500 text-sm focus:outline-none focus:border-teal-500 focus:ring-1 focus:ring-teal-500 [color-scheme:dark]"
-              />
+        {/* Date of Birth */}
+        <div>
+          <label htmlFor="reg-dob" className="block text-xs font-medium text-slate-300 mb-1">
+            Date of Birth (Required for Medical Record Matching)
+          </label>
+          <div className="relative">
+            <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-500">
+              <Calendar size={15} />
             </div>
+            <input
+              id="reg-dob"
+              type="date"
+              value={dateOfBirth}
+              onChange={(e) => setDateOfBirth(e.target.value)}
+              disabled={isLoading}
+              max={new Date().toISOString().split('T')[0]}
+              className="w-full pl-10 pr-4 py-2 rounded-xl bg-slate-900/90 border border-slate-800 text-white placeholder-slate-500 text-sm focus:outline-none focus:border-teal-500 focus:ring-1 focus:ring-teal-500 [color-scheme:dark]"
+            />
           </div>
-        )}
+        </div>
 
-        {/* ROLE SPECIFIC: DOCTOR -> Specialization, Medical Reg Number, Hospital Invite Code */}
-        {selectedRole === 'doctor' && (
-          <>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div>
-                <label htmlFor="reg-specialization" className="block text-xs font-medium text-slate-300 mb-1">
-                  Clinical Specialization
-                </label>
-                <div className="relative">
-                  <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-500">
-                    <Stethoscope size={15} />
-                  </div>
-                  <select
-                    id="reg-specialization"
-                    value={specialization}
-                    onChange={(e) => setSpecialization(e.target.value)}
-                    disabled={isLoading}
-                    className="w-full pl-10 pr-4 py-2 rounded-xl bg-slate-900/90 border border-slate-800 text-white text-xs focus:outline-none focus:border-teal-500 focus:ring-1 focus:ring-teal-500"
-                  >
-                    {MEDICAL_SPECIALIZATIONS.map((spec) => (
-                      <option key={spec} value={spec} className="bg-slate-900 text-white">
-                        {spec}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-
-              <div>
-                <label htmlFor="reg-med-reg" className="block text-xs font-medium text-slate-300 mb-1">
-                  Medical Registration No.
-                </label>
-                <div className="relative">
-                  <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-500">
-                    <IdCard size={15} />
-                  </div>
-                  <input
-                    id="reg-med-reg"
-                    type="text"
-                    value={medicalRegNumber}
-                    onChange={(e) => setMedicalRegNumber(e.target.value)}
-                    disabled={isLoading}
-                    placeholder="e.g. NPI-10492817"
-                    className="w-full pl-10 pr-4 py-2 rounded-xl bg-slate-900/90 border border-slate-800 text-white placeholder-slate-500 text-xs focus:outline-none focus:border-teal-500 focus:ring-1 focus:ring-teal-500"
-                  />
-                </div>
-              </div>
-            </div>
-
-            <div>
-              <div className="flex items-center justify-between mb-1">
-                <label htmlFor="reg-doc-invite" className="block text-xs font-medium text-slate-300">
-                  Hospital Physician Invitation Code
-                </label>
-                <span className="text-[10px] text-slate-500">Issued by Hospital Credentialing</span>
-              </div>
-              <div className="relative">
-                <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-500">
-                  <KeyRound size={15} />
-                </div>
-                <input
-                  id="reg-doc-invite"
-                  type="text"
-                  value={doctorInviteCode}
-                  onChange={(e) => setDoctorInviteCode(e.target.value)}
-                  disabled={isLoading}
-                  placeholder="Enter authorized hospital invitation code"
-                  className="w-full pl-10 pr-4 py-2 rounded-xl bg-slate-900/90 border border-slate-800 text-white placeholder-slate-500 text-xs font-mono uppercase focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
-                />
-              </div>
-            </div>
-          </>
-        )}
-
-        {/* ROLE SPECIFIC: STAFF -> Staff ID, Department, Hospital Invite Code */}
-        {selectedRole === 'staff' && (
-          <>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div>
-                <label htmlFor="reg-staff-id" className="block text-xs font-medium text-slate-300 mb-1">
-                  Hospital Staff ID
-                </label>
-                <div className="relative">
-                  <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-500">
-                    <IdCard size={15} />
-                  </div>
-                  <input
-                    id="reg-staff-id"
-                    type="text"
-                    value={staffId}
-                    onChange={(e) => setStaffId(e.target.value)}
-                    disabled={isLoading}
-                    placeholder="e.g. STF-8842-NUR"
-                    className="w-full pl-10 pr-4 py-2 rounded-xl bg-slate-900/90 border border-slate-800 text-white placeholder-slate-500 text-xs focus:outline-none focus:border-teal-500 focus:ring-1 focus:ring-teal-500"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label htmlFor="reg-department" className="block text-xs font-medium text-slate-300 mb-1">
-                  Hospital Department
-                </label>
-                <div className="relative">
-                  <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-500">
-                    <Building size={15} />
-                  </div>
-                  <select
-                    id="reg-department"
-                    value={department}
-                    onChange={(e) => setDepartment(e.target.value)}
-                    disabled={isLoading}
-                    className="w-full pl-10 pr-4 py-2 rounded-xl bg-slate-900/90 border border-slate-800 text-white text-xs focus:outline-none focus:border-teal-500 focus:ring-1 focus:ring-teal-500"
-                  >
-                    {HOSPITAL_DEPARTMENTS.map((dept) => (
-                      <option key={dept} value={dept} className="bg-slate-900 text-white">
-                        {dept}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-            </div>
-
-            <div>
-              <div className="flex items-center justify-between mb-1">
-                <label htmlFor="reg-staff-invite" className="block text-xs font-medium text-slate-300">
-                  Unit Authorization Code
-                </label>
-                <span className="text-[10px] text-slate-500">Issued by Department Head</span>
-              </div>
-              <div className="relative">
-                <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-500">
-                  <KeyRound size={15} />
-                </div>
-                <input
-                  id="reg-staff-invite"
-                  type="text"
-                  value={staffInviteCode}
-                  onChange={(e) => setStaffInviteCode(e.target.value)}
-                  disabled={isLoading}
-                  placeholder="Enter hospital unit supervisor code"
-                  className="w-full pl-10 pr-4 py-2 rounded-xl bg-slate-900/90 border border-slate-800 text-white placeholder-slate-500 text-xs font-mono uppercase focus:outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500"
-                />
-              </div>
-            </div>
-          </>
-        )}
-
-        {/* ROLE SPECIFIC: ADMIN -> Administrator Invitation Code */}
-        {selectedRole === 'admin' && (
-          <div>
-            <div className="flex items-center justify-between mb-1">
-              <label htmlFor="reg-admin-invite" className="block text-xs font-medium text-amber-200">
-                Governance Authorization Key (Mandatory)
-              </label>
-              <span className="text-[10px] text-amber-400/70">Confidential Key Required</span>
-            </div>
-            <div className="relative">
-              <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-amber-500">
-                <ShieldCheck size={15} />
-              </div>
-              <input
-                id="reg-admin-invite"
-                type="text"
-                value={adminInviteCode}
-                onChange={(e) => setAdminInviteCode(e.target.value)}
-                disabled={isLoading}
-                placeholder="Enter institutional governance authorization key"
-                className="w-full pl-10 pr-4 py-2 rounded-xl bg-slate-900/90 border border-amber-600/50 text-amber-100 placeholder-slate-600 text-xs font-mono tracking-wider uppercase focus:outline-none focus:border-amber-400 focus:ring-1 focus:ring-amber-400"
-              />
-            </div>
-          </div>
-        )}
-
-        {/* Password & Confirm Password (All Roles) */}
+        {/* Password & Confirm Password */}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
           <div>
             <label htmlFor="reg-password" className="block text-xs font-medium text-slate-300 mb-1">
@@ -716,11 +478,11 @@ export const SignupScreen: React.FC<SignupScreenProps> = ({
             {isLoading ? (
               <>
                 <Loader2 size={16} className="animate-spin text-slate-950" />
-                <span>Validating & Registering...</span>
+                <span>Registering Patient Account...</span>
               </>
             ) : (
               <>
-                <span>Complete {ROLES_CONFIG[selectedRole].title} Registration</span>
+                <span>Complete Patient Registration</span>
                 <ArrowRight size={16} className="text-slate-950 group-hover:translate-x-0.5 transition-transform" />
               </>
             )}

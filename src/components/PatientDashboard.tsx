@@ -45,13 +45,17 @@ import {
   NotificationItem,
 } from '../types/patient';
 import { patientService } from '../services/patientService';
+import { authService } from '../services/authService';
+import { HospitalRole, AuthUser } from '../types/auth';
 import { AppointmentBookingWizard } from './AppointmentBookingWizard';
 
 interface PatientDashboardProps {
+  user?: AuthUser | null;
   onLogout: () => void;
+  onRoleSwitch?: (role: HospitalRole) => void;
 }
 
-export const PatientDashboard: React.FC<PatientDashboardProps> = ({ onLogout }) => {
+export const PatientDashboard: React.FC<PatientDashboardProps> = ({ user, onLogout, onRoleSwitch }) => {
   const [dashboardData, setDashboardData] = useState<PatientDashboardData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -85,6 +89,7 @@ export const PatientDashboard: React.FC<PatientDashboardProps> = ({ onLogout }) 
 
   // Success toast for notifications
   const [successToast, setSuccessToast] = useState<string | null>(null);
+
 
   const fetchDashboard = async () => {
     setIsLoading(true);
@@ -270,16 +275,22 @@ export const PatientDashboard: React.FC<PatientDashboardProps> = ({ onLogout }) 
             {/* Patient Profile Pill */}
             <div className="hidden sm:flex items-center gap-2 pl-3 border-l border-[#DCE5EC]">
               <div className="w-8 h-8 rounded-full bg-emerald-100 text-[#047857] border border-emerald-200 flex items-center justify-center font-bold text-xs">
-                {dashboardData?.patient?.first_name?.charAt(0) || 'P'}
+                {user?.name?.charAt(0) || dashboardData?.patient?.first_name?.charAt(0) || dashboardData?.patient?.name?.charAt(0) || 'P'}
               </div>
               <div className="text-left text-xs">
                 <span className="font-bold text-[#172B4D] block truncate max-w-[120px]">
-                  {dashboardData?.patient?.name || `${dashboardData?.patient?.first_name || ''} ${dashboardData?.patient?.last_name || ''}`.trim() || 'Patient'}
+                  {user?.name || dashboardData?.patient?.name || `${dashboardData?.patient?.first_name || ''} ${dashboardData?.patient?.last_name || ''}`.trim() || 'Patient'}
                 </span>
                 <span className="text-[#526581] font-mono text-[10px] block">
-                  {dashboardData?.patient?.patient_id}
+                  {user?.patient_id || dashboardData?.patient?.patient_id || user?.email}
                 </span>
               </div>
+            </div>
+
+            {/* Institutional Patient Role Badge */}
+            <div className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-50 text-emerald-800 border border-emerald-200 text-xs font-semibold">
+              <span className="w-1.5 h-1.5 rounded-full bg-[#059669]" />
+              <span>Role: Patient</span>
             </div>
 
             {/* Logout button */}
@@ -296,7 +307,7 @@ export const PatientDashboard: React.FC<PatientDashboardProps> = ({ onLogout }) 
       </header>
 
       {/* Main Container */}
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-6">
         {/* Success Feedback Alert Toast */}
         {successToast && (
           <div className="p-4 rounded-2xl bg-emerald-50 border border-emerald-200 text-emerald-900 flex items-center justify-between text-xs sm:text-sm shadow-md animate-in slide-in-from-top duration-200">
