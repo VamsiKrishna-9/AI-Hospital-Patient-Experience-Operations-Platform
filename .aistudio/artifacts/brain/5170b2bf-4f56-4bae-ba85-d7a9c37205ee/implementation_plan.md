@@ -1,52 +1,48 @@
-# Unified Authentication, Default Patient Registration & Executive Role Governance
+# Dynamic User Identity Binding & Clean Patient Dashboard Architecture
 
-Streamline MediAI's authentication architecture into a unified, common login and registration pipeline where all new users register securely as Patients, while hospital administrators retain exclusive privilege in the Admin Dashboard to reassign and manage roles directly synchronized with the database.
+Eliminate hardcoded persona overrides (`Elena Rostova`) and establish an authoritative, dynamic user data pipeline where newly registered accounts display their exact registered legal name, email, phone, and patient ID, accompanied by a clean clinical record ready for real-time appointment scheduling.
 
 > [!IMPORTANT]
-> **Confirmed User Decisions & Requirements:**
-> - **Zero UI Redesign / Strict Visual Preservation**: Preserve all existing design aesthetics, dark navy background (`#0B0F19`), cyan/teal accents, typography, spacing, button/input styles, and the left-side patient journey animation.
-> - **Common Login**: Unified login for all roles (Patient, Doctor, Staff, Admin) without role selectors. Dynamic backend role resolution routes users to their respective authorized dashboard.
-> - **Common Registration**: Remove the role selector from registration. All new users register through the same single form with default Patient assignment.
-> - **Admin-Only Role Modification**: Strictly enforce Admin-only role modification across all APIs. Deprecate public self-elevation endpoints.
-> - **Clinical ID Lifecycle**: Retain clinical IDs (`DOC-XXXX`, `STF-XXXX`) in user profile history upon demotion/reassignment while revoking active staff/physician dashboard access.
+> **Confirmed User Decisions (Phase 1 Clarification):**
+> - **Dashboard Initial State**: Start with a clean patient record ready for booking (`upcomingAppointments: []`, `completedEncounters: []`, `labReports: []`, `prescriptions: []`) with a personalized onboarding welcome notification.
+> - **Storage Strategy**: Dynamic storage that maps directly to the live PostgreSQL/Supabase database when credentials are set, with zero hardcoded persona fallbacks.
 
 ---
 
 ## 1. Overview & Core Concept
 
-- **Unified Hospital Login**: A single, elegant login portal accepting either Patient ID (`PXXXXXX`) or Hospital Institutional Email. Upon authentication, the backend returns the user's verified role and dispatches to the authorized dashboard.
-- **Default Patient Onboarding**: Public signup assigns `patient` status exclusively. No public user can self-select or elevate to Doctor, Staff, or Admin during registration.
-- **Executive Role Governance**: Hospital administrators use the dedicated **User Governance** tab within the Admin Dashboard to promote or reassign user roles across the complete matrix (`Patient ↔ Doctor`, `Patient ↔ Staff`, `Patient ↔ Admin`). All updates persist immediately to the database and register in the executive audit ledger.
+- **The Problem**: Previously, `authenticateToken` and `/api/patient/dashboard` in `server.ts` hardcoded fallback values for patient identity (`Elena Rostova`, `P182162`, `elena.rostova@patient.org`) and synthetic historical appointments whenever requests used session tokens. Consequently, a user who registered with their own name saw "Elena Rostova" on their dashboard.
+- **The Solution**: 
+  1. Token generation embeds the user's real account identifier and securely resolves their exact registered identity (`name`, `email`, `phone`, `date_of_birth`, `patient_id`) from the user registry or Supabase `app_users`.
+  2. `/api/patient/dashboard` dynamically constructs the patient profile using the authenticated user's actual registered credentials.
+  3. New patients start with a clean clinical record and can book dynamic appointments via the existing Appointment Booking Wizard, which immediately persist and display on their dashboard under their own name.
 
 ---
 
 ## 2. User Experience & Visual Design
 
-### Strict UI Preservation Guarantee
-- **Login Screen (`LoginScreen.tsx`)**:
-  - Keep the existing two-column layout: left column features the animated Patient Journey steps; right column hosts the login card.
-  - Maintain the existing single identifier field (`Patient ID or Hospital Email`), password field with visibility toggle, remember device checkbox, and Google sign-in button.
-  - No role selector on the login card.
-- **Registration Screen (`SignupScreen.tsx`)**:
-  - Remove the `<RoleSelector />` component and role-specific conditional branches (medical registration number, invite codes, department dropdowns).
-  - Form displays only standard patient registration inputs: Full Legal Name, Email Address, Phone Number, Date of Birth, Password, Confirm Password, and Terms of Service consent checkbox.
-  - Retain the Google Quick Signup button with automatic Patient role assignment.
-  - Preserve exact padding, colors, font styling, animations, and container geometry.
-- **Admin Dashboard (`AdminDashboard.tsx`)**:
-  - Maintain the existing **User Governance** tab with real-time search, role filtering, high-density accounts table, inline role adjustment menu, and audit trail ledger.
+- **Strict UI Preservation**:
+  - Zero modifications to CSS classes, dark navy background, teal/cyan accent palette, layout, typography, or the left-side patient journey animation.
+  - The Patient Dashboard top navigation bar immediately reflects the user's actual registered name in the profile avatar pill (`{user.name}`) and their assigned Patient ID (`{user.patient_id}`).
+  - The welcome banner displays: `"Welcome back, [Registered Full Name]"` with their actual date of birth, contact number, and medical record identifier.
+- **Clean Slate Onboarding Experience**:
+  - The **Upcoming Consultations** section gracefully displays an active empty state: *"No upcoming consultations scheduled. Use the Schedule Appointment wizard to book your visit."*
+  - The **Appointments**, **Encounters**, **Lab Reports**, and **Prescriptions** tabs reflect the patient's real history rather than third-party mock records.
+  - Personalized welcome notification in the notification dropdown: *"Welcome to MediAI, [Name]. Your official Patient ID is [PXXXXXX]."*
 
 ---
 
-## 3. Key Product Decisions & Trade-Offs
+## 3. Key Technical Decisions & Trade-Offs
 
-- **Decision 1: Removal of Public Self-Elevation API**
-  - *Chosen Approach*: Restrict `/api/auth/update-role` or replace it strictly with authenticated admin verification via `POST /api/admin/users/update-role`.
-  - *Why*: Eliminates security vulnerabilities where non-admin callers could escalate their privileges.
-- **Decision 2: Retention of Historical Clinical Credentials on Demotion**
-  - *Chosen Approach*: When a Doctor or Staff member is reassigned to Patient, their `doctor_id` / `staff_id` is preserved in `historical_identifiers` or metadata, while their active `role` is set to `'patient'` and access tokens are restricted.
-  - *Why*: Satisfies hospital compliance and licensing records while immediately cutting off clinical dashboard access.
-- **Decision 3: Backend-Authoritative Dashboard Routing**
-  - *Chosen Approach*: The client receives `{ user: { role: 'patient' | 'doctor' | 'staff' | 'admin' } }` from the server. `App.tsx` routes strictly based on verified server role. Direct URL manipulation is guarded by role state.
+- **Decision 1: Token-to-Identity Dynamic Resolution**
+  - *Chosen Approach*: Update session tokens to be user-bound (`session-token-${user.id}-${Date.now()}` or lookup token). In `authenticateToken`, lookup the actual user record by ID or email in the registered accounts store / `app_users`.
+  - *Why*: Guarantees that `req.appUser` and `req.authenticatedPatientId` always match the person who actually registered or logged in, completely eliminating hardcoded "Elena Rostova" substitutions.
+- **Decision 2: Dynamic Patient Dashboard Generator**
+  - *Chosen Approach*: `/api/patient/dashboard` reads `req.appUser` directly to generate the `patient` profile. If the patient is newly registered, return their exact demographic profile with an empty appointment queue.
+  - *Why*: Accurately reflects their real-time state and immediately updates when the patient uses the appointment booking wizard.
+- **Decision 3: Seamless Supabase PostgreSQL Transition**
+  - *Chosen Approach*: When `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` are configured in `.env`, the system queries `public.silver_patients` and `public.app_users` for the user. When not yet configured, the server uses the verified in-memory registry without reverting to hardcoded fictitious names.
+  - *Why*: Adheres to the user's preference for dynamic data that utilizes the live database whenever credentials are provided.
 
 ---
 
@@ -54,59 +50,45 @@ Streamline MediAI's authentication architecture into a unified, common login and
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    MediAI Client Application                │
+│                    MediAI React Client                      │
 │                                                             │
-│   ┌──────────────────────────┐  ┌────────────────────────┐  │
-│   │ LoginScreen              │  │ SignupScreen           │  │
-│   │ (Common - Single Form)   │  │ (Default Patient Only) │  │
-│   └────────────┬─────────────┘  └───────────┬────────────┘  │
-│                │ POST /api/auth/login       │ POST /api/auth/common-register
-└────────────────┼────────────────────────────┼───────────────┘
-                 │                            │
-                 ▼                            ▼
+│   [SignupScreen] ──(Full Name: John Doe)──► POST /api/auth/common-register
+│   [LoginScreen]  ──(Login as John Doe)───► POST /api/auth/common-login
+│                                                  │
+│   [PatientDashboard] ◄──(Dynamic John Doe Data)──┘ GET /api/patient/dashboard
+└──────────────────────────────┬──────────────────────────────┘
+                               │ Bearer session-token-usr-...
+                               ▼
 ┌─────────────────────────────────────────────────────────────┐
 │                   Express Backend Gateway                   │
 │                                                             │
-│  ├─ POST /api/auth/common-register:                         │
-│  │    └─ Force role='patient', generate P-ID, save to DB    │
-│  ├─ POST /api/auth/login:                                   │
-│  │    └─ Lookup in app_users, return verified role & token  │
-│  ├─ POST /api/admin/users/update-role:                      │
-│  │    ├─ Check requireAdminRole middleware                  │
-│  │    ├─ Update role in DB & sync clinical IDs              │
-│  │    └─ Log event to executive audit ledger                │
-└────────────────┬────────────────────────────────────────────┘
-                 │
-                 ▼
-┌─────────────────────────────────────────────────────────────┐
-│                 Supabase PostgreSQL DB                      │
-│  ├─ public.app_users (Authoritative role store)             │
-│  └─ public.audit_logs (Immutable role transition ledger)    │
-└─────────────────────────────────────────────────────────────┘
+│  1. authenticateToken Middleware:                           │
+│     ├─ Extracts user identifier from token                  │
+│     └─ Resolves real RegisteredAccount (Name, Email, P-ID)  │
+│                                                             │
+│  2. GET /api/patient/dashboard:                             │
+│     ├─ Constructs patient profile from real user account    │
+│     ├─ Returns clean slate for new patients                 │
+│     └─ Binds dynamic booked appointments to user.patient_id │
+└──────────────────────────────┬──────────────────────────────┘
+                               │
+                ┌──────────────┴──────────────┐
+                ▼                             ▼
+       [Live Supabase DB]           [Dynamic Server Registry]
+     (When credentials set)          (Zero Hardcoded Personas)
 ```
 
 ---
 
 ## 5. Implementation Steps
 
-1. **Signup Screen (`src/components/SignupScreen.tsx`)**:
-   - Remove `<RoleSelector />` and role-selection state.
-   - Set fixed role to `'patient'` for all new registrations.
-   - Remove doctor, staff, and admin invitation code / specialization input branches.
-   - Keep only patient fields (Name, Email, Phone, Date of Birth, Password, Terms).
-   - Ensure submit button reads "Complete Patient Registration" and preserves existing gradient styling.
-2. **Backend Hardening (`server.ts`)**:
-   - Ensure `POST /api/auth/common-register` always assigns `role = 'patient'`.
-   - Lock down `POST /api/admin/users/update-role` with `requireAdminRole`.
-   - Update user role modification logic to retain clinical IDs in user metadata when reassigned to Patient.
-   - Remove or secure any leftover self-elevation test endpoints.
-3. **Session & Routing Verification (`src/App.tsx`)**:
-   - Confirm common login navigates to appropriate dashboard based on backend `user.role`.
-   - Confirm active session updates if an admin modifies the user's role.
-4. **End-to-End Verification**:
-   - Register a new user and verify they receive Patient role and ID.
-   - Log in as Admin and navigate to User Governance.
-   - Modify the user's role to Doctor, Staff, or Admin.
-   - Verify database persistence and audit log entry.
-   - Log in as the updated user and verify navigation to the corresponding dashboard.
-   - Run compilation and automated test suites.
+1. **Token Generation & Authentication Middleware (`server.ts`)**:
+   - In `POST /api/auth/common-register` and `POST /api/auth/common-login`, issue tokens tied to the account's unique ID: `session-token-${account.id}-${Date.now()}`.
+   - In `authenticateToken`, resolve `(req as any).appUser` dynamically from `REGISTERED_ACCOUNTS.get(accountId)` or `app_users`. Remove hardcoded `'Elena Rostova'` and `'P182162'`.
+2. **Dynamic Patient Dashboard Endpoint (`server.ts`)**:
+   - Refactor `GET /api/patient/dashboard` to build the patient object using the authenticated user's actual `full_name`, `email`, `phone`, `date_of_birth`, and `patient_id`.
+   - Remove hardcoded Elena Rostova appointments, lab reports, and prescriptions. Return dynamic appointments filtered by the user's `patient_id` (empty for new patients, populated upon booking).
+3. **Appointment Booking Integration (`server.ts`)**:
+   - Verify `POST /api/patient/appointments/book` saves appointments under `req.authenticatedPatientId` and reflects immediately in the patient's dashboard.
+4. **Automated Verification**:
+   - Run end-to-end test registering a user with a custom name (e.g., "Sarah Connor"), logging in, and verifying `GET /api/patient/dashboard` returns "Sarah Connor", their real ID, and a clean appointment list.
