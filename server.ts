@@ -39,7 +39,7 @@ import {
   validateHospitalBranch,
 } from './src/server/bookingValidation';
 
-dotenv.config();
+dotenv.config({ override: true });
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -175,9 +175,52 @@ async function authenticateToken(req: Request, res: Response, next: NextFunction
 
   const token = authHeader.split(' ')[1];
 
-  if (token && token.startsWith('demo-session-token-')) {
-    const parts = token.replace('demo-session-token-', '').split('-');
-    const role = (['patient', 'doctor', 'staff', 'admin'].includes(parts[0]) ? parts[0] : 'patient') as any;
+  if (token && (token.startsWith('session-token-') || token.startsWith('demo-session-token-'))) {
+    const raw = token.replace('session-token-', '').replace('demo-session-token-', '');
+    const [rolePart, ...rest] = raw.split('-');
+    const userIdOrSuffix = rest.join('-');
+    const role = (['patient', 'doctor', 'staff', 'admin'].includes(rolePart) ? rolePart : 'patient') as any;
+
+    // 1. Resolve directly from live Supabase PostgreSQL app_users if active
+    const admin = getSupabaseAdmin();
+    if (admin && isDatabaseConnected && userIdOrSuffix && userIdOrSuffix.length > 10) {
+      try {
+        const { data: dbUser } = await admin
+          .from('app_users')
+          .select('*')
+          .eq('id', userIdOrSuffix)
+          .single();
+        if (dbUser) {
+          (req as any).authUser = { id: dbUser.id, email: dbUser.email };
+          (req as any).appUser = dbUser;
+          (req as any).authenticatedPatientId = dbUser.patient_id;
+          (req as any).userToken = token;
+          return next();
+        }
+      } catch (err) {
+        // Fallback to in-memory lookup
+      }
+    }
+
+    // 2. Resolve from in-memory account registry
+    const inMem = REGISTERED_ACCOUNTS.get(userIdOrSuffix) || Array.from(REGISTERED_ACCOUNTS.values()).find((a) => a.id === userIdOrSuffix);
+    if (inMem) {
+      (req as any).authUser = { id: inMem.id, email: inMem.email };
+      (req as any).appUser = {
+        id: inMem.id,
+        role: inMem.role,
+        patient_id: inMem.patient_id,
+        doctor_id: inMem.doctor_id,
+        staff_id: inMem.staff_id,
+        full_name: inMem.fullName,
+        email: inMem.email,
+        is_active: true,
+      };
+      (req as any).authenticatedPatientId = inMem.patient_id;
+      (req as any).userToken = token;
+      return next();
+    }
+
     (req as any).authUser = { id: `demo-${role}-user`, email: `${role}@hospital.org` };
     (req as any).appUser = {
       id: `demo-${role}-user`,
@@ -776,22 +819,22 @@ app.post('/api/auth/common-login', async (req: Request, res: Response) => {
       });
     }
 
-    const demoToken = `demo-session-token-${registered.role}-${Date.now()}`;
-    const demoPatient = registered.role === 'patient' ? {
-      patient_id: registered.patient_id || 'P182162',
+    const sessionToken = `session-token-${registered.role}-${registered.id}`;
+    const patientProfile = registered.role === 'patient' ? {
+      patient_id: registered.patient_id,
       name: registered.fullName,
       first_name: registered.fullName.split(' ')[0] || 'Patient',
-      last_name: registered.fullName.split(' ').slice(1).join(' ') || 'User',
+      last_name: registered.fullName.split(' ').slice(1).join(' ') || '',
       email: registered.email,
-      phone: registered.phone || '+1 (555) 234-9182',
-      date_of_birth: registered.date_of_birth || '1984-06-12',
-      age: 40,
-      gender: 'Female',
+      phone: registered.phone || '',
+      date_of_birth: registered.date_of_birth || '',
+      age: registered.date_of_birth ? Math.max(0, new Date().getFullYear() - new Date(registered.date_of_birth).getFullYear()) : 30,
+      gender: 'Not specified',
       blood_group: 'O+',
       city: 'Metro Medical District',
       state: 'CA',
-      address: '742 Evergreen Terrace, Suite 300',
-      emergency_contact: 'Family Contact (+1 555-234-9183)',
+      address: 'Medical Patient Residence',
+      emergency_contact: 'Primary Contact',
       primary_doctor_name: 'Dr. Marcus Vance, MD',
     } : undefined;
 
@@ -799,7 +842,7 @@ app.post('/api/auth/common-login', async (req: Request, res: Response) => {
       success: true,
       isDemoMode: !isDatabaseConnected,
       role: registered.role,
-      token: demoToken,
+      token: sessionToken,
       user: {
         id: registered.id,
         name: registered.fullName,
@@ -811,7 +854,7 @@ app.post('/api/auth/common-login', async (req: Request, res: Response) => {
         specialty: registered.specialty,
         department: registered.department,
       },
-      patient: demoPatient,
+      patient: patientProfile,
       patientId: registered.patient_id,
       message: `Signed in as ${registered.role.toUpperCase()}: ${registered.fullName}`,
     });
@@ -902,57 +945,91 @@ app.post('/api/auth/common-register', async (req: Request, res: Response) => {
 
     if (adminClient && anonClient) {
       try {
-        const defaultAppUrl = 'https://ais-dev-nncaxpb3lbbj7vb6hsyltf-933048657426.asia-southeast1.run.app';
-        const emailRedirectTo = process.env.APP_URL || defaultAppUrl;
-
-        const { data: authData, error: authError } = await anonClient.auth.signUp({
+        // Provision user directly via Supabase Auth Admin to prevent free-tier email rate limit exhaustion
+        let authUser: any = null;
+        const { data: createData, error: createError } = await adminClient.auth.admin.createUser({
           email,
           password,
-          options: {
-            emailRedirectTo,
-            data: {
-              full_name: name,
-              phone,
-              date_of_birth: dateOfBirth,
-              role: assignedRole,
-            },
+          email_confirm: true,
+          user_metadata: {
+            full_name: name,
+            phone,
+            date_of_birth: dateOfBirth,
+            role: assignedRole,
           },
         });
 
-        if (authError || !authData.user) {
-          return res.status(400).json({
-            success: false,
-            message: authError?.message || 'Registration failed in Supabase Auth.',
+        if (createError || !createData.user) {
+          // If already exists or error, attempt standard signUp fallback
+          const defaultAppUrl = 'https://ais-dev-nncaxpb3lbbj7vb6hsyltf-933048657426.asia-southeast1.run.app';
+          const emailRedirectTo = process.env.APP_URL || defaultAppUrl;
+          const { data: authData, error: authError } = await anonClient.auth.signUp({
+            email,
+            password,
+            options: {
+              emailRedirectTo,
+              data: {
+                full_name: name,
+                phone,
+                date_of_birth: dateOfBirth,
+                role: assignedRole,
+              },
+            },
           });
+
+          if (authError || !authData.user) {
+            return res.status(400).json({
+              success: false,
+              message: createError?.message || authError?.message || 'Registration failed in Supabase Auth.',
+            });
+          }
+          authUser = authData.user;
+        } else {
+          authUser = createData.user;
+        }
+
+        // Retrieve authoritative patient_id assigned by Supabase database trigger
+        let authoritativePatientId = patientId;
+        for (let i = 0; i < 5; i++) {
+          const { data: dbUser } = await adminClient
+            .from('app_users')
+            .select('patient_id')
+            .eq('id', authUser.id)
+            .single();
+          if (dbUser?.patient_id) {
+            authoritativePatientId = dbUser.patient_id;
+            break;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 150));
         }
 
         const newAccount: RegisteredAccount = {
-          id: authData.user.id,
+          id: authUser.id,
           email,
           fullName: name,
           role: assignedRole,
           password,
-          patient_id: patientId,
+          patient_id: authoritativePatientId,
           phone: phone || '+1 (555) 234-9000',
           date_of_birth: dateOfBirth || '1995-01-01',
           created_at: new Date().toISOString(),
         };
         REGISTERED_ACCOUNTS.set(email, newAccount);
-        REGISTERED_ACCOUNTS.set(patientId.toUpperCase(), newAccount);
+        REGISTERED_ACCOUNTS.set(authoritativePatientId.toUpperCase(), newAccount);
 
         return res.json({
           success: true,
-          message: `Registration successful! Your official Patient ID is ${patientId}. You can now sign in.`,
-          patientId,
+          message: `Registration successful! Your official Patient ID is ${authoritativePatientId}. You can now sign in.`,
+          patientId: authoritativePatientId,
           role: assignedRole,
           user: {
-            id: authData.user.id,
+            id: authUser.id,
             name,
             email,
             role: assignedRole,
-            patient_id: patientId,
+            patient_id: authoritativePatientId,
           },
-          token: authData.session?.access_token || `demo-session-token-${assignedRole}-${Date.now()}`,
+          token: `session-token-${assignedRole}-${authUser.id}`,
         });
       } catch (err: any) {
         console.error('Supabase registration error:', err);
@@ -1842,13 +1919,19 @@ app.get('/api/patient/dashboard', authenticateToken, requirePatientRole, async (
 
   try {
     // 1. Fetch Patient Demographics
+    const appUser = (req as any).appUser;
     const { data: patientRecord } = await adminClient
       .from('silver_patients')
       .select('*')
       .eq('patient_id', patientId)
       .single();
 
-    const patient = formatPatientProfile(patientRecord || { patient_id: patientId });
+    const patient = formatPatientProfile(patientRecord || {
+      patient_id: patientId,
+      name: appUser?.full_name || appUser?.name || 'Patient',
+      email: appUser?.email,
+      phone: appUser?.phone,
+    });
 
     // 2. Fetch Appointments
     const { data: appointmentsRaw } = await adminClient

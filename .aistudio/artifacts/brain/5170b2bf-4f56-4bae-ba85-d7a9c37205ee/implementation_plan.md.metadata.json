@@ -1,6 +1,6 @@
 {
-  "summary":  "Implementation plan for Unified Login, Default Patient Registration with complete UI preservation, and Admin-Only Role Governance with database synchronization.",
-  "updatedAt":  "2026-10-24T07:21:53.592847823Z",
+  "summary":  "Implementation plan for viewing and navigating to the Doctor Dashboard in MediAI, including an interactive workspace switcher in the Patient Portal header and seamless role switching.",
+  "updatedAt":  "2026-10-26T11:42:22.030832902Z",
   "requestFeedback":  true,
   "userFacing":  true
 }
