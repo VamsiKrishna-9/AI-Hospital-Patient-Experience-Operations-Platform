@@ -525,48 +525,54 @@ export const StaffDashboard: React.FC<StaffDashboardProps> = ({ user, onLogout, 
               </div>
             </div>
 
-            <div className="space-y-3">
-              {triageQueue.map((t) => (
-                <div
-                  key={t.ticket}
-                  className="p-4 rounded-xl bg-slate-900/60 border border-slate-800 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4"
-                >
-                  <div className="space-y-1">
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs font-mono font-bold text-teal-400 bg-slate-950 px-2 py-0.5 rounded border border-slate-800">
-                        {t.ticket}
-                      </span>
-                      <span className="text-sm font-bold text-white">{t.patient}</span>
-                      <span className="text-xs text-slate-500">({t.age}y)</span>
-                      <span className="text-xs text-slate-400 font-mono">· {t.arrival}</span>
+            {triageQueue.length === 0 ? (
+              <div className="p-8 text-center rounded-xl bg-slate-900/40 border border-slate-800 text-slate-400 text-xs">
+                No emergent triage intake waiting in the queue at this time.
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {triageQueue.map((t) => (
+                  <div
+                    key={t.ticket}
+                    className="p-4 rounded-xl bg-slate-900/60 border border-slate-800 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4"
+                  >
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-mono font-bold text-teal-400 bg-slate-950 px-2 py-0.5 rounded border border-slate-800">
+                          {t.ticket}
+                        </span>
+                        <span className="text-sm font-bold text-white">{t.patient}</span>
+                        <span className="text-xs text-slate-500">({t.age}y)</span>
+                        <span className="text-xs text-slate-400 font-mono">· {t.arrival}</span>
+                      </div>
+                      <div className="text-xs text-slate-300">{t.complaint}</div>
+                      <div className="text-[11px] text-slate-500">Target Station: {t.status} · Bed: {t.assignedBed}</div>
                     </div>
-                    <div className="text-xs text-slate-300">{t.complaint}</div>
-                    <div className="text-[11px] text-slate-500">Target Station: {t.status} · Bed: {t.assignedBed}</div>
-                  </div>
 
-                  <div className="flex items-center gap-3">
-                    <span
-                      className={`text-xs px-2.5 py-1 rounded font-mono ${
-                        t.acuity.includes('Emergent')
-                          ? 'bg-rose-500/10 text-rose-300 border border-rose-500/20'
-                          : 'bg-amber-500/10 text-amber-300 border border-amber-500/20'
-                      }`}
-                    >
-                      {t.acuity}
-                    </span>
-                    <button
-                      onClick={() => {
-                        setVitalsPatient(`${t.patient} (${t.ticket})`);
-                        setIsVitalsModalOpen(true);
-                      }}
-                      className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-teal-500 hover:bg-teal-400 text-slate-950 transition-colors cursor-pointer"
-                    >
-                      Intake Vitals
-                    </button>
+                    <div className="flex items-center gap-3">
+                      <span
+                        className={`text-xs px-2.5 py-1 rounded font-mono ${
+                          t.acuity.includes('Emergent')
+                            ? 'bg-rose-500/10 text-rose-300 border border-rose-500/20'
+                            : 'bg-amber-500/10 text-amber-300 border border-amber-500/20'
+                        }`}
+                      >
+                        {t.acuity}
+                      </span>
+                      <button
+                        onClick={() => {
+                          setVitalsPatient(`${t.patient} (${t.ticket})`);
+                          setIsVitalsModalOpen(true);
+                        }}
+                        className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-teal-500 hover:bg-teal-400 text-slate-950 transition-colors cursor-pointer"
+                      >
+                        Intake Vitals
+                      </button>
+                    </div>
                   </div>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
 
@@ -580,33 +586,39 @@ export const StaffDashboard: React.FC<StaffDashboardProps> = ({ user, onLogout, 
               </div>
             </div>
 
-            <div className="space-y-3">
-              {vitalsTasks.map((task) => (
-                <div
-                  key={task.task_id}
-                  className="p-4 rounded-xl bg-slate-900/60 border border-slate-800 flex items-center justify-between gap-4"
-                >
-                  <div>
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className="text-xs font-mono text-teal-400 font-bold">{task.room}</span>
-                      <span className="text-xs font-bold text-white">{task.patient}</span>
-                      <span className="text-[11px] text-slate-400">· Due: {task.due}</span>
-                    </div>
-                    <div className="text-xs text-slate-300">{task.parameter}</div>
-                  </div>
-
-                  <button
-                    onClick={() => {
-                      setVitalsPatient(`${task.patient} (${task.room})`);
-                      setIsVitalsModalOpen(true);
-                    }}
-                    className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-teal-500 hover:bg-teal-400 text-slate-950 transition-colors cursor-pointer"
+            {vitalsTasks.length === 0 ? (
+              <div className="p-8 text-center rounded-xl bg-slate-900/40 border border-slate-800 text-slate-400 text-xs">
+                All scheduled inpatient vitals checks are currently up to date.
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {vitalsTasks.map((task) => (
+                  <div
+                    key={task.task_id}
+                    className="p-4 rounded-xl bg-slate-900/60 border border-slate-800 flex items-center justify-between gap-4"
                   >
-                    Log Now
-                  </button>
-                </div>
-              ))}
-            </div>
+                    <div>
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="text-xs font-mono text-teal-400 font-bold">{task.room}</span>
+                        <span className="text-xs font-bold text-white">{task.patient}</span>
+                        <span className="text-[11px] text-slate-400">· Due: {task.due}</span>
+                      </div>
+                      <div className="text-xs text-slate-300">{task.parameter}</div>
+                    </div>
+
+                    <button
+                      onClick={() => {
+                        setVitalsPatient(`${task.patient} (${task.room})`);
+                        setIsVitalsModalOpen(true);
+                      }}
+                      className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-teal-500 hover:bg-teal-400 text-slate-950 transition-colors cursor-pointer"
+                    >
+                      Log Now
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
       </main>

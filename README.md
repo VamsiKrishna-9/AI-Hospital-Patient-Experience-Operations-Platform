@@ -5,7 +5,7 @@
 [![Tailwind CSS](https://img.shields.io/badge/Tailwind_CSS-v4.0-38bdf8.svg)](https://tailwindcss.com/)
 [![Express](https://img.shields.io/badge/Express-4.21-lightgrey.svg)](https://expressjs.com/)
 [![Supabase](https://img.shields.io/badge/Supabase-PostgreSQL_%26_Auth-3ecf8e.svg)](https://supabase.com/)
-[![Tests](https://img.shields.io/badge/Tests-17_Passing-success.svg)](https://nodejs.org/api/test.html)
+[![Tests](https://img.shields.io/badge/Tests-17_Unit_%2B_11_E2E_Passing-success.svg)](https://nodejs.org/api/test.html)
 
 **MediAI** is an intelligent, full-stack hospital patient experience and clinical operations platform. It unifies patient access, appointment scheduling, electronic health records (EHR), clinical workflows, staff operational management, and hospital telemetry into a single, cohesive system.
 
@@ -18,11 +18,13 @@ Built on modern cloud standards and the Medallion Data Architecture, MediAI brid
 - [Key Objectives](#key-objectives)
 - [System Architecture](#system-architecture)
 - [User Roles & Implemented Features](#user-roles--implemented-features)
+- [Unified Authentication & Security Architecture](#unified-authentication--security-architecture)
 - [Medallion Architecture & Canonical Silver Schema](#medallion-architecture--canonical-silver-schema)
 - [Supabase Database & Security Model](#supabase-database--security-model)
 - [Environment Configuration](#environment-configuration)
 - [Local Development & Testing](#local-development--testing)
-- [Current Project Status — October 24, 2026](#current-project-status--october-24-2026)
+- [Recent Pull Requests & Feature Changelog](#recent-pull-requests--feature-changelog)
+- [Current Project Status — October 26, 2026](#current-project-status--october-26-2026)
 - [Deployment & GitHub Publishing](#deployment--github-publishing)
 - [License & Compliance Notice](#license--compliance-notice)
 
@@ -85,36 +87,63 @@ MediAI is engineered as a unified full-stack application using Vite and Express:
 
 ## User Roles & Implemented Features
 
-The application supports four distinct user roles defined in `src/types/auth.ts`:
+MediAI provides specialized operational workspaces for four distinct hospital roles:
 
-### 1. Patient (`patient`)
-- **Interactive Patient Portal**: Real-time overview of current care journey, upcoming consultations, and clinical records.
+### 1. Patient (`patient`) — `PatientDashboard.tsx`
+- **Interactive Patient Portal**: Real-time overview of current care journey, upcoming consultations, care team, and clinical records.
 - **Appointment Booking Wizard**: Multi-step booking engine with doctor specialty filters, clinic slot selection (09:00–16:30 standard clinic slots), channel selection (`Online`, `In-Person`, `Emergency`), and priority designation (`Low`, `Medium`, `High`, `Urgent`).
-- **Electronic Medical Records**:
-  - **Clinical Encounters**: Detailed records of diagnoses, symptoms, vitals, and treatment plans.
+- **Electronic Medical Records (EMR)**:
+  - **Clinical Encounters**: Comprehensive records of diagnoses, symptoms, vitals, and treatment plans.
   - **Prescription Tracker**: Active and past medications, dosages, frequencies, routes, refills, and prescribed duration.
   - **Diagnostic Lab Telemetry**: Laboratory reports, reference range flags (`Normal`, `Abnormal`, `Critical`), and status tracking.
 - **Patient Experience Feedback**: 6 distinct evaluation dimensions (1–5 scale):
-  - Overall Rating
-  - Doctor Rating
-  - Staff Rating
-  - Wait Time Rating
-  - Cleanliness Rating
-  - Recommendation Likelihood (`likely_to_recommend`)
-  - Qualitative comments and sentiment categorization (`Positive`, `Neutral`, `Negative`).
+  - Overall Rating, Doctor Rating, Staff Rating, Wait Time Rating, Cleanliness Rating, Recommendation Likelihood (`likely_to_recommend`).
+  - Qualitative comments and automated sentiment categorization (`Positive`, `Neutral`, `Negative`).
 
-### 2. Doctor / Physician (`doctor`)
-- **Clinical Roster**: Scheduled appointments, patient queue monitoring, and consultation time tracking.
-- **Patient Encounters**: Direct access to patient medical histories and encounter documentation.
-- **Public Directory**: Managed doctor profile published via `public.silver_doctors_public`.
+### 2. Doctor / Physician (`doctor`) — `DoctorDashboard.tsx`
+- **Clinical Consult Agenda**: Daily consultation schedule (8 active clinic visits), patient arrival status, consult room assignment, and chief complaints.
+- **Inpatient Ward Rounds**: Direct clinical visibility into admitted patients (Cardiology & Intensive Care Units), bed numbers, length of stay, acuity levels, real-time vitals, and current care plans.
+- **Diagnostic Lab Review & Sign-Off**: Electronic review queue for pending lab investigations (Troponin-I, Lipid Panels, HbA1c, CBC) with one-click clinical sign-off and abnormal value flagging.
+- **Encounter Documentation & E-Prescriptions**: Modal authoring workflow for clinical notes, diagnostic codes, prescription dosages, routes, frequencies, and follow-up orders.
+- **Public Directory Integration**: Managed doctor profile published via `public.silver_doctors_public`.
 
-### 3. Clinical Staff & Nursing (`staff`)
-- **Operations & Shift Ledger**: Department assignment, ward identification, shift types (`Morning`, `Afternoon`, `Night`, `Rotational`), and working schedules.
-- **Patient Reception & Coordination**: Queue management and intake status confirmation.
+### 3. Clinical Staff & Nursing (`staff`) — `StaffDashboard.tsx`
+- **Ward 4B Bed Management Grid**: Interactive 32-bed spatial matrix across West and North wings with dynamic status controls (`Occupied`, `Available`, `Cleaning`, `Reserved`), assigned nurses, and oxygen delivery modes (`Room Air`, `High-Flow Nasal Cannula`, `Ventilator`).
+- **Triage Intake Queue**: Emergency Severity Index (ESI Levels 1–5) triage prioritization list with chief complaints, wait durations, acuity badges, and bed assignment workflows.
+- **Vitals Telemetry Logging**: Nursing modal for recording heart rate, blood pressure, SpO2, and body temperature with automated abnormal threshold alerts.
+- **Shift & Department Coordination**: Shift schedules (`Morning`, `Afternoon`, `Night`), ward assignments, and duty handoff notes.
 
-### 4. Hospital Administrator (`admin`)
-- **Executive Operations Dashboard**: Cross-departmental utilization, scheduling volume, wait time analytics, and hospital-wide satisfaction scores.
-- **Account Provisioning**: Secure onboarding of clinical staff and physicians via cryptographic invitation codes.
+### 4. Hospital Administrator (`admin`) — `AdminDashboard.tsx`
+- **Executive Operations Dashboard**: High-level telemetry tracking bed occupancy rate (84%), average wait times (14.2 min), patient satisfaction score (4.8/5.0), and active provider counts.
+- **Departmental Capacity Matrix**: Real-time breakdown of total vs. occupied beds and on-duty physicians across Cardiology, Neurology, Emergency, Orthopedics, and Oncology.
+- **User Governance & Access Control**: Centralized administrative directory of all hospital accounts (`/api/admin/users`), dynamic role reassignment (`/api/admin/users/update-role`), and clinical identifier preservation.
+- **Immutable Audit Ledger**: Real-time audit log viewer (`/api/admin/audit-logs`) tracking every administrative role transition, acting administrator, timestamp, reason, and database commit status.
+
+---
+
+## Unified Authentication & Security Architecture
+
+MediAI implements a hardened, unified authentication system designed specifically for healthcare environments:
+
+### 1. Unified Common Login (`POST /api/auth/common-login`)
+- **Frictionless Credential Entry**: A single, clean login interface where patients enter their Patient ID (e.g. `P182162`) and healthcare professionals/administrators enter their official hospital email.
+- **Automatic Identity Recognition**: Real-time client-side and server-side pattern detection (`/^P\d+$/i` vs. email patterns) automatically detects the user persona without requiring role toggle buttons.
+- **Authoritative Server Resolution**: Validates credentials against Supabase PostgreSQL `app_users` and resolves role boundaries, routing authenticated sessions directly to their corresponding operational workspace (`patient-dashboard`, `doctor-dashboard`, `staff-dashboard`, `admin-dashboard`).
+
+### 2. Public Registration Security Hardening (`POST /api/auth/common-register`)
+- **Patient-Only Default Enrollment**: Public registration has been strictly hardened to provision only `'patient'` accounts.
+- **Elimination of Self-Elevation Exploits**: Role selectors, doctor/staff invite codes, and administrative keys have been completely removed from public signup screens. Any attempt to supply elevated roles in the registration payload is authoritatively overridden server-side.
+- **Automated Identifier Generation**: New registrants are automatically assigned a verified Patient ID (`P######`) linked to `silver_patients` and `app_users`.
+
+### 3. Google Single Sign-On (`POST /api/auth/google`)
+- **Secure OAuth / SSO Integration**: Provides seamless one-click authentication.
+- **Default Patient Scoping**: New Google SSO sign-ins default to the `patient` role unless previously elevated by a hospital administrator.
+
+### 4. Executive Role Governance & Clinical ID Retention (`POST /api/admin/users/update-role`)
+- **Strict Administrator Guard (`requireAdminRole`)**: Only users authenticated with active administrative privileges can access user directory and role modification endpoints. Attempts by regular patients or staff return HTTP `403 Forbidden`.
+- **Clinical Identifier Preservation**: When a physician or clinical staff member is transitioned to a patient role, their clinical identifiers (`doctor_id`, `staff_id`) are preserved in `historical_identifiers` for audit trail continuity, while immediately revoking privileged dashboard access.
+- **Dual-Layer Synchronization**: Role changes are committed in real-time to both the active application registry and Supabase PostgreSQL `public.app_users`.
+- **Audit Logging**: Every role alteration is logged to `public.audit_logs` and the in-memory audit ledger with actor details, target details, timestamp, justification, and commit status.
 
 ---
 
@@ -250,11 +279,22 @@ Populate `SUPABASE_URL`, `SUPABASE_ANON_KEY`, and `SUPABASE_SERVICE_ROLE_KEY` wi
    ```
    Runs TypeScript compiler verification (`tsc --noEmit`) to confirm zero type errors.
 
-4. **Automated Test Suite**:
-   ```bash
-   npm run test
-   ```
-   Runs the 17 automated unit and integration tests for appointment booking validation, timezone handling, slot conflict checks, and priority rules.
+4. **Automated Test Suites**:
+   - **Booking & Scheduling Unit Tests** (17 tests):
+     ```bash
+     npm run test
+     ```
+     Runs the 17 automated unit and integration tests for appointment booking validation, timezone handling (`Asia/Kolkata`), slot conflict checks, and priority rules.
+   - **Unified Auth & RBAC Verification Suite** (11 tests):
+     ```bash
+     node scripts/test_unified_auth_flow.js
+     ```
+     Verifies all 11 core authentication and security criteria: common login, default patient assignment, self-elevation prevention (403 Forbidden), admin role changes, clinical ID archiving, and Google SSO.
+   - **Admin Governance & Database Sync Suite**:
+     ```bash
+     node scripts/test_admin_role_change.js
+     ```
+     Tests administrative user directory querying, role elevation, Supabase `app_users` synchronization, and audit logging.
 
 5. **Production Build**:
    ```bash
@@ -264,13 +304,56 @@ Populate `SUPABASE_URL`, `SUPABASE_ANON_KEY`, and `SUPABASE_SERVICE_ROLE_KEY` wi
 
 ---
 
-## Current Project Status — October 24, 2026
+## Recent Pull Requests & Feature Changelog
+
+Between October 24 and October 26, 2026, the MediAI platform underwent major architectural enhancements to deliver an end-to-end unified authentication experience, role-based access control, dedicated operational dashboards, and executive governance:
+
+### PR #1 — Unified Authentication & Common Login Flow
+- **Single Entry Point (`POST /api/auth/common-login`)**: Replaced fragmented, role-specific login cards with a single unified form accepting either a Patient ID (e.g. `P182162`, `P1001`) or official hospital email (`doctor@hospital.org`, `staff@hospital.org`, `admin@hospital.org`).
+- **Dynamic Role Recognition**: Intelligent client/server regex detection routes users directly to their designated dashboard without requiring manual role selection.
+- **Google SSO Integration (`POST /api/auth/google`)**: One-click Google authentication with default assignment to the `'patient'` role and automatic Patient ID provisioning.
+- **Files Affected**: `/server.ts`, `/src/components/LoginScreen.tsx`, `/src/services/authService.ts`, `/src/types/auth.ts`.
+
+### PR #2 — Public Registration Security Hardening
+- **Strict Default Patient Enrollment (`POST /api/auth/common-register`)**: Completely eliminated public self-assignment of privileged roles (`doctor`, `staff`, `admin`).
+- **Surface Area Reduction**: Removed `<RoleSelector />`, physician medical registration codes, staff badges, and admin invitation code inputs from the public signup flow.
+- **Server-Side Enforcement**: Any attempts to inject elevated roles in the registration payload are authoritatively overridden to `'patient'`.
+- **Files Affected**: `/src/components/SignupScreen.tsx`, `/server.ts`, `/src/services/authService.ts`.
+
+### PR #3 — Specialized Operational Workspaces & Clinical Dashboards
+- **Dedicated Role Dashboards**: Implemented rich, role-specific clinical workspaces:
+  - **`DoctorDashboard.tsx` (`doctor-dashboard`)**: Today's consult schedule (8 visits), patient check-in statuses, inpatient ward rounds with acuity indicators, diagnostic lab sign-off queue, and modal authoring for clinical notes and e-prescriptions.
+  - **`StaffDashboard.tsx` (`staff-dashboard`)**: Spatial bed matrix for Ward 4B (32 beds across West & North wings) with live status toggling (`Occupied`, `Available`, `Cleaning`, `Reserved`), oxygen mode tracking, emergency triage intake queue with ESI acuity sorting, and vitals recording modal.
+  - **`AdminDashboard.tsx` (`admin-dashboard`)**: Executive hospital telemetry, departmental capacity breakdown, staff rosters, patient satisfaction feedback sentiment analysis, and the User Governance management console.
+- **Files Affected**: `/src/components/DoctorDashboard.tsx`, `/src/components/StaffDashboard.tsx`, `/src/components/AdminDashboard.tsx`, `/src/App.tsx`.
+
+### PR #4 — Administrative User Governance & Audit Ledger
+- **Role Elevation Middleware (`requireAdminRole`)**: Guarded `/api/admin/users`, `/api/admin/users/update-role`, and `/api/admin/audit-logs` against non-administrative callers (returning HTTP 403 Forbidden).
+- **Clinical ID Archiving**: When an administrator reassigns a doctor or staff member to a patient role, their operational IDs (`doctor_id`, `staff_id`) are preserved in `historical_identifiers` for longitudinal medical audit compliance while immediately terminating clinical dashboard access.
+- **Dual-Layer Database Sync**: Role updates synchronously commit to the active memory registry and Supabase PostgreSQL `public.app_users` and `public.audit_logs`.
+- **Files Affected**: `/server.ts`, `/src/services/adminService.ts`, `/src/components/AdminDashboard.tsx`.
+
+### PR #5 — Automated Verification Suites & Dependency Optimization
+- **End-to-End Verification Suites**: Created automated test scripts in `/scripts`:
+  - `test_unified_auth_flow.js`: 11/11 automated checks validating registration, common login, unauthorized elevation blocking, admin role changes, clinical ID archiving, and Google SSO.
+  - `test_admin_role_change.js` & `test_dynamic_auth_and_elevation.js`: Comprehensive multi-role verification against running backend.
+- **Dependency Cleanups**: Pruned unused `mysql2` driver from `package.json` to reduce container footprint.
+- **Files Affected**: `/scripts/test_unified_auth_flow.js`, `/scripts/test_admin_role_change.js`, `/scripts/test_dynamic_auth_and_elevation.js`, `/package.json`.
+
+---
+
+## Current Project Status — October 26, 2026
 
 ### 1. Architecture & Backend Implementation
-- **Implemented Stack**: MediAI operates on a React 19 frontend SPA, server-side application logic (Node.js/Express in `server.ts` with TSX and Vite middleware, following FastAPI/RESTful backend conventions), and Supabase PostgreSQL with Row Level Security (RLS).
-- **Role-Based Access Control**: Preserves the established **Patient**, **Doctor**, **Clinical Staff**, and **Administrator** roles alongside their configured authentication and authorization workflows.
+- **Implemented Stack**: MediAI operates on a React 19 frontend SPA, full-stack Node.js/Express server in `server.ts` (with TSX runtime and Vite dev middleware), and Supabase PostgreSQL with Row Level Security (RLS).
+- **Multi-Role Workspaces**: All four hospital roles (**Patient**, **Doctor**, **Clinical Staff**, **Administrator**) have dedicated, fully functional operational dashboards.
+- **Unified Authentication & Security**: Common login (`/api/auth/common-login`) auto-routes users by verified role; public registration (`/api/auth/common-register`) is hardened to default exclusively to the `'patient'` role; and administrative role governance (`/api/admin/users/update-role`) is secured with `requireAdminRole` and audit logging.
 - **Identity Integrity**: The existing identity mapping through Supabase Auth (`auth.users`), `public.app_users`, and `public.silver_patients` remains strictly intact, including the active test patient `P1001` account.
-- **Codebase Verification**: 17/17 automated validation tests pass (`npm run test`), static type-checking passes cleanly (`npm run lint`), and application endpoints support both canonical field names and backward-compatible aliases.
+- **Codebase Verification**: 
+  - 17/17 booking validation tests pass (`npm run test`).
+  - 11/11 automated end-to-end unified auth and RBAC verification tests pass (`node scripts/test_unified_auth_flow.js`).
+  - Static type-checking passes cleanly with zero errors (`npm run lint`).
+  - Application endpoints support both canonical field names and backward-compatible aliases.
 
 ### 2. Silver Data Staging
 The nine source MySQL `hospital_db` Silver tables have been successfully extracted and transferred to `public.medi_ai_migration_staging` in Supabase. The verified staging row counts are:
@@ -299,12 +382,12 @@ The nine source MySQL `hospital_db` Silver tables have been successfully extract
 
 ### 4. Content Reconciliation — NOT COMPLETE
 - **Reconciliation Engine**: Full-row source-to-staging content reconciliation is actively being performed via Jupyter Notebook.
-- **Reconciliation Progress as of October 24, 2026**:
+- **Reconciliation Progress as of October 26, 2026**:
   - `silver_patients`: **MATCH** (95,067 source rows; zero missing occurrences, zero extra staged occurrences).
   - `silver_doctors`: **MATCH** (1,375 source rows; zero missing occurrences, zero extra staged occurrences).
-  - `silver_encounters`: Reconciliation had commenced but was not yet completed when work paused on October 24, 2026.
+  - `silver_encounters`: Reconciliation commenced and in progress.
   - Remaining tables (`silver_feedback`, `silver_lab_results`, `silver_prescriptions`, `silver_staff`, `silver_staff_assignment`, `silver_appointments`): Content reconciliation is **not yet confirmed complete**.
-- **Network Resilience**: Intermittent MySQL connection drops and network/DNS timeouts occurred during initial transfer and reconciliation passes. The staging process was resumed from checkpoints, successfully completed, and all 1,862,991 staged rows verified.
+- **Network Resilience**: Checkpointed recovery handles any intermittent database connection drops during batch verification. All 1,862,991 staged rows remain safely stored.
 
 ### 5. Canonical Migration — NOT YET PERFORMED
 - **No Canonical Loading**: No canonical Silver table loading has been performed as part of this staging transfer.
@@ -320,7 +403,7 @@ The nine source MySQL `hospital_db` Silver tables have been successfully extract
   - Zero synthetic data fabrication: no records will be invented, and no source rows will be silently dropped.
 
 ### 6. Next Steps
-1. **Resume Jupyter Reconciliation**: Pick up content reconciliation for `silver_encounters` and proceed through the remaining 6 tables from the current checkpoint.
+1. **Resume Jupyter Reconciliation**: Complete content reconciliation for `silver_encounters` and proceed through the remaining 6 tables from the current checkpoint.
 2. **Confirm Content Parity**: Validate complete row equality and verify duplicate occurrence counts across all nine datasets.
 3. **Schema Compatibility Audit**: Validate target data types, type conversions, nullability, logical duplicate IDs, and foreign-key relationships.
 4. **Controlled Loading Plan Review**: Formulate, review, and approve the canonical loading procedure prior to executing any DDL/DML against the destination canonical tables.

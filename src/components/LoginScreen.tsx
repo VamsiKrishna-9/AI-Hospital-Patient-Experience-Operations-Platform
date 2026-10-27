@@ -192,7 +192,10 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
             user: response.user,
           });
         } else {
-          onNavigate('patient-dashboard', 'patient');
+          onNavigate('patient-dashboard', 'patient', {
+            patientId: response.patientId || cleanInput,
+            user: response.user,
+          });
         }
         return;
       }
@@ -209,8 +212,15 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
     setError(null);
     setIsLoading(true);
     try {
+      const remembered = authService.getRememberedIdentity();
+      const loginEmail = identifier.includes('@')
+        ? identifier.trim()
+        : (remembered?.email && remembered.email.includes('@'))
+        ? remembered.email.trim()
+        : undefined;
+
       const response = await authService.googleLogin({
-        email: identifier.includes('@') ? identifier.trim() : undefined,
+        email: loginEmail,
       });
 
       if (response.success && response.user) {

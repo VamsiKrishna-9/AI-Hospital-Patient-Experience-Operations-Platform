@@ -397,7 +397,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout, 
             <span className="text-xs text-slate-400 block mb-1">System Bed Occupancy</span>
             <div className="flex items-baseline justify-between">
               <span className="text-2xl font-bold text-white font-mono tabular-nums">
-                {metrics?.bedOccupancyRate || 86.4}%
+                {metrics ? `${metrics.bedOccupancyRate}%` : '—'}
               </span>
               <span className="text-xs text-teal-400 font-mono">Nominal Range</span>
             </div>
@@ -407,19 +407,19 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout, 
             <span className="text-xs text-slate-400 block mb-1">Avg Emergency Triage Time</span>
             <div className="flex items-baseline justify-between">
               <span className="text-2xl font-bold text-white font-mono tabular-nums">
-                {metrics?.avgWaitTimeMinutes || 14.2} <span className="text-xs font-sans text-slate-400">min</span>
+                {metrics ? `${metrics.avgWaitTimeMinutes}` : '—'} <span className="text-xs font-sans text-slate-400">min</span>
               </span>
               <span className="text-xs text-teal-400">Target &lt; 20m</span>
             </div>
           </div>
 
           <div className="p-4 rounded-xl bg-slate-900/60 border border-slate-800/80">
-            <span className="text-xs text-slate-400 block mb-1">Active Inpatient Census</span>
+            <span className="text-xs text-slate-400 block mb-1">Active Patient Registry</span>
             <div className="flex items-baseline justify-between">
               <span className="text-2xl font-bold text-white font-mono tabular-nums">
-                {metrics?.totalActivePatients || 342}
+                {metrics ? metrics.totalActivePatients.toLocaleString() : '—'}
               </span>
-              <span className="text-xs text-slate-400">Across 6 Wings</span>
+              <span className="text-xs text-slate-400">Database Verified</span>
             </div>
           </div>
 
@@ -427,9 +427,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout, 
             <span className="text-xs text-slate-400 block mb-1">Patient Satisfaction</span>
             <div className="flex items-baseline justify-between">
               <span className="text-2xl font-bold text-amber-400 font-mono tabular-nums">
-                {metrics?.patientSatisfactionScore || 4.88} <span className="text-xs font-sans text-slate-400">/ 5.0</span>
+                {metrics ? `${metrics.patientSatisfactionScore}` : '—'} <span className="text-xs font-sans text-slate-400">/ 5.0</span>
               </span>
-              <span className="text-xs text-amber-400/80 font-mono">98.2% Pos</span>
+              <span className="text-xs text-amber-400/80 font-mono">Verified Feedback</span>
             </div>
           </div>
         </section>
@@ -498,22 +498,22 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout, 
               <div className="space-y-3 text-xs">
                 <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 flex items-center justify-between">
                   <span className="text-slate-400">Credentialed Physicians</span>
-                  <span className="text-white font-mono font-bold">{metrics?.totalPhysicians || 48}</span>
+                  <span className="text-white font-mono font-bold">{metrics ? metrics.totalPhysicians.toLocaleString() : '—'}</span>
                 </div>
 
                 <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 flex items-center justify-between">
                   <span className="text-slate-400">Clinical & Nursing Staff</span>
-                  <span className="text-white font-mono font-bold">{metrics?.totalClinicalStaff || 184}</span>
+                  <span className="text-white font-mono font-bold">{metrics ? metrics.totalClinicalStaff.toLocaleString() : '—'}</span>
                 </div>
 
                 <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 flex items-center justify-between">
                   <span className="text-slate-400">Emergency Throughput Ratio</span>
-                  <span className="text-teal-400 font-mono font-bold">{metrics?.emergencyThroughputRatio || 98.2}%</span>
+                  <span className="text-teal-400 font-mono font-bold">{metrics ? `${metrics.emergencyThroughputRatio}%` : '—'}</span>
                 </div>
 
                 <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 flex items-center justify-between">
-                  <span className="text-slate-400">Monthly Patient Discharges</span>
-                  <span className="text-white font-mono font-bold">{metrics?.monthlyDischarges || 1240}</span>
+                  <span className="text-slate-400">Monthly Patient Encounters</span>
+                  <span className="text-white font-mono font-bold">{metrics ? metrics.monthlyDischarges.toLocaleString() : '—'}</span>
                 </div>
               </div>
 

@@ -71,6 +71,7 @@ export const DoctorDashboard: React.FC<DoctorDashboardProps> = ({ user, onLogout
   const [schedule, setSchedule] = useState<AppointmentItem[]>([]);
   const [inpatients, setInpatients] = useState<InpatientItem[]>([]);
   const [labs, setLabs] = useState<LabItem[]>([]);
+  const [doctorProfile, setDoctorProfile] = useState<any>(null);
   const [selectedAppointment, setSelectedAppointment] = useState<AppointmentItem | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [filterStatus, setFilterStatus] = useState<string>('all');
@@ -90,6 +91,7 @@ export const DoctorDashboard: React.FC<DoctorDashboardProps> = ({ user, onLogout
         });
         const data = await res.json();
         if (data.success) {
+          setDoctorProfile(data.doctor || null);
           setSchedule(data.schedule || []);
           setInpatients(data.inpatientRounds || []);
           setLabs(data.pendingLabs || []);
@@ -511,7 +513,7 @@ export const DoctorDashboard: React.FC<DoctorDashboardProps> = ({ user, onLogout
                   {/* Action buttons */}
                   <div className="pt-2 flex items-center justify-between border-t border-slate-800">
                     <span className="text-[11px] text-slate-500">
-                      Signed as Dr. Marcus Vance, MD (CA-MED-99412)
+                      Signed as {doctorProfile?.name || user?.name || 'Dr. Physician'} ({doctorProfile?.license || doctorProfile?.doctor_id || 'Staff'})
                     </span>
                     <button
                       onClick={handleSaveEncounter}
@@ -544,47 +546,53 @@ export const DoctorDashboard: React.FC<DoctorDashboardProps> = ({ user, onLogout
               </span>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {inpatients.map((patient) => (
-                <div key={patient.bed} className="p-4 rounded-xl bg-slate-900/60 border border-slate-800 space-y-3">
-                  <div className="flex items-start justify-between">
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs font-mono font-bold text-teal-400 bg-slate-950 px-2 py-0.5 rounded border border-slate-800">
-                          {patient.bed}
-                        </span>
-                        <h4 className="text-sm font-bold text-white">{patient.patient_name}</h4>
-                        <span className="text-xs text-slate-500">({patient.age}y)</span>
+            {inpatients.length === 0 ? (
+              <div className="p-8 text-center rounded-xl bg-slate-900/40 border border-slate-800 text-slate-400 text-xs">
+                No active inpatient admissions currently assigned to your clinical service.
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {inpatients.map((patient) => (
+                  <div key={patient.bed} className="p-4 rounded-xl bg-slate-900/60 border border-slate-800 space-y-3">
+                    <div className="flex items-start justify-between">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-mono font-bold text-teal-400 bg-slate-950 px-2 py-0.5 rounded border border-slate-800">
+                            {patient.bed}
+                          </span>
+                          <h4 className="text-sm font-bold text-white">{patient.patient_name}</h4>
+                          <span className="text-xs text-slate-500">({patient.age}y)</span>
+                        </div>
+                        <div className="text-[11px] text-slate-400 mt-1">ID: {patient.patient_id} · Day of stay: {patient.day_of_stay}</div>
                       </div>
-                      <div className="text-[11px] text-slate-400 mt-1">ID: {patient.patient_id} · Day of stay: {patient.day_of_stay}</div>
+                      <span
+                        className={`text-[10px] px-2 py-0.5 rounded font-mono ${
+                          patient.acuity === 'Stable'
+                            ? 'bg-teal-500/10 text-teal-300 border border-teal-500/20'
+                            : 'bg-amber-500/10 text-amber-300 border border-amber-500/20'
+                        }`}
+                      >
+                        {patient.acuity}
+                      </span>
                     </div>
-                    <span
-                      className={`text-[10px] px-2 py-0.5 rounded font-mono ${
-                        patient.acuity === 'Stable'
-                          ? 'bg-teal-500/10 text-teal-300 border border-teal-500/20'
-                          : 'bg-amber-500/10 text-amber-300 border border-amber-500/20'
-                      }`}
-                    >
-                      {patient.acuity}
-                    </span>
-                  </div>
 
-                  <div className="text-xs text-slate-300 bg-slate-950/60 p-2.5 rounded-lg border border-slate-800/80">
-                    <span className="text-[10px] text-slate-500 uppercase block mb-0.5">Primary Diagnosis</span>
-                    {patient.diagnosis}
-                  </div>
+                    <div className="text-xs text-slate-300 bg-slate-950/60 p-2.5 rounded-lg border border-slate-800/80">
+                      <span className="text-[10px] text-slate-500 uppercase block mb-0.5">Primary Diagnosis</span>
+                      {patient.diagnosis}
+                    </div>
 
-                  <div className="flex items-center justify-between text-xs text-slate-400 font-mono">
-                    <span>{patient.vitals}</span>
-                  </div>
+                    <div className="flex items-center justify-between text-xs text-slate-400 font-mono">
+                      <span>{patient.vitals}</span>
+                    </div>
 
-                  <div className="text-xs text-slate-400 border-t border-slate-800/80 pt-2">
-                    <span className="text-[10px] text-teal-400 block font-medium mb-0.5">Care Plan</span>
-                    {patient.plan}
+                    <div className="text-xs text-slate-400 border-t border-slate-800/80 pt-2">
+                      <span className="text-[10px] text-teal-400 block font-medium mb-0.5">Care Plan</span>
+                      {patient.plan}
+                    </div>
                   </div>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
 
@@ -598,40 +606,46 @@ export const DoctorDashboard: React.FC<DoctorDashboardProps> = ({ user, onLogout
               </div>
             </div>
 
-            <div className="space-y-3">
-              {labs.map((lab) => (
-                <div
-                  key={lab.lab_id}
-                  className="p-4 rounded-xl bg-slate-900/60 border border-slate-800 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4"
-                >
-                  <div className="space-y-1">
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs font-mono text-slate-400">{lab.lab_id}</span>
-                      <span className="text-xs font-bold text-white">{lab.patient_name}</span>
-                      <span className="text-[11px] font-mono text-teal-400">({lab.patient_id})</span>
+            {labs.length === 0 ? (
+              <div className="p-8 text-center rounded-xl bg-slate-900/40 border border-slate-800 text-slate-400 text-xs">
+                No diagnostic laboratory results pending physician review at this time.
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {labs.map((lab) => (
+                  <div
+                    key={lab.lab_id}
+                    className="p-4 rounded-xl bg-slate-900/60 border border-slate-800 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4"
+                  >
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-mono text-slate-400">{lab.lab_id}</span>
+                        <span className="text-xs font-bold text-white">{lab.patient_name}</span>
+                        <span className="text-[11px] font-mono text-teal-400">({lab.patient_id})</span>
+                      </div>
+                      <div className="text-xs text-slate-300 font-medium">{lab.test}</div>
+                      <div className="text-xs text-slate-400 font-mono">{lab.result}</div>
                     </div>
-                    <div className="text-xs text-slate-300 font-medium">{lab.test}</div>
-                    <div className="text-xs text-slate-400 font-mono">{lab.result}</div>
-                  </div>
 
-                  <div className="flex items-center gap-3">
-                    <span className="text-xs text-teal-400 font-mono">{lab.status}</span>
-                    {lab.signed ? (
-                      <span className="flex items-center gap-1 text-xs text-slate-400 bg-slate-800 px-3 py-1.5 rounded-lg font-mono">
-                        <Check size={14} className="text-teal-400" /> Signed
-                      </span>
-                    ) : (
-                      <button
-                        onClick={() => handleSignLab(lab.lab_id)}
-                        className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-teal-500 hover:bg-teal-400 text-slate-950 transition-colors cursor-pointer"
-                      >
-                        Sign Off Lab
-                      </button>
-                    )}
+                    <div className="flex items-center gap-3">
+                      <span className="text-xs text-teal-400 font-mono">{lab.status}</span>
+                      {lab.signed ? (
+                        <span className="flex items-center gap-1 text-xs text-slate-400 bg-slate-800 px-3 py-1.5 rounded-lg font-mono">
+                          <Check size={14} className="text-teal-400" /> Signed
+                        </span>
+                      ) : (
+                        <button
+                          onClick={() => handleSignLab(lab.lab_id)}
+                          className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-teal-500 hover:bg-teal-400 text-slate-950 transition-colors cursor-pointer"
+                        >
+                          Sign Off Lab
+                        </button>
+                      )}
+                    </div>
                   </div>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
       </main>
