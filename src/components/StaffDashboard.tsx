@@ -59,9 +59,8 @@ interface VitalsTaskItem {
   status: string;
 }
 
-export const StaffDashboard: React.FC<StaffDashboardProps> = ({ user, onLogout, onRoleSwitch }) => {
+export const StaffDashboard: React.FC<StaffDashboardProps> = ({ user, onLogout }) => {
   const [activeTab, setActiveTab] = useState<'beds' | 'triage' | 'vitals'>('beds');
-  const [isRoleMenuOpen, setIsRoleMenuOpen] = useState(false);
   const [beds, setBeds] = useState<WardBedItem[]>([]);
   const [triageQueue, setTriageQueue] = useState<TriageQueueItem[]>([]);
   const [vitalsTasks, setVitalsTasks] = useState<VitalsTaskItem[]>([]);
@@ -221,10 +220,10 @@ export const StaffDashboard: React.FC<StaffDashboardProps> = ({ user, onLogout, 
           </nav>
 
           {/* Zone 3: Primary Action & Profile */}
-          <div className="flex items-center gap-3 shrink-0">
+          <div className="flex items-center gap-2 sm:gap-2.5 shrink-0">
             <button
               onClick={() => setIsVitalsModalOpen(true)}
-              className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-teal-500 hover:bg-teal-400 text-slate-950 transition-colors cursor-pointer"
+              className="hidden sm:inline-flex items-center justify-center gap-1.5 h-8 px-3 rounded-lg text-xs font-semibold bg-teal-500 hover:bg-teal-400 text-slate-950 transition-colors cursor-pointer shrink-0 shadow-sm"
             >
               <Plus size={14} />
               <span>Record Vitals</span>
@@ -233,67 +232,19 @@ export const StaffDashboard: React.FC<StaffDashboardProps> = ({ user, onLogout, 
               <div className="text-xs font-medium text-white">{user?.name || 'Sarah Jenkins, RN'}</div>
               <div className="text-[10px] text-slate-400 font-mono">Station 4B Lead</div>
             </div>
-            <div className="relative">
-              <button
-                type="button"
-                onClick={() => setIsRoleMenuOpen(!isRoleMenuOpen)}
-                className="px-2.5 py-1.5 rounded-lg border border-slate-800 bg-slate-900 text-slate-300 hover:text-white text-xs font-medium flex items-center gap-1.5 transition-colors cursor-pointer"
-                title="Switch hospital workspace"
-              >
-                <span className="text-slate-500 hidden sm:inline">Role:</span>
-                <span className="text-emerald-400 font-bold">Staff</span>
-                <ChevronRight size={13} className={`transform transition-transform text-slate-500 ${isRoleMenuOpen ? 'rotate-90' : ''}`} />
-              </button>
-
-              {isRoleMenuOpen && (
-                <div className="absolute right-0 mt-2 w-52 rounded-xl bg-slate-900 border border-slate-800 shadow-2xl p-1.5 z-50 text-xs">
-                  <div className="px-2.5 py-1 text-[10px] font-bold text-slate-500 uppercase tracking-wider border-b border-slate-800">
-                    Switch Workspace
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setIsRoleMenuOpen(false);
-                      onRoleSwitch?.('patient');
-                    }}
-                    className="w-full text-left px-2.5 py-1.5 rounded-lg text-slate-300 hover:text-white hover:bg-slate-800 transition-colors flex items-center justify-between cursor-pointer"
-                  >
-                    <span>Patient Portal</span>
-                    <span className="text-[10px] text-teal-400 font-mono">Care</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setIsRoleMenuOpen(false);
-                      onRoleSwitch?.('doctor');
-                    }}
-                    className="w-full text-left px-2.5 py-1.5 rounded-lg text-slate-300 hover:text-white hover:bg-slate-800 transition-colors flex items-center justify-between cursor-pointer"
-                  >
-                    <span>Doctor Workspace</span>
-                    <span className="text-[10px] text-cyan-400 font-mono">Clinical</span>
-                  </button>
-                  <div className="w-full text-left px-2.5 py-1.5 rounded-lg bg-emerald-500/10 text-emerald-300 font-bold flex items-center justify-between">
-                    <span>Staff / Ward 4B</span>
-                    <CheckCircle2 size={13} className="text-emerald-400" />
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setIsRoleMenuOpen(false);
-                      onRoleSwitch?.('admin');
-                    }}
-                    className="w-full text-left px-2.5 py-1.5 rounded-lg text-indigo-300 hover:text-indigo-200 hover:bg-slate-800 transition-colors flex items-center justify-between cursor-pointer border-t border-slate-800 mt-1"
-                  >
-                    <span>Admin Governance</span>
-                    <span className="text-[10px] bg-indigo-500/20 text-indigo-400 px-1 rounded font-mono">Admin</span>
-                  </button>
-                </div>
-              )}
+            {/* Institutional Verified Role Badge (Single-Role Enforced for Security) */}
+            <div
+              className="inline-flex items-center justify-center gap-1.5 h-8 px-2.5 sm:px-3 rounded-lg border border-emerald-500/30 bg-emerald-950/40 text-xs font-medium text-slate-200 shrink-0 select-none shadow-xs"
+              title="Verified Institutional Role: Ward & Triage Staff"
+            >
+              <HeartPulse size={14} className="text-emerald-400 shrink-0" />
+              <span className="text-slate-400 hidden sm:inline">Role:</span>
+              <span className="text-emerald-300 font-bold">Staff</span>
             </div>
 
             <button
               onClick={onLogout}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-800 bg-slate-900 hover:bg-slate-800 text-xs text-slate-300 hover:text-white transition-colors cursor-pointer"
+              className="inline-flex items-center justify-center gap-1.5 h-8 px-2.5 sm:px-3 rounded-lg border border-slate-800 bg-slate-900 hover:bg-slate-800 text-xs text-slate-300 hover:text-white transition-colors cursor-pointer shrink-0"
             >
               <LogOut size={14} />
               <span className="hidden sm:inline">Sign Out</span>

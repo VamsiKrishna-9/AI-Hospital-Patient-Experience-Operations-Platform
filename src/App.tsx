@@ -44,8 +44,9 @@ export default function App() {
     role?: HospitalRole,
     extra?: { patientId?: string; tempToken?: string; user?: AuthUser }
   ) => {
-    if (role) {
-      setSelectedRole(role);
+    const assignedRole = extra?.user?.role || role || activeUser?.role;
+    if (assignedRole) {
+      setSelectedRole(assignedRole);
     }
     if (extra?.user) {
       setActiveUser(extra.user);
@@ -56,7 +57,20 @@ export default function App() {
         tempToken: extra.tempToken,
       });
     }
-    setScreen(newScreen);
+    // Strict Single-Role Access: lock dashboard view strictly to authenticated user role
+    if (assignedRole && newScreen.endsWith('-dashboard')) {
+      if (assignedRole === 'doctor') {
+        setScreen('doctor-dashboard');
+      } else if (assignedRole === 'staff') {
+        setScreen('staff-dashboard');
+      } else if (assignedRole === 'admin') {
+        setScreen('admin-dashboard');
+      } else {
+        setScreen('patient-dashboard');
+      }
+    } else {
+      setScreen(newScreen);
+    }
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
@@ -70,43 +84,37 @@ export default function App() {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
-  const handleRoleSwitch = async (newRole: HospitalRole) => {
-    try {
-      const res = await authService.updateRole(newRole);
-      if (res.success && res.user) {
-        setActiveUser(res.user);
+  // Enforce single-role confinement across the session lifecycle
+  useEffect(() => {
+    if (activeUser?.role && screen.endsWith('-dashboard')) {
+      const roleToScreen: Record<HospitalRole, ScreenState> = {
+        doctor: 'doctor-dashboard',
+        staff: 'staff-dashboard',
+        admin: 'admin-dashboard',
+        patient: 'patient-dashboard',
+      };
+      const authorizedScreen = roleToScreen[activeUser.role];
+      if (authorizedScreen && screen !== authorizedScreen) {
+        setScreen(authorizedScreen);
       }
-      setSelectedRole(newRole);
-      if (newRole === 'patient') {
-        setScreen('patient-dashboard');
-      } else if (newRole === 'doctor') {
-        setScreen('doctor-dashboard');
-      } else if (newRole === 'staff') {
-        setScreen('staff-dashboard');
-      } else if (newRole === 'admin') {
-        setScreen('admin-dashboard');
-      }
-      window.scrollTo({ top: 0, behavior: 'smooth' });
-    } catch (err) {
-      console.error('Failed to switch workspace role', err);
     }
-  };
+  }, [activeUser, screen]);
 
-  // Render dedicated role-specific operational dashboards
+  // Render dedicated role-specific operational dashboards (no cross-role switching permitted)
   if (screen === 'patient-dashboard') {
-    return <PatientDashboard user={activeUser} onLogout={handleLogout} onRoleSwitch={handleRoleSwitch} />;
+    return <PatientDashboard user={activeUser} onLogout={handleLogout} />;
   }
 
   if (screen === 'doctor-dashboard') {
-    return <DoctorDashboard user={activeUser} onLogout={handleLogout} onRoleSwitch={handleRoleSwitch} />;
+    return <DoctorDashboard user={activeUser} onLogout={handleLogout} />;
   }
 
   if (screen === 'staff-dashboard') {
-    return <StaffDashboard user={activeUser} onLogout={handleLogout} onRoleSwitch={handleRoleSwitch} />;
+    return <StaffDashboard user={activeUser} onLogout={handleLogout} />;
   }
 
   if (screen === 'admin-dashboard') {
-    return <AdminDashboard user={activeUser} onLogout={handleLogout} onRoleSwitch={handleRoleSwitch} />;
+    return <AdminDashboard user={activeUser} onLogout={handleLogout} />;
   }
 
   return (

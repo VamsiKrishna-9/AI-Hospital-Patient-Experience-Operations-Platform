@@ -78,9 +78,8 @@ interface FeedbackSummary {
   date: string;
 }
 
-export const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout, onRoleSwitch }) => {
+export const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }) => {
   const [activeTab, setActiveTab] = useState<'metrics' | 'departments' | 'roster' | 'users' | 'feedback'>('metrics');
-  const [isRoleMenuOpen, setIsRoleMenuOpen] = useState(false);
   const [metrics, setMetrics] = useState<ExecutiveMetrics | null>(null);
   const [departments, setDepartments] = useState<DepartmentCapacity[]>([]);
   const [roster, setRoster] = useState<StaffMember[]>([]);
@@ -236,9 +235,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout, 
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-teal-500/30 selection:text-teal-200">
       {/* Top Bar Contract: 3 zones */}
       <header className="border-b border-slate-800 bg-slate-900/80 backdrop-blur-md sticky top-0 z-30">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-8">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-3 sm:gap-4 lg:gap-6 min-w-0">
           {/* Zone 1: Brand Wordmark */}
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 shrink-0">
             <div className="w-9 h-9 rounded-xl bg-teal-500/10 border border-teal-500/30 flex items-center justify-center text-teal-400">
               <ShieldCheck size={18} />
             </div>
@@ -253,10 +252,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout, 
           </div>
 
           {/* Zone 2: Navigation Links / Workspace Tabs */}
-          <nav className="hidden md:flex items-center gap-1 bg-slate-950/60 p-1 rounded-xl border border-slate-800/80">
+          <nav className="hidden md:flex items-center gap-1 bg-slate-950/60 p-1 rounded-xl border border-slate-800/80 shrink min-w-0 overflow-x-auto">
             <button
               onClick={() => setActiveTab('metrics')}
-              className={`px-3.5 py-1.5 rounded-lg text-xs font-medium transition-colors whitespace-nowrap cursor-pointer ${
+              className={`px-2.5 lg:px-3 py-1.5 rounded-lg text-xs font-medium transition-colors whitespace-nowrap cursor-pointer ${
                 activeTab === 'metrics'
                   ? 'bg-teal-500/20 text-teal-300 border border-teal-500/30'
                   : 'text-slate-400 hover:text-white'
@@ -266,7 +265,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout, 
             </button>
             <button
               onClick={() => setActiveTab('departments')}
-              className={`px-3.5 py-1.5 rounded-lg text-xs font-medium transition-colors whitespace-nowrap cursor-pointer ${
+              className={`px-2.5 lg:px-3 py-1.5 rounded-lg text-xs font-medium transition-colors whitespace-nowrap cursor-pointer ${
                 activeTab === 'departments'
                   ? 'bg-teal-500/20 text-teal-300 border border-teal-500/30'
                   : 'text-slate-400 hover:text-white'
@@ -276,7 +275,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout, 
             </button>
             <button
               onClick={() => setActiveTab('roster')}
-              className={`px-3.5 py-1.5 rounded-lg text-xs font-medium transition-colors whitespace-nowrap cursor-pointer ${
+              className={`px-2.5 lg:px-3 py-1.5 rounded-lg text-xs font-medium transition-colors whitespace-nowrap cursor-pointer ${
                 activeTab === 'roster'
                   ? 'bg-teal-500/20 text-teal-300 border border-teal-500/30'
                   : 'text-slate-400 hover:text-white'
@@ -286,7 +285,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout, 
             </button>
             <button
               onClick={() => setActiveTab('users')}
-              className={`px-3.5 py-1.5 rounded-lg text-xs font-medium transition-colors whitespace-nowrap cursor-pointer flex items-center gap-1.5 ${
+              className={`px-2.5 lg:px-3 py-1.5 rounded-lg text-xs font-medium transition-colors whitespace-nowrap cursor-pointer flex items-center gap-1.5 ${
                 activeTab === 'users'
                   ? 'bg-teal-500/20 text-teal-300 border border-teal-500/30'
                   : 'text-slate-400 hover:text-white'
@@ -297,7 +296,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout, 
             </button>
             <button
               onClick={() => setActiveTab('feedback')}
-              className={`px-3.5 py-1.5 rounded-lg text-xs font-medium transition-colors whitespace-nowrap cursor-pointer ${
+              className={`px-2.5 lg:px-3 py-1.5 rounded-lg text-xs font-medium transition-colors whitespace-nowrap cursor-pointer ${
                 activeTab === 'feedback'
                   ? 'bg-teal-500/20 text-teal-300 border border-teal-500/30'
                   : 'text-slate-400 hover:text-white'
@@ -308,79 +307,31 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout, 
           </nav>
 
           {/* Zone 3: Primary Action & Profile */}
-          <div className="flex items-center gap-3 shrink-0">
+          <div className="flex items-center gap-2 sm:gap-2.5 shrink-0">
             <button
               onClick={() => setIsBroadcastModalOpen(true)}
-              className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-teal-500 hover:bg-teal-400 text-slate-950 transition-colors cursor-pointer"
+              className="hidden sm:inline-flex items-center justify-center gap-1.5 h-8 px-3 rounded-lg text-xs font-semibold bg-teal-500 hover:bg-teal-400 text-slate-950 transition-colors cursor-pointer shrink-0 shadow-sm"
             >
               <Bell size={14} />
               <span>Broadcast</span>
             </button>
-            <div className="hidden sm:block text-right">
+            <div className="hidden xl:block text-right">
               <div className="text-xs font-medium text-white">{user?.name || 'Arthur Sterling, MHA'}</div>
               <div className="text-[10px] text-slate-400 font-mono">COO & Governance</div>
             </div>
-            <div className="relative">
-              <button
-                type="button"
-                onClick={() => setIsRoleMenuOpen(!isRoleMenuOpen)}
-                className="px-2.5 py-1.5 rounded-lg border border-slate-800 bg-slate-900 text-slate-300 hover:text-white text-xs font-medium flex items-center gap-1.5 transition-colors cursor-pointer"
-                title="Switch hospital workspace"
-              >
-                <span className="text-slate-500 hidden sm:inline">Role:</span>
-                <span className="text-indigo-400 font-bold">Admin</span>
-                <ChevronRight size={13} className={`transform transition-transform text-slate-500 ${isRoleMenuOpen ? 'rotate-90' : ''}`} />
-              </button>
-
-              {isRoleMenuOpen && (
-                <div className="absolute right-0 mt-2 w-52 rounded-xl bg-slate-900 border border-slate-800 shadow-2xl p-1.5 z-50 text-xs">
-                  <div className="px-2.5 py-1 text-[10px] font-bold text-slate-500 uppercase tracking-wider border-b border-slate-800">
-                    Switch Workspace
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setIsRoleMenuOpen(false);
-                      onRoleSwitch?.('patient');
-                    }}
-                    className="w-full text-left px-2.5 py-1.5 rounded-lg text-slate-300 hover:text-white hover:bg-slate-800 transition-colors flex items-center justify-between cursor-pointer"
-                  >
-                    <span>Patient Portal</span>
-                    <span className="text-[10px] text-teal-400 font-mono">Care</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setIsRoleMenuOpen(false);
-                      onRoleSwitch?.('doctor');
-                    }}
-                    className="w-full text-left px-2.5 py-1.5 rounded-lg text-slate-300 hover:text-white hover:bg-slate-800 transition-colors flex items-center justify-between cursor-pointer"
-                  >
-                    <span>Doctor Workspace</span>
-                    <span className="text-[10px] text-cyan-400 font-mono">Clinical</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setIsRoleMenuOpen(false);
-                      onRoleSwitch?.('staff');
-                    }}
-                    className="w-full text-left px-2.5 py-1.5 rounded-lg text-slate-300 hover:text-white hover:bg-slate-800 transition-colors flex items-center justify-between cursor-pointer"
-                  >
-                    <span>Staff / Ward 4B</span>
-                    <span className="text-[10px] text-emerald-400 font-mono">Ops</span>
-                  </button>
-                  <div className="w-full text-left px-2.5 py-1.5 rounded-lg bg-indigo-500/10 text-indigo-300 font-bold flex items-center justify-between">
-                    <span>Admin Governance</span>
-                    <CheckCircle2 size={13} className="text-indigo-400" />
-                  </div>
-                </div>
-              )}
+            {/* Institutional Verified Role Badge (Single-Role Enforced for Security) */}
+            <div
+              className="inline-flex items-center justify-center gap-1.5 h-8 px-2.5 sm:px-3 rounded-lg border border-indigo-500/30 bg-indigo-950/40 text-xs font-medium text-slate-200 shrink-0 select-none shadow-xs"
+              title="Verified Institutional Role: Hospital Administrator"
+            >
+              <ShieldCheck size={14} className="text-indigo-400 shrink-0" />
+              <span className="text-slate-400 hidden sm:inline">Role:</span>
+              <span className="text-indigo-300 font-bold">Admin</span>
             </div>
 
             <button
               onClick={onLogout}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-800 bg-slate-900 hover:bg-slate-800 text-xs text-slate-300 hover:text-white transition-colors cursor-pointer"
+              className="inline-flex items-center justify-center gap-1.5 h-8 px-2.5 sm:px-3 rounded-lg border border-slate-800 bg-slate-900 hover:bg-slate-800 text-xs text-slate-300 hover:text-white transition-colors cursor-pointer shrink-0"
             >
               <LogOut size={14} />
               <span className="hidden sm:inline">Sign Out</span>

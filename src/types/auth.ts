@@ -59,9 +59,13 @@ export interface DoctorSignupFormData {
   fullName: string;
   email: string;
   phone: string;
+  dateOfBirth: string;
+  medicalRegNumber?: string;
   specialization: string;
-  medicalRegNumber: string;
-  hospitalInviteCode: string;
+  qualifications: string;
+  yearsOfExperience?: string | number;
+  department: string;
+  hospitalInviteCode?: string;
   password: string;
   confirmPassword: string;
   acceptTerms: boolean;
@@ -71,9 +75,12 @@ export interface StaffSignupFormData {
   fullName: string;
   email: string;
   phone: string;
-  staffId: string;
+  dateOfBirth: string;
+  staffId?: string;
   department: string;
-  hospitalInviteCode: string;
+  designation: string;
+  yearsOfExperience?: string | number;
+  hospitalInviteCode?: string;
   password: string;
   confirmPassword: string;
   acceptTerms: boolean;
@@ -81,12 +88,15 @@ export interface StaffSignupFormData {
 
 export interface AdminSignupFormData {
   fullName: string;
-  officialEmail: string;
-  adminInviteCode: string;
+  email: string;
+  phone: string;
+  adminInviteCode?: string;
   password: string;
   confirmPassword: string;
-  acceptTerms: boolean;
+  acceptTerms?: boolean;
 }
+
+export type PublicHospitalRole = 'patient' | 'doctor' | 'staff';
 
 export type SignupFormData = {
   role: HospitalRole;
@@ -114,9 +124,14 @@ export interface AuthResponse {
   user?: AuthUser;
   patient?: any;
   patientId?: string;
+  doctorId?: string;
+  staffId?: string;
+  role?: HospitalRole;
   mustChangePassword?: boolean;
   tempToken?: string;
   requiresEmailConfirmation?: boolean;
+  requiresApproval?: boolean;
+  status?: 'active' | 'pending_approval' | 'rejected';
   token?: string;
   errors?: Record<string, string>;
   targetEndpoint?: string;
