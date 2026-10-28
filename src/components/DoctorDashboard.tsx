@@ -24,6 +24,7 @@ import {
   Send,
 } from 'lucide-react';
 import { AuthUser, HospitalRole } from '../types/auth';
+import { AiHospitalAssistantLauncher } from './AiHospitalAssistantLauncher';
 
 interface DoctorDashboardProps {
   user?: AuthUser | null;
@@ -635,6 +636,9 @@ export const DoctorDashboard: React.FC<DoctorDashboardProps> = ({ user, onLogout
           </div>
         )}
       </main>
+
+      {/* Floating AI Hospital Assistant Launcher */}
+      <AiHospitalAssistantLauncher user={user} />
     </div>
   );
 };

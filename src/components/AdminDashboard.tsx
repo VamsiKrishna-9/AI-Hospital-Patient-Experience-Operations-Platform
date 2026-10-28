@@ -28,6 +28,7 @@ import {
   Loader2,
 } from 'lucide-react';
 import { AuthUser, HospitalRole } from '../types/auth';
+import { AiHospitalAssistantLauncher } from './AiHospitalAssistantLauncher';
 import { adminService, AdminUserRecord, AdminAuditLog } from '../services/adminService';
 
 interface AdminDashboardProps {
@@ -1029,6 +1030,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout, 
           </div>
         </div>
       )}
+
+      {/* Floating AI Hospital Assistant Launcher */}
+      <AiHospitalAssistantLauncher user={user} />
     </div>
   );
 };

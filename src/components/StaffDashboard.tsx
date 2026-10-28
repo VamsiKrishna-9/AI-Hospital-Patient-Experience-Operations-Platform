@@ -21,6 +21,7 @@ import {
   ChevronRight,
 } from 'lucide-react';
 import { AuthUser, HospitalRole } from '../types/auth';
+import { AiHospitalAssistantLauncher } from './AiHospitalAssistantLauncher';
 
 interface StaffDashboardProps {
   user?: AuthUser | null;
@@ -711,6 +712,9 @@ export const StaffDashboard: React.FC<StaffDashboardProps> = ({ user, onLogout, 
           </div>
         </div>
       )}
+
+      {/* Floating AI Hospital Assistant Launcher */}
+      <AiHospitalAssistantLauncher user={user} />
     </div>
   );
 };

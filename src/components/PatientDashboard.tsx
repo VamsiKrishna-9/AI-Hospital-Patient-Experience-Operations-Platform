@@ -48,6 +48,10 @@ import { patientService } from '../services/patientService';
 import { authService } from '../services/authService';
 import { HospitalRole, AuthUser } from '../types/auth';
 import { AppointmentBookingWizard } from './AppointmentBookingWizard';
+import { AiHospitalAssistant } from './AiHospitalAssistant';
+import { AiHospitalAssistantLauncher } from './AiHospitalAssistantLauncher';
+import { AiHospitalAssistantLogo } from './AiHospitalAssistantLogo';
+import { aiChatService } from '../services/aiChatService';
 
 interface PatientDashboardProps {
   user?: AuthUser | null;
@@ -61,7 +65,32 @@ export const PatientDashboard: React.FC<PatientDashboardProps> = ({ user, onLogo
   const [error, setError] = useState<string | null>(null);
 
   // Active navigation tab
-  const [activeTab, setActiveTab] = useState<'overview' | 'appointments' | 'encounters' | 'labs' | 'prescriptions' | 'feedback'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'appointments' | 'encounters' | 'labs' | 'prescriptions' | 'feedback' | 'ai-assistant'>('overview');
+
+  // AI Chatbot visibility & preference state
+  const [chatbotEnabled, setChatbotEnabled] = useState<boolean>(() => aiChatService.isChatbotEnabled());
+
+  useEffect(() => {
+    aiChatService.fetchServerPreferences().then((pref) => {
+      setChatbotEnabled(pref.chatbotEnabled);
+    });
+  }, []);
+
+  const handleRemoveChatbot = () => {
+    setChatbotEnabled(false);
+    if (activeTab === 'ai-assistant') {
+      setActiveTab('overview');
+    }
+    setSuccessToast('AI Hospital Assistant has been removed from your account. You can restore it from settings at any time.');
+    setTimeout(() => setSuccessToast(null), 6000);
+  };
+
+  const handleRestoreChatbot = async () => {
+    await aiChatService.setChatbotEnabled(true);
+    setChatbotEnabled(true);
+    setSuccessToast('AI Hospital Assistant has been restored to your interface.');
+    setTimeout(() => setSuccessToast(null), 5000);
+  };
 
   // Booking Wizard modal
   const [isBookingOpen, setIsBookingOpen] = useState(false);
@@ -270,6 +299,33 @@ export const PatientDashboard: React.FC<PatientDashboardProps> = ({ user, onLogo
               <span className="w-1.5 h-1.5 rounded-full bg-[#059669]" />
               <span>Role: Patient</span>
             </div>
+
+            {/* AI Assistant Quick Navigation or Restore Pill */}
+            {chatbotEnabled ? (
+              <button
+                type="button"
+                onClick={() => setActiveTab('ai-assistant')}
+                title="Open AI Hospital Assistant Workspace"
+                className={`hidden md:inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-bold border transition-all cursor-pointer ${
+                  activeTab === 'ai-assistant'
+                    ? 'bg-teal-600 text-white border-teal-600 shadow-sm'
+                    : 'bg-white text-teal-800 hover:bg-teal-50 border-teal-200 hover:border-teal-300'
+                }`}
+              >
+                <AiHospitalAssistantLogo size={16} showText={false} />
+                <span>AI Assistant</span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={handleRestoreChatbot}
+                title="Restore AI Hospital Assistant"
+                className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-teal-50 hover:bg-teal-100 text-teal-800 border border-teal-300 text-xs font-bold transition-all cursor-pointer shadow-xs"
+              >
+                <Plus size={13} className="text-teal-600" />
+                <span>Restore AI Assistant</span>
+              </button>
+            )}
 
             {/* Logout button */}
             <button
@@ -518,7 +574,10 @@ export const PatientDashboard: React.FC<PatientDashboardProps> = ({ user, onLogo
                 { id: 'labs', label: `Lab Results (${dashboardData.labReports.length})` },
                 { id: 'prescriptions', label: `Prescriptions (${dashboardData.prescriptions.length})` },
                 { id: 'feedback', label: `Care Feedback (${dashboardData.feedbackList?.length || 0})` },
-              ].map((tab) => {
+                ...(chatbotEnabled
+                  ? [{ id: 'ai-assistant', label: 'AI Hospital Assistant', isAi: true }]
+                  : []),
+              ].map((tab: any) => {
                 const isActive = activeTab === tab.id;
                 return (
                   <button
@@ -527,13 +586,14 @@ export const PatientDashboard: React.FC<PatientDashboardProps> = ({ user, onLogo
                     role="tab"
                     aria-selected={isActive}
                     onClick={() => setActiveTab(tab.id as typeof activeTab)}
-                    className={`relative px-4 py-2.5 rounded-xl text-xs font-bold transition-all cursor-pointer whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#059669] focus-visible:ring-offset-2 ${
+                    className={`relative px-4 py-2.5 rounded-xl text-xs font-bold transition-all cursor-pointer whitespace-nowrap flex items-center gap-1.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#059669] focus-visible:ring-offset-2 ${
                       isActive
                         ? 'bg-[#059669] text-[#FFFFFF] shadow-md after:content-[""] after:absolute after:-bottom-[10px] after:left-3 after:right-3 after:h-[3px] after:bg-[#059669] after:rounded-full'
                         : 'bg-white text-[#526581] border border-[#DCE5EC] hover:text-[#047857] hover:bg-[#ECFDF5] hover:border-emerald-300'
                     }`}
                   >
-                    {tab.label}
+                    {tab.isAi && <AiHospitalAssistantLogo size={16} showText={false} />}
+                    <span>{tab.label}</span>
                   </button>
                 );
               })}
@@ -1006,6 +1066,40 @@ export const PatientDashboard: React.FC<PatientDashboardProps> = ({ user, onLogo
                 )}
               </div>
             )}
+
+            {/* TAB: AI HOSPITAL ASSISTANT (Dedicated Full-Page View) */}
+            {activeTab === 'ai-assistant' && chatbotEnabled && (
+              <div className="space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-1">
+                  <div>
+                    <h2 className="text-base sm:text-lg font-bold text-[#172B4D] flex items-center gap-2">
+                      <span>AI Hospital Assistant Workspace</span>
+                      <span className="px-2 py-0.5 rounded text-[11px] font-bold bg-teal-100 text-teal-800 border border-teal-200">
+                        Dedicated View
+                      </span>
+                    </h2>
+                    <p className="text-xs text-[#526581]">
+                      Your 24/7 intelligent healthcare companion for clinic operations, scheduling, and verified hospital directories.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('overview')}
+                    className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-white text-[#526581] hover:text-[#172B4D] border border-[#DCE5EC] hover:bg-slate-50 text-xs font-semibold self-start sm:self-auto cursor-pointer"
+                  >
+                    <span>Back to Overview</span>
+                  </button>
+                </div>
+
+                <AiHospitalAssistant
+                  user={user}
+                  mode="fullpage"
+                  onOpenBookingWizard={() => setIsBookingOpen(true)}
+                  onNavigateTab={(tab) => setActiveTab(tab as any)}
+                  onRemoveChatbot={handleRemoveChatbot}
+                />
+              </div>
+            )}
           </>
         )}
       </main>
@@ -1319,6 +1413,16 @@ export const PatientDashboard: React.FC<PatientDashboardProps> = ({ user, onLogo
             </button>
           </div>
         </div>
+      )}
+
+      {/* Floating AI Hospital Assistant Launcher */}
+      {chatbotEnabled && (
+        <AiHospitalAssistantLauncher
+          user={user}
+          onOpenBookingWizard={() => setIsBookingOpen(true)}
+          onNavigateTab={(tab) => setActiveTab(tab as any)}
+          onDisabledStateChange={(enabled) => setChatbotEnabled(enabled)}
+        />
       )}
     </div>
   );
