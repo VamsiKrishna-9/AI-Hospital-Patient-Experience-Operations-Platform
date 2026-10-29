@@ -16,6 +16,7 @@ import { StaffDashboard } from './components/StaffDashboard';
 import { AdminDashboard } from './components/AdminDashboard';
 import { patientService } from './services/patientService';
 import { authService } from './services/authService';
+import { AiHospitalAssistantLauncher } from './components/AiHospitalAssistantLauncher';
 
 export default function App() {
   const [activeUser, setActiveUser] = useState<AuthUser | null>(() => {
@@ -172,6 +173,9 @@ export default function App() {
           )}
         </div>
       </main>
+
+      {/* Floating AI Hospital Assistant Launcher for Guests & Visitors */}
+      <AiHospitalAssistantLauncher user={activeUser} />
     </div>
   );
 }
