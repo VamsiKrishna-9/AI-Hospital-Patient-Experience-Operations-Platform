@@ -18,7 +18,6 @@ import {
   CheckCircle2,
   AlertCircle,
   User,
-  ChevronRight,
   ShieldCheck,
   RefreshCw,
   Eye,
@@ -99,7 +98,6 @@ export const PatientDashboard: React.FC<PatientDashboardProps> = ({ user, onLogo
 
   // Notifications dropdown
   const [isNotifOpen, setIsNotifOpen] = useState(false);
-  const [isRoleMenuOpen, setIsRoleMenuOpen] = useState(false);
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
 
   // Selected item modal for detailed view
@@ -315,63 +313,13 @@ export const PatientDashboard: React.FC<PatientDashboardProps> = ({ user, onLogo
               </div>
             </div>
 
-            {/* Institutional Patient Role / Workspace Switcher */}
-            <div className="relative">
-              <button
-                type="button"
-                onClick={() => setIsRoleMenuOpen(!isRoleMenuOpen)}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#ECFDF5] text-[#047857] hover:bg-emerald-100/70 border border-emerald-200/80 text-xs font-semibold cursor-pointer transition-colors"
-                title="Switch hospital workspace"
-              >
-                <span className="w-1.5 h-1.5 rounded-full bg-[#059669]" />
-                <span>Role: Patient</span>
-                <ChevronRight size={13} className={'transform transition-transform text-[#059669] ' + (isRoleMenuOpen ? 'rotate-90' : '')} />
-              </button>
-
-              {isRoleMenuOpen && (
-                <div className="absolute right-0 mt-2 w-52 rounded-2xl bg-white border border-[#DCE5EC] shadow-2xl p-1.5 z-50 text-xs animate-in fade-in zoom-in-95 duration-150">
-                  <div className="px-2.5 py-1 text-[10px] font-bold text-[#64748B] uppercase tracking-wider border-b border-[#DCE5EC]">
-                    Switch Workspace
-                  </div>
-                  <div className="w-full text-left px-2.5 py-1.5 rounded-lg bg-emerald-50 text-[#047857] font-bold flex items-center justify-between">
-                    <span>Patient Portal</span>
-                    <CheckCircle2 size={13} className="text-[#059669]" />
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setIsRoleMenuOpen(false);
-                      onRoleSwitch && onRoleSwitch('doctor');
-                    }}
-                    className="w-full text-left px-2.5 py-1.5 rounded-lg text-[#172B4D] hover:bg-[#F1F5F9] transition-colors flex items-center justify-between cursor-pointer"
-                  >
-                    <span>Doctor Workspace</span>
-                    <span className="text-[10px] text-teal-600 font-mono">Clinical</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setIsRoleMenuOpen(false);
-                      onRoleSwitch && onRoleSwitch('staff');
-                    }}
-                    className="w-full text-left px-2.5 py-1.5 rounded-lg text-[#172B4D] hover:bg-[#F1F5F9] transition-colors flex items-center justify-between cursor-pointer"
-                  >
-                    <span>Staff Portal</span>
-                    <span className="text-[10px] text-cyan-600 font-mono">Ward</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setIsRoleMenuOpen(false);
-                      onRoleSwitch && onRoleSwitch('admin');
-                    }}
-                    className="w-full text-left px-2.5 py-1.5 rounded-lg text-[#172B4D] hover:bg-[#F1F5F9] transition-colors flex items-center justify-between cursor-pointer border-t border-[#DCE5EC] mt-1"
-                  >
-                    <span>Admin Governance</span>
-                    <span className="text-[10px] text-indigo-600 font-mono">Admin</span>
-                  </button>
-                </div>
-              )}
+            {/* Verified Patient Role Badge (Static - Single-Role Enforced for Security) */}
+            <div
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#ECFDF5] text-[#047857] border border-emerald-200/80 text-xs font-semibold select-none shadow-xs"
+              title="Verified Role: Patient"
+            >
+              <span className="w-1.5 h-1.5 rounded-full bg-[#059669]" />
+              <span>Role: Patient</span>
             </div>
 
             {/* AI Assistant Quick Navigation or Restore Pill */}
