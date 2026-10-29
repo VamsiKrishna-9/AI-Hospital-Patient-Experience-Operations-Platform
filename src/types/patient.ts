@@ -224,6 +224,7 @@ export interface PatientDashboardData {
   prescriptions: PrescriptionRecord[];
   feedbackList: FeedbackRecord[];
   notifications: NotificationItem[];
+  assignedStaff?: StaffAssignmentRecord[];
   backendStatus?: {
     connected?: boolean;
     isLiveMySQL?: boolean;
@@ -303,5 +304,14 @@ export interface StaffAssignmentRecord {
   assignment_status: 'Scheduled' | 'Active' | 'In Progress' | 'Completed' | 'Cancelled' | 'Reassigned' | string;
   assigned_by?: string | null;
   notes?: string | null;
+  // Enriched presentation fields
+  staff_name?: string;
+  staff_role?: string;
+  department?: string;
+  patient_name?: string;
+  patient_age?: number;
+  patient_gender?: string;
+  doctor_name?: string;
 }
+
 

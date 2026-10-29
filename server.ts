@@ -200,8 +200,26 @@ async function authenticateToken(req: Request, res: Response, next: NextFunction
             .from('app_users')
             .select('*')
             .eq('patient_id', userIdOrSuffix.toUpperCase())
-            .single();
+            .maybeSingle();
           dbUser = data;
+
+          if (!dbUser) {
+            const { data: ptData } = await admin
+              .from('silver_patients')
+              .select('*')
+              .eq('patient_id', userIdOrSuffix.toUpperCase())
+              .maybeSingle();
+            if (ptData) {
+              dbUser = {
+                id: ptData.user_id || `usr-pt-${ptData.patient_id}`,
+                role: 'patient',
+                patient_id: ptData.patient_id,
+                full_name: ptData.name,
+                email: ptData.email,
+                is_active: true,
+              };
+            }
+          }
         }
         if (!dbUser && userIdOrSuffix.includes('@')) {
           const { data } = await admin
@@ -2744,6 +2762,56 @@ app.get('/api/patient/dashboard', authenticateToken, requirePatientRole, async (
       };
     });
 
+    // 7. Fetch Assigned Care Team & Staff from silver_staff_assignment
+    let assignedStaff: any[] = [];
+    try {
+      const { data: assignmentsRaw } = await adminClient
+        .from('silver_staff_assignment')
+        .select('*')
+        .eq('patient_id', patientId)
+        .order('assignment_date', { ascending: false });
+
+      if (assignmentsRaw && assignmentsRaw.length > 0) {
+        const staffIds = Array.from(new Set(assignmentsRaw.map((a: any) => a.staff_id).filter(Boolean)));
+        let staffMap: Record<string, any> = {};
+        if (staffIds.length > 0) {
+          const { data: staffData } = await adminClient
+            .from('silver_staff')
+            .select('staff_id, staff_name, role, department, shift, hospital_branch, contact_number, email')
+            .in('staff_id', staffIds);
+          (staffData || []).forEach((s: any) => {
+            staffMap[s.staff_id] = s;
+          });
+        }
+
+        assignedStaff = assignmentsRaw.map((a: any) => {
+          const stf = staffMap[a.staff_id];
+          const doc = doctorMap[a.doctor_id];
+          return {
+            assignment_id: a.assignment_id,
+            staff_id: a.staff_id,
+            staff_name: stf?.staff_name || 'Assigned Staff',
+            staff_role: stf?.role || 'Clinical Care Specialist',
+            department: stf?.department || 'Patient Care',
+            doctor_id: a.doctor_id,
+            doctor_name: doc?.doctor_name || 'Attending Physician',
+            patient_id: a.patient_id,
+            assignment_type: a.assignment_type || 'Patient Assistance',
+            assignment_date: a.assignment_date,
+            start_time: a.start_time,
+            end_time: a.end_time,
+            priority: a.priority || 'Normal',
+            assignment_status: a.assignment_status || 'Scheduled',
+            notes: a.notes || '',
+            shift: stf?.shift || '',
+            contact_number: stf?.contact_number || '',
+          };
+        });
+      }
+    } catch (stfErr) {
+      console.warn('Could not load patient staff assignments:', stfErr);
+    }
+
     return res.json({
       success: true,
       data: {
@@ -2753,6 +2821,7 @@ app.get('/api/patient/dashboard', authenticateToken, requirePatientRole, async (
         labReports,
         prescriptions,
         feedbackList,
+        assignedStaff,
         notifications: [],
         backendStatus: {
           connected: true,
@@ -3366,70 +3435,119 @@ app.get('/api/doctor/overview', authenticateToken, async (req: Request, res: Res
   const client = getSupabaseAdmin();
   const appUser = (req as any).appUser;
 
-  // 1. Resolve Doctor Profile
-  let doctor = {
-    doctor_id: appUser?.doctor_id || 'DOC-7721',
-    name: appUser?.full_name || 'Dr. Marcus Vance, MD',
+  // 1. Resolve Authoritative Doctor Profile
+  let doctor: any = {
+    doctor_id: appUser?.doctor_id || 'DOC100002',
+    name: appUser?.full_name ? (appUser.full_name.startsWith('Dr.') ? appUser.full_name : `Dr. ${appUser.full_name}`) : 'Dr. Attending Physician',
     specialty: 'Cardiology & Vascular Medicine',
     department: 'Cardiovascular Specialty Institute',
     hospital_branch: 'MediAI Heart & Vascular Specialty Institute',
     license: 'CA-MED-99412',
     phone: '+1 (555) 234-8201',
     email: appUser?.email || 'doctor@hospital.org',
+    experience_years: 15,
+    qualification: 'MBBS, MD',
   };
 
   if (client) {
     try {
-      let docQuery = client.from('silver_doctors').select('*');
+      let docData: any = null;
       if (appUser?.doctor_id) {
-        docQuery = docQuery.eq('doctor_id', appUser.doctor_id);
-      } else if (appUser?.email) {
-        docQuery = docQuery.eq('email', appUser.email);
-      } else {
-        docQuery = docQuery.eq('doctor_id', 'DOC-7721');
+        const { data } = await client.from('silver_doctors').select('*').eq('doctor_id', appUser.doctor_id).maybeSingle();
+        if (data) docData = data;
       }
-      const { data: docData } = await docQuery.single();
+      if (!docData && appUser?.id) {
+        const { data } = await client.from('silver_doctors').select('*').eq('user_id', appUser.id).maybeSingle();
+        if (data) docData = data;
+      }
+      if (!docData && appUser?.email) {
+        const { data } = await client.from('silver_doctors').select('*').eq('email', appUser.email).maybeSingle();
+        if (data) docData = data;
+      }
+      if (!docData && appUser?.role === 'doctor') {
+        const { data } = await client.from('silver_doctors').select('*').eq('doctor_id', 'DOC100002').maybeSingle();
+        if (data) docData = data;
+      }
+
       if (docData) {
         doctor = {
           doctor_id: docData.doctor_id,
-          name: docData.doctor_name || 'Dr. Attending Physician',
-          specialty: docData.specialty || docData.specialization || 'Clinical Specialist',
-          department: docData.department_name || docData.specialty || 'General Medicine',
+          name: docData.doctor_name || appUser?.full_name || 'Dr. Attending Physician',
+          specialty: docData.specialty || docData.specialization || 'Cardiovascular Medicine',
+          department: docData.department_name || docData.specialty || 'Cardiovascular Specialty Institute',
           hospital_branch: docData.hospital_branch || 'MediAI Main Hospital',
           license: `MED-${docData.doctor_id}`,
           phone: docData.phone_number || '+1 (555) 234-8200',
           email: docData.email || appUser?.email || 'doctor@hospital.org',
+          experience_years: docData.experience_years || 15,
+          qualification: docData.qualification || 'MBBS, MD',
         };
       }
-    } catch {
-      // Keep resolved profile
+    } catch (err) {
+      console.error('Error resolving doctor profile:', err);
     }
   }
 
-  // 2. Fetch Live Appointments Schedule
+  // 2. Fetch Live Appointments Schedule for the Authenticated Doctor
   let schedule: any[] = [];
   if (client) {
     try {
-      const { data: aptData } = await client
+      let aptQuery = client
         .from('silver_appointments')
-        .select('*, silver_patients(name)')
-        .order('created_at', { ascending: false })
-        .limit(10);
+        .select(`
+          appointment_id,
+          patient_id,
+          doctor_id,
+          appointment_date,
+          appointment_time,
+          status,
+          consultation_duration_minutes,
+          consultation_type,
+          consultation_fee,
+          payment_status,
+          cancellation_reason,
+          reason,
+          symptoms,
+          notes,
+          silver_patients (
+            name,
+            age,
+            gender,
+            blood_group,
+            city,
+            phone_number
+          )
+        `)
+        .order('appointment_date', { ascending: false });
+
+      if (doctor.doctor_id) {
+        aptQuery = aptQuery.eq('doctor_id', doctor.doctor_id);
+      }
+
+      const { data: aptData } = await aptQuery;
 
       if (aptData && aptData.length > 0) {
-        schedule = aptData.map((a: any, idx: number) => ({
+        schedule = aptData.map((a: any) => ({
           appointment_id: a.appointment_id,
           patient_id: a.patient_id,
           patient_name: a.silver_patients?.name || `Patient ${a.patient_id}`,
-          time: a.appointment_time || `${9 + idx}:00 AM`,
+          patient_age: a.silver_patients?.age || null,
+          patient_gender: a.silver_patients?.gender || null,
+          patient_blood_group: a.silver_patients?.blood_group || null,
+          patient_city: a.silver_patients?.city || null,
+          patient_phone: a.silver_patients?.phone_number || null,
+          date: a.appointment_date,
+          time: a.appointment_time ? a.appointment_time.slice(0, 5) : '09:00',
           type: a.consultation_type || a.reason || 'Specialist Consultation',
           room: `Exam Room ${(a.appointment_id ? a.appointment_id.slice(-2) : '3B')}`,
-          status: a.status || (idx < 5 ? 'Completed' : 'Scheduled'),
+          status: a.status || 'Scheduled',
+          duration_minutes: a.consultation_duration_minutes ? Number(a.consultation_duration_minutes) : null,
           chief_complaint: a.reason || a.symptoms || 'Clinical Consultation',
-          notes: a.notes || 'Vital signs within normal limits. Regular clinical follow-up.',
+          notes: a.notes || '',
         }));
       }
-    } catch {
+    } catch (err) {
+      console.error('Error fetching doctor schedule:', err);
       schedule = [];
     }
   }
@@ -3438,22 +3556,32 @@ app.get('/api/doctor/overview', authenticateToken, async (req: Request, res: Res
   let inpatientRounds: any[] = [];
   if (client) {
     try {
-      const { data: encData } = await client
+      let encQuery = client
         .from('silver_encounters')
-        .select('encounter_id, patient_id, encounter_date, diagnosis, treatment_plan, chief_complaint, silver_patients(name, age)')
+        .select('encounter_id, patient_id, encounter_date, encounter_type, chief_complaint, diagnosis, treatment_plan, notes, silver_patients(name, age, gender)')
         .order('encounter_date', { ascending: false })
-        .limit(6);
+        .limit(10);
+
+      if (doctor.doctor_id) {
+        encQuery = encQuery.eq('doctor_id', doctor.doctor_id);
+      }
+
+      const { data: encData } = await encQuery;
 
       if (encData && encData.length > 0) {
         inpatientRounds = encData.map((e: any, idx: number) => ({
-          bed: `Room 40${idx + 1}`,
+          bed: `Bed ${401 + idx}`,
+          encounter_id: e.encounter_id,
           patient_name: e.silver_patients?.name || `Patient ${e.patient_id}`,
           patient_id: e.patient_id,
           age: Number(e.silver_patients?.age) || 55,
-          diagnosis: e.diagnosis || 'Cardiovascular Observation',
-          day_of_stay: (idx % 4) + 1,
+          gender: e.silver_patients?.gender || 'N/A',
+          diagnosis: e.diagnosis || 'Clinical Observation',
+          encounter_date: e.encounter_date,
+          encounter_type: e.encounter_type || 'Inpatient',
+          day_of_stay: (idx % 5) + 1,
           acuity: idx % 3 === 0 ? 'Guarded' : 'Stable',
-          vitals: 'BP 124/80 · HR 72 · SpO2 98%',
+          vitals: 'BP 122/78 · HR 74 · SpO2 98%',
           plan: e.treatment_plan || 'Continue protocol management and monitoring.',
         }));
       }
@@ -3466,11 +3594,18 @@ app.get('/api/doctor/overview', authenticateToken, async (req: Request, res: Res
   let pendingLabs: any[] = [];
   if (client) {
     try {
-      const { data: labData } = await client
+      const patientIds = schedule.map((s) => s.patient_id).slice(0, 50);
+      let labQuery = client
         .from('silver_lab_results')
-        .select('lab_id, patient_id, test_name, test_value, unit, reference_range, status, silver_patients(name)')
+        .select('lab_id, patient_id, test_name, test_category, test_date, test_value, unit, reference_range, status, silver_patients(name)')
         .order('created_at', { ascending: false })
-        .limit(6);
+        .limit(10);
+
+      if (patientIds.length > 0) {
+        labQuery = labQuery.in('patient_id', patientIds);
+      }
+
+      const { data: labData } = await labQuery;
 
       if (labData && labData.length > 0) {
         pendingLabs = labData.map((l: any) => ({
@@ -3478,6 +3613,8 @@ app.get('/api/doctor/overview', authenticateToken, async (req: Request, res: Res
           patient_id: l.patient_id,
           patient_name: l.silver_patients?.name || `Patient ${l.patient_id}`,
           test: l.test_name,
+          category: l.test_category || 'Diagnostic',
+          test_date: l.test_date || '',
           result: `${l.test_value || ''} ${l.unit || ''} (Ref: ${l.reference_range || 'Normal'})`.trim(),
           status: l.status || 'Completed',
           signed: l.status === 'Signed',
@@ -3488,16 +3625,108 @@ app.get('/api/doctor/overview', authenticateToken, async (req: Request, res: Res
     }
   }
 
-  // Calculate live statistics
-  const completedVisits = schedule.filter((s) => s.status === 'Completed').length;
-  const pendingVisits = schedule.length - completedVisits;
+  // 5. Compute Real KPI Aggregates & Power BI Visualizations Data
+  const todayStr = new Date().toISOString().split('T')[0];
+  const todayAppointments = schedule.filter((s) => s.date === todayStr);
+  const completedAppointments = schedule.filter((s) => s.status === 'Completed');
+  const scheduledAppointments = schedule.filter((s) => s.status === 'Scheduled' || s.status === 'Confirmed');
+  const inProgressAppointments = schedule.filter((s) => s.status === 'In-Progress');
+  const cancelledAppointments = schedule.filter((s) => s.status === 'Cancelled');
+  const noShowAppointments = schedule.filter((s) => s.status === 'No Show');
+
+  // Real Average Consultation Duration (minutes) from database
+  const durationRecords = schedule.filter((s) => s.duration_minutes && s.duration_minutes > 0);
+  const totalDuration = durationRecords.reduce((acc, s) => acc + (s.duration_minutes || 0), 0);
+  const avgConsultationMinutes = durationRecords.length > 0 ? Math.round((totalDuration / durationRecords.length) * 10) / 10 : 0;
+
+  // Real Status Distribution for Horizontal Bar Chart
+  const statusCounts: Record<string, number> = {};
+  schedule.forEach((s) => {
+    const st = s.status || 'Scheduled';
+    statusCounts[st] = (statusCounts[st] || 0) + 1;
+  });
+
+  const totalAptsCount = schedule.length || 1;
+  const statusDistribution = Object.entries(statusCounts)
+    .map(([status, count]) => ({
+      status,
+      count,
+      percentage: Math.round((count / totalAptsCount) * 100),
+    }))
+    .sort((a, b) => b.count - a.count);
+
+  // Real Trends: Monthly, Weekly, Daily
+  const monthlyMap: Record<string, { total: number; completed: number; scheduled: number; cancelled: number }> = {};
+  const dailyMap: Record<string, { total: number; completed: number; scheduled: number; cancelled: number }> = {};
+  const weeklyMap: Record<string, { total: number; completed: number; scheduled: number; cancelled: number }> = {};
+
+  schedule.forEach((s) => {
+    if (!s.date) return;
+    const monthKey = s.date.slice(0, 7); // YYYY-MM
+    if (!monthlyMap[monthKey]) {
+      monthlyMap[monthKey] = { total: 0, completed: 0, scheduled: 0, cancelled: 0 };
+    }
+    monthlyMap[monthKey].total++;
+    if (s.status === 'Completed') monthlyMap[monthKey].completed++;
+    else if (s.status === 'Scheduled' || s.status === 'Confirmed') monthlyMap[monthKey].scheduled++;
+    else if (s.status === 'Cancelled' || s.status === 'No Show') monthlyMap[monthKey].cancelled++;
+
+    // Daily
+    const dayKey = s.date;
+    if (!dailyMap[dayKey]) {
+      dailyMap[dayKey] = { total: 0, completed: 0, scheduled: 0, cancelled: 0 };
+    }
+    dailyMap[dayKey].total++;
+    if (s.status === 'Completed') dailyMap[dayKey].completed++;
+    else if (s.status === 'Scheduled' || s.status === 'Confirmed') dailyMap[dayKey].scheduled++;
+    else if (s.status === 'Cancelled' || s.status === 'No Show') dailyMap[dayKey].cancelled++;
+
+    // Weekly: group by ISO week
+    const d = new Date(s.date);
+    const startOfYear = new Date(d.getFullYear(), 0, 1);
+    const weekNum = Math.ceil(((d.getTime() - startOfYear.getTime()) / 86400000 + startOfYear.getDay() + 1) / 7);
+    const weekKey = `${d.getFullYear()}-W${String(weekNum).padStart(2, '0')}`;
+    if (!weeklyMap[weekKey]) {
+      weeklyMap[weekKey] = { total: 0, completed: 0, scheduled: 0, cancelled: 0 };
+    }
+    weeklyMap[weekKey].total++;
+    if (s.status === 'Completed') weeklyMap[weekKey].completed++;
+    else if (s.status === 'Scheduled' || s.status === 'Confirmed') weeklyMap[weekKey].scheduled++;
+    else if (s.status === 'Cancelled' || s.status === 'No Show') weeklyMap[weekKey].cancelled++;
+  });
+
+  const monthlyTrend = Object.entries(monthlyMap)
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([period, data]) => ({ period, ...data }));
+
+  const dailyTrend = Object.entries(dailyMap)
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .slice(-14) // Recent active days
+    .map(([period, data]) => ({ period, ...data }));
+
+  const weeklyTrend = Object.entries(weeklyMap)
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .slice(-12) // Recent weeks
+    .map(([period, data]) => ({ period, ...data }));
+
+  const pendingLabApprovals = pendingLabs.filter((l) => !l.signed).length;
+
   const stats = {
-    todayPatients: schedule.length,
-    completedVisits,
-    pendingVisits: pendingVisits >= 0 ? pendingVisits : 0,
-    inpatientRounds: inpatientRounds.length,
-    pendingLabApprovals: pendingLabs.filter((l) => !l.signed).length,
-    avgConsultationMinutes: 24,
+    totalAppointments: schedule.length,
+    todayAppointments: todayAppointments.length,
+    completedConsultations: completedAppointments.length,
+    scheduledAppointments: scheduledAppointments.length,
+    inProgressAppointments: inProgressAppointments.length,
+    cancelledAppointments: cancelledAppointments.length,
+    noShowAppointments: noShowAppointments.length,
+    avgConsultationMinutes,
+    inpatientCensus: inpatientRounds.length,
+    pendingLabApprovals,
+    avgWaitTimeMinutes: 14.5,
+    statusDistribution,
+    monthlyTrend,
+    weeklyTrend,
+    dailyTrend,
   };
 
   return res.json({
@@ -3601,6 +3830,248 @@ app.post('/api/doctor/encounter', authenticateToken, async (req: Request, res: R
       timestamp: nowIso,
     },
   });
+});
+
+// --- Doctor & Staff Connected Workflow Endpoints ---
+
+// 1. Get Available Staff Candidates for Doctor Assignment
+app.get('/api/doctor/staff-candidates', authenticateToken, async (req: Request, res: Response) => {
+  const client = getSupabaseAdmin();
+  const { department, role, search } = req.query;
+
+  if (!client) {
+    return res.json({ success: true, candidates: [] });
+  }
+
+  try {
+    let query = client
+      .from('silver_staff')
+      .select('staff_id, staff_name, role, department, shift, hospital_branch, is_active, email, contact_number')
+      .eq('is_active', true)
+      .limit(100);
+
+    if (department && department !== 'all') {
+      query = query.ilike('department', `%${department}%`);
+    }
+    if (role && role !== 'all') {
+      query = query.ilike('role', `%${role}%`);
+    }
+    if (search && typeof search === 'string') {
+      query = query.or(`staff_name.ilike.%${search}%,staff_id.ilike.%${search}%,role.ilike.%${search}%`);
+    }
+
+    const { data: staffList, error } = await query;
+    if (error) {
+      console.error('Error fetching staff candidates:', error);
+      return res.status(500).json({ success: false, error: error.message });
+    }
+
+    return res.json({
+      success: true,
+      candidates: staffList || [],
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 2. Doctor Assigns Staff to a Patient
+app.post('/api/doctor/assign-staff', authenticateToken, async (req: Request, res: Response) => {
+  const { patientId, staffId, assignmentType, priority, notes, appointmentId, encounterId, startTime, endTime } = req.body;
+  const client = getSupabaseAdmin();
+  const appUser = (req as any).appUser;
+  const docId = appUser?.doctor_id || 'DOC100002';
+  const now = new Date();
+  const today = now.toISOString().split('T')[0];
+
+  if (!client) {
+    return res.status(500).json({ success: false, error: 'Database client not connected' });
+  }
+  if (!patientId || !staffId) {
+    return res.status(400).json({ success: false, error: 'patientId and staffId are required' });
+  }
+
+  try {
+    // 1. Verify patient exists in silver_patients
+    const { data: patientRecord } = await client
+      .from('silver_patients')
+      .select('patient_id, name')
+      .eq('patient_id', patientId)
+      .maybeSingle();
+
+    if (!patientRecord) {
+      return res.status(404).json({ success: false, error: `Patient ${patientId} not found in database.` });
+    }
+
+    // 2. Verify staff member exists in silver_staff
+    const { data: staffRecord } = await client
+      .from('silver_staff')
+      .select('staff_id, staff_name, role, department')
+      .eq('staff_id', staffId)
+      .maybeSingle();
+
+    if (!staffRecord) {
+      return res.status(404).json({ success: false, error: `Staff member ${staffId} not found.` });
+    }
+
+    // 3. Generate sequential ASN ID
+    const { data: topRow } = await client
+      .from('silver_staff_assignment')
+      .select('assignment_id')
+      .order('assignment_id', { ascending: false })
+      .limit(1);
+
+    let nextAsn = `ASN${Date.now()}`;
+    if (topRow && topRow.length > 0) {
+      const match = topRow[0].assignment_id.match(/ASN(\d+)/);
+      if (match) {
+        nextAsn = `ASN${parseInt(match[1], 10) + 1}`;
+      }
+    }
+
+    const newAssignment = {
+      assignment_id: nextAsn,
+      staff_id: staffId,
+      patient_id: patientId,
+      doctor_id: docId,
+      encounter_id: encounterId || null,
+      appointment_id: appointmentId || null,
+      assignment_type: assignmentType || 'Patient Care',
+      assignment_date: today,
+      start_time: startTime || '09:00:00',
+      end_time: endTime || '17:00:00',
+      priority: priority || 'Normal',
+      assignment_status: 'Scheduled',
+      assigned_by: appUser?.staff_id || null,
+      notes: notes || 'Clinical assignment ordered by physician',
+    };
+
+    const { error: insError } = await client
+      .from('silver_staff_assignment')
+      .insert(newAssignment);
+
+    if (insError) {
+      console.error('Failed to insert staff assignment:', insError);
+      return res.status(500).json({ success: false, error: insError.message });
+    }
+
+    return res.json({
+      success: true,
+      message: `Successfully assigned ${staffRecord.staff_name} (${staffRecord.role}) to patient ${patientRecord.name}.`,
+      assignment: {
+        ...newAssignment,
+        staff_name: staffRecord.staff_name,
+        staff_role: staffRecord.role,
+        department: staffRecord.department,
+        patient_name: patientRecord.name,
+      },
+    });
+  } catch (err: any) {
+    console.error('Error assigning staff:', err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 3. Get Staff Assignments for Doctor or Specific Patient
+app.get('/api/doctor/patient-assignments/:patientId', authenticateToken, async (req: Request, res: Response) => {
+  const { patientId } = req.params;
+  const client = getSupabaseAdmin();
+  const appUser = (req as any).appUser;
+  const docId = appUser?.doctor_id || 'DOC100002';
+
+  if (!client) {
+    return res.json({ success: true, assignments: [] });
+  }
+
+  try {
+    let query = client.from('silver_staff_assignment').select('*');
+    if (patientId && patientId !== 'all') {
+      query = query.eq('patient_id', patientId);
+    } else {
+      query = query.eq('doctor_id', docId);
+    }
+    query = query.order('assignment_date', { ascending: false }).limit(50);
+
+    const { data: assignments, error } = await query;
+    if (error) {
+      return res.status(500).json({ success: false, error: error.message });
+    }
+
+    if (!assignments || assignments.length === 0) {
+      return res.json({ success: true, assignments: [] });
+    }
+
+    // Enrich with staff & patient names
+    const staffIds = Array.from(new Set(assignments.map((a: any) => a.staff_id).filter(Boolean)));
+    const patientIds = Array.from(new Set(assignments.map((a: any) => a.patient_id).filter(Boolean)));
+
+    const { data: staffData } = await client.from('silver_staff').select('staff_id, staff_name, role, department, shift').in('staff_id', staffIds);
+    const { data: patientData } = await client.from('silver_patients').select('patient_id, name, age, gender').in('patient_id', patientIds);
+
+    const staffMap = Object.fromEntries((staffData || []).map((s: any) => [s.staff_id, s]));
+    const patientMap = Object.fromEntries((patientData || []).map((p: any) => [p.patient_id, p]));
+
+    const enriched = assignments.map((a: any) => ({
+      ...a,
+      staff_name: staffMap[a.staff_id]?.staff_name || 'Staff Member',
+      staff_role: staffMap[a.staff_id]?.role || 'Clinical Staff',
+      department: staffMap[a.staff_id]?.department || 'Hospital Care',
+      shift: staffMap[a.staff_id]?.shift || '',
+      patient_name: patientMap[a.patient_id]?.name || `Patient ${a.patient_id}`,
+      patient_age: patientMap[a.patient_id]?.age,
+      patient_gender: patientMap[a.patient_id]?.gender,
+    }));
+
+    return res.json({ success: true, assignments: enriched });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 4. Update Staff Assignment (Status, Notes, Priority)
+app.patch('/api/staff/assignment-status', authenticateToken, async (req: Request, res: Response) => {
+  const { assignmentId, status, notes } = req.body;
+  const client = getSupabaseAdmin();
+
+  if (!client) {
+    return res.status(500).json({ success: false, error: 'Database not connected' });
+  }
+  if (!assignmentId || !status) {
+    return res.status(400).json({ success: false, error: 'assignmentId and status are required' });
+  }
+
+  const validStatuses = ['Scheduled', 'In Progress', 'Completed', 'Cancelled', 'Reassigned'];
+  if (!validStatuses.includes(status)) {
+    return res.status(400).json({ success: false, error: `Invalid status. Must be one of: ${validStatuses.join(', ')}` });
+  }
+
+  try {
+    const updatePayload: any = {
+      assignment_status: status,
+    };
+    if (notes && typeof notes === 'string') {
+      updatePayload.notes = notes;
+    }
+
+    const { data, error } = await client
+      .from('silver_staff_assignment')
+      .update(updatePayload)
+      .eq('assignment_id', assignmentId)
+      .select()
+      .maybeSingle();
+
+    if (error) {
+      return res.status(500).json({ success: false, error: error.message });
+    }
+
+    return res.json({
+      success: true,
+      message: `Assignment ${assignmentId} updated to ${status}.`,
+      assignment: data,
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 // 17. Staff Ward & Clinical Operations Overview
@@ -3735,6 +4206,75 @@ app.get('/api/staff/overview', authenticateToken, async (req: Request, res: Resp
       status: idx === 0 ? 'Due Now' : 'Upcoming',
     }));
 
+  // 5. Build Live Doctor-Assigned Patients from silver_staff_assignment
+  let assignedPatients: any[] = [];
+  if (client) {
+    try {
+      // First check for assignments matching this specific staff member
+      let { data: assignData } = await client
+        .from('silver_staff_assignment')
+        .select('*')
+        .eq('staff_id', staff.staff_id)
+        .order('assignment_date', { ascending: false })
+        .limit(20);
+
+      // If this staff member has no assignments, also load active ward assignments
+      if (!assignData || assignData.length === 0) {
+        const { data: generalData } = await client
+          .from('silver_staff_assignment')
+          .select('*')
+          .in('assignment_status', ['Scheduled', 'In Progress', 'Active'])
+          .order('assignment_date', { ascending: false })
+          .limit(15);
+        assignData = generalData || [];
+      }
+
+      if (assignData && assignData.length > 0) {
+        const patientIds = Array.from(new Set(assignData.map((a: any) => a.patient_id).filter(Boolean)));
+        const doctorIds = Array.from(new Set(assignData.map((a: any) => a.doctor_id).filter(Boolean)));
+        const staffIds = Array.from(new Set(assignData.map((a: any) => a.staff_id).filter(Boolean)));
+
+        const { data: pData } = await client.from('silver_patients').select('patient_id, name, age, gender, phone_number, city').in('patient_id', patientIds);
+        const { data: dData } = await client.from('silver_doctors').select('doctor_id, doctor_name, specialization, department_name').in('doctor_id', doctorIds);
+        const { data: sData } = await client.from('silver_staff').select('staff_id, staff_name, role, department').in('staff_id', staffIds);
+
+        const pMap = Object.fromEntries((pData || []).map((p: any) => [p.patient_id, p]));
+        const dMap = Object.fromEntries((dData || []).map((d: any) => [d.doctor_id, d]));
+        const sMap = Object.fromEntries((sData || []).map((s: any) => [s.staff_id, s]));
+
+        assignedPatients = assignData.map((a: any) => {
+          const pt = pMap[a.patient_id];
+          const doc = dMap[a.doctor_id];
+          const stf = sMap[a.staff_id];
+          return {
+            assignment_id: a.assignment_id,
+            staff_id: a.staff_id,
+            staff_name: stf?.staff_name || staff.name,
+            staff_role: stf?.role || staff.role,
+            patient_id: a.patient_id,
+            patient_name: pt?.name || `Patient ${a.patient_id}`,
+            patient_age: pt?.age || 45,
+            patient_gender: pt?.gender || 'Unknown',
+            patient_phone: pt?.phone_number || '',
+            doctor_id: a.doctor_id,
+            doctor_name: doc?.doctor_name ? (doc.doctor_name.startsWith('Dr.') ? doc.doctor_name : `Dr. ${doc.doctor_name}`) : 'Attending Physician',
+            doctor_specialty: doc?.specialization || 'Clinical Medicine',
+            assignment_type: a.assignment_type || 'Patient Care',
+            assignment_date: a.assignment_date,
+            start_time: a.start_time || '09:00:00',
+            end_time: a.end_time || '17:00:00',
+            priority: a.priority || 'Normal',
+            assignment_status: a.assignment_status || 'Scheduled',
+            notes: a.notes || 'Clinical care instructions provided by physician',
+          };
+        });
+      }
+    } catch (err) {
+      console.warn('Error fetching staff assignments:', err);
+      assignedPatients = [];
+    }
+  }
+
   const occupiedBeds = wardBeds.filter((b) => b.status === 'Occupied').length;
   const availableBeds = wardBeds.filter((b) => b.status === 'Available').length;
   const cleaningBeds = wardBeds.filter((b) => b.status === 'Cleaning').length;
@@ -3746,6 +4286,7 @@ app.get('/api/staff/overview', authenticateToken, async (req: Request, res: Resp
     cleaningBeds,
     triageWaiting: triageQueue.length,
     pendingVitals: vitalsTasks.length,
+    doctorAssignedCount: assignedPatients.length,
     criticalAlerts: 1,
   };
 
@@ -3756,7 +4297,64 @@ app.get('/api/staff/overview', authenticateToken, async (req: Request, res: Resp
     wardBeds,
     triageQueue,
     vitalsTasks,
+    assignedPatients,
   });
+});
+
+app.get('/api/staff/my-assignments', authenticateToken, async (req: Request, res: Response) => {
+  const client = getSupabaseAdmin();
+  const appUser = (req as any).appUser;
+  const staffId = appUser?.staff_id || 'STF-4401';
+
+  if (!client) {
+    return res.json({ success: true, assignments: [] });
+  }
+
+  try {
+    let { data: assignData } = await client
+      .from('silver_staff_assignment')
+      .select('*')
+      .eq('staff_id', staffId)
+      .order('assignment_date', { ascending: false })
+      .limit(30);
+
+    if (!assignData || assignData.length === 0) {
+      const { data: fallbackData } = await client
+        .from('silver_staff_assignment')
+        .select('*')
+        .order('assignment_date', { ascending: false })
+        .limit(20);
+      assignData = fallbackData || [];
+    }
+
+    const patientIds = Array.from(new Set((assignData || []).map((a: any) => a.patient_id).filter(Boolean)));
+    const doctorIds = Array.from(new Set((assignData || []).map((a: any) => a.doctor_id).filter(Boolean)));
+    const staffIds = Array.from(new Set((assignData || []).map((a: any) => a.staff_id).filter(Boolean)));
+
+    const { data: pData } = await client.from('silver_patients').select('patient_id, name, age, gender, phone_number, city').in('patient_id', patientIds);
+    const { data: dData } = await client.from('silver_doctors').select('doctor_id, doctor_name, specialization').in('doctor_id', doctorIds);
+    const { data: sData } = await client.from('silver_staff').select('staff_id, staff_name, role, department').in('staff_id', staffIds);
+
+    const pMap = Object.fromEntries((pData || []).map((p: any) => [p.patient_id, p]));
+    const dMap = Object.fromEntries((dData || []).map((d: any) => [d.doctor_id, d]));
+    const sMap = Object.fromEntries((sData || []).map((s: any) => [s.staff_id, s]));
+
+    const enriched = (assignData || []).map((a: any) => ({
+      ...a,
+      patient_name: pMap[a.patient_id]?.name || `Patient ${a.patient_id}`,
+      patient_age: pMap[a.patient_id]?.age,
+      patient_gender: pMap[a.patient_id]?.gender,
+      doctor_name: dMap[a.doctor_id]?.doctor_name || 'Attending Physician',
+      doctor_specialty: dMap[a.doctor_id]?.specialization || 'Clinical Medicine',
+      staff_name: sMap[a.staff_id]?.staff_name || 'Staff Member',
+      staff_role: sMap[a.staff_id]?.role || 'Clinical Staff',
+      department: sMap[a.staff_id]?.department || 'Hospital Care',
+    }));
+
+    return res.json({ success: true, assignments: enriched });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 app.post('/api/staff/update-bed', authenticateToken, (req: Request, res: Response) => {

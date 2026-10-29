@@ -19,14 +19,17 @@ import {
   Thermometer,
   ShieldAlert,
   ChevronRight,
+  Stethoscope,
+  UserCheck,
+  Briefcase,
+  Check,
 } from 'lucide-react';
-import { AuthUser, HospitalRole } from '../types/auth';
+import { AuthUser } from '../types/auth';
 import { AiHospitalAssistantLauncher } from './AiHospitalAssistantLauncher';
 
 interface StaffDashboardProps {
   user?: AuthUser | null;
   onLogout: () => void;
-  onRoleSwitch?: (role: HospitalRole) => void;
 }
 
 interface WardBedItem {
@@ -60,11 +63,36 @@ interface VitalsTaskItem {
   status: string;
 }
 
+interface DoctorAssignedPatientItem {
+  assignment_id: string;
+  staff_id: string;
+  staff_name: string;
+  staff_role: string;
+  patient_id: string;
+  patient_name: string;
+  patient_age: number;
+  patient_gender: string;
+  patient_phone?: string;
+  doctor_id: string;
+  doctor_name: string;
+  doctor_specialty: string;
+  assignment_type: string;
+  assignment_date: string;
+  start_time: string;
+  end_time: string;
+  priority: string;
+  assignment_status: string;
+  notes: string;
+}
+
 export const StaffDashboard: React.FC<StaffDashboardProps> = ({ user, onLogout }) => {
-  const [activeTab, setActiveTab] = useState<'beds' | 'triage' | 'vitals'>('beds');
+  const [activeTab, setActiveTab] = useState<'assigned' | 'beds' | 'triage' | 'vitals'>('assigned');
   const [beds, setBeds] = useState<WardBedItem[]>([]);
   const [triageQueue, setTriageQueue] = useState<TriageQueueItem[]>([]);
   const [vitalsTasks, setVitalsTasks] = useState<VitalsTaskItem[]>([]);
+  const [assignedPatients, setAssignedPatients] = useState<DoctorAssignedPatientItem[]>([]);
+  const [updatingAssignmentId, setUpdatingAssignmentId] = useState<string | null>(null);
+  const [assignmentFilter, setAssignmentFilter] = useState<string>('all');
   const [selectedBed, setSelectedBed] = useState<WardBedItem | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [filterWing, setFilterWing] = useState('all');
@@ -79,28 +107,61 @@ export const StaffDashboard: React.FC<StaffDashboardProps> = ({ user, onLogout }
   const [spo2, setSpo2] = useState('98');
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
-  useEffect(() => {
-    async function loadStaffData() {
-      try {
-        const token = sessionStorage.getItem('mediai_patient_auth_token');
-        const res = await fetch('/api/staff/overview', {
-          headers: token ? { Authorization: `Bearer ${token}` } : {},
-        });
-        const data = await res.json();
-        if (data.success) {
-          setBeds(data.wardBeds || []);
-          setTriageQueue(data.triageQueue || []);
-          setVitalsTasks(data.vitalsTasks || []);
-          if (data.wardBeds?.length > 0) {
-            setSelectedBed(data.wardBeds[0]);
-          }
+  const loadStaffData = async () => {
+    try {
+      const token = sessionStorage.getItem('mediai_patient_auth_token');
+      const res = await fetch('/api/staff/overview', {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      const data = await res.json();
+      if (data.success) {
+        setBeds(data.wardBeds || []);
+        setTriageQueue(data.triageQueue || []);
+        setVitalsTasks(data.vitalsTasks || []);
+        setAssignedPatients(data.assignedPatients || []);
+        if (data.wardBeds?.length > 0) {
+          setSelectedBed(data.wardBeds[0]);
         }
-      } catch (err) {
-        console.error('Failed to load staff overview', err);
       }
+    } catch (err) {
+      console.error('Failed to load staff overview', err);
     }
+  };
+
+  useEffect(() => {
     loadStaffData();
   }, []);
+
+  const handleUpdateAssignmentStatus = async (assignmentId: string, newStatus: string, notes?: string) => {
+    setUpdatingAssignmentId(assignmentId);
+    try {
+      const token = sessionStorage.getItem('mediai_patient_auth_token');
+      const res = await fetch('/api/staff/assignment-status', {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ assignmentId, status: newStatus, notes }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setAssignedPatients((prev) =>
+          prev.map((item) =>
+            item.assignment_id === assignmentId ? { ...item, assignment_status: newStatus } : item
+          )
+        );
+        setToastMessage(`Assignment ${assignmentId} updated to ${newStatus}.`);
+        setTimeout(() => setToastMessage(null), 3500);
+      } else {
+        alert(data.error || 'Failed to update assignment status.');
+      }
+    } catch (err: any) {
+      alert(`Error updating assignment: ${err?.message || 'Network error'}`);
+    } finally {
+      setUpdatingAssignmentId(null);
+    }
+  };
 
   const handleUpdateBedStatus = async (newStatus: 'Occupied' | 'Available' | 'Cleaning' | 'Reserved') => {
     if (!selectedBed) return;
@@ -189,6 +250,16 @@ export const StaffDashboard: React.FC<StaffDashboardProps> = ({ user, onLogout }
           {/* Zone 2: Navigation Links / Workspace Tabs */}
           <nav className="hidden md:flex items-center gap-1 bg-slate-950/60 p-1 rounded-xl border border-slate-800/80">
             <button
+              onClick={() => setActiveTab('assigned')}
+              className={`px-3.5 py-1.5 rounded-lg text-xs font-medium transition-colors whitespace-nowrap cursor-pointer ${
+                activeTab === 'assigned'
+                  ? 'bg-teal-500/20 text-teal-300 border border-teal-500/30 font-bold'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              Doctor-Assigned Patients ({assignedPatients.length})
+            </button>
+            <button
               onClick={() => setActiveTab('beds')}
               className={`px-3.5 py-1.5 rounded-lg text-xs font-medium transition-colors whitespace-nowrap cursor-pointer ${
                 activeTab === 'beds'
@@ -257,7 +328,24 @@ export const StaffDashboard: React.FC<StaffDashboardProps> = ({ user, onLogout }
       {/* Main Staff Viewport */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
         {/* KPI Strip */}
-        <section className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+        <section className="grid grid-cols-2 lg:grid-cols-5 gap-3 sm:gap-4">
+          <div
+            onClick={() => setActiveTab('assigned')}
+            className={`p-4 rounded-xl border transition-all cursor-pointer ${
+              activeTab === 'assigned'
+                ? 'bg-teal-950/50 border-teal-500/50 shadow-xs'
+                : 'bg-slate-900/60 border-slate-800/80 hover:border-teal-500/30'
+            }`}
+          >
+            <span className="text-xs text-teal-400 font-semibold block mb-1">Doctor-Assigned</span>
+            <div className="flex items-baseline justify-between">
+              <span className="text-2xl font-bold text-teal-300 font-mono tabular-nums">{assignedPatients.length}</span>
+              <span className="text-[10px] text-teal-400 font-mono bg-teal-500/10 px-1.5 py-0.5 rounded border border-teal-500/20">
+                Directives
+              </span>
+            </div>
+          </div>
+
           <div className="p-4 rounded-xl bg-slate-900/60 border border-slate-800/80">
             <span className="text-xs text-slate-400 block mb-1">Occupied Beds</span>
             <div className="flex items-baseline justify-between">
@@ -298,6 +386,177 @@ export const StaffDashboard: React.FC<StaffDashboardProps> = ({ user, onLogout }
           <div className="p-3.5 rounded-xl bg-teal-950/60 border border-teal-500/40 text-xs text-teal-200 flex items-center gap-2">
             <CheckCircle2 size={16} className="text-teal-400 shrink-0" />
             <span>{toastMessage}</span>
+          </div>
+        )}
+
+        {/* Tab 0: Doctor-Assigned Patients Workflow */}
+        {activeTab === 'assigned' && (
+          <div className="space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-slate-900/70 p-4 rounded-2xl border border-slate-800">
+              <div>
+                <h3 className="text-sm font-bold text-white tracking-tight flex items-center gap-2">
+                  <Stethoscope size={16} className="text-teal-400" />
+                  <span>Doctor-Assigned Patients & Directives</span>
+                </h3>
+                <p className="text-xs text-slate-400">
+                  Institutional care orders assigned directly by physicians in <code className="text-teal-400 font-mono">silver_staff_assignment</code>.
+                </p>
+              </div>
+
+              {/* Status Filter */}
+              <div className="flex items-center gap-1.5 flex-wrap">
+                {['all', 'Scheduled', 'In Progress', 'Completed'].map((st) => (
+                  <button
+                    key={st}
+                    onClick={() => setAssignmentFilter(st)}
+                    className={`px-2.5 py-1 rounded-lg text-xs font-mono font-medium transition-all cursor-pointer ${
+                      assignmentFilter === st
+                        ? 'bg-teal-500 text-slate-950 font-bold shadow-xs'
+                        : 'bg-slate-950 text-slate-400 border border-slate-800 hover:text-white'
+                    }`}
+                  >
+                    {st === 'all' ? `All (${assignedPatients.length})` : st}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {assignedPatients.filter(
+              (a) => assignmentFilter === 'all' || a.assignment_status.toLowerCase() === assignmentFilter.toLowerCase()
+            ).length === 0 ? (
+              <div className="p-12 text-center rounded-2xl bg-slate-900/40 border border-slate-800 text-slate-400 text-xs">
+                No patient assignments found matching status '{assignmentFilter}'.
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {assignedPatients
+                  .filter(
+                    (a) =>
+                      assignmentFilter === 'all' ||
+                      a.assignment_status.toLowerCase() === assignmentFilter.toLowerCase()
+                  )
+                  .map((asn) => {
+                    const isUrgent = asn.priority === 'Urgent' || asn.priority === 'Critical';
+                    const isUpdating = updatingAssignmentId === asn.assignment_id;
+
+                    return (
+                      <div
+                        key={asn.assignment_id}
+                        className="p-4 rounded-2xl bg-slate-900/80 border border-slate-800 hover:border-teal-500/40 transition-all space-y-3 shadow-sm"
+                      >
+                        {/* Header: Patient & Priority */}
+                        <div className="flex items-start justify-between gap-2 border-b border-slate-800/80 pb-3">
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <h4 className="text-sm font-bold text-white">{asn.patient_name}</h4>
+                              <span className="text-[10px] font-mono text-teal-400 bg-teal-500/10 px-1.5 py-0.2 rounded border border-teal-500/20">
+                                {asn.patient_id}
+                              </span>
+                            </div>
+                            <div className="text-[11px] text-slate-400 mt-0.5">
+                              {asn.patient_age} yrs · {asn.patient_gender} {asn.patient_phone ? `· ${asn.patient_phone}` : ''}
+                            </div>
+                          </div>
+
+                          <div className="text-right shrink-0">
+                            <span
+                              className={`text-[10px] px-2 py-0.5 rounded font-mono border ${
+                                isUrgent
+                                  ? 'bg-rose-500/15 text-rose-300 border-rose-500/30 font-bold'
+                                  : 'bg-slate-800 text-slate-300 border-slate-700'
+                              }`}
+                            >
+                              {asn.priority || 'Normal'}
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Physician & Service Info */}
+                        <div className="p-2.5 rounded-xl bg-slate-950/80 border border-slate-800/80 space-y-1.5 text-xs">
+                          <div className="flex items-center justify-between">
+                            <span className="text-slate-400 text-[11px]">Ordering Doctor:</span>
+                            <span className="text-teal-300 font-semibold">{asn.doctor_name}</span>
+                          </div>
+                          <div className="flex items-center justify-between text-[11px]">
+                            <span className="text-slate-500 font-mono">Specialty:</span>
+                            <span className="text-slate-300">{asn.doctor_specialty}</span>
+                          </div>
+                          <div className="flex items-center justify-between text-[11px]">
+                            <span className="text-slate-500 font-mono">Service Required:</span>
+                            <span className="text-white font-medium">{asn.assignment_type}</span>
+                          </div>
+                          <div className="flex items-center justify-between text-[11px]">
+                            <span className="text-slate-500 font-mono">Scheduled:</span>
+                            <span className="text-slate-300">{asn.assignment_date} {asn.start_time ? `at ${asn.start_time.slice(0, 5)}` : ''}</span>
+                          </div>
+                        </div>
+
+                        {/* Directives from Doctor */}
+                        <div className="p-2.5 rounded-xl bg-slate-950/40 border border-slate-800/60 text-xs text-slate-300 leading-relaxed font-sans">
+                          <span className="text-[10px] text-slate-500 font-mono uppercase block mb-0.5">Physician Clinical Directives:</span>
+                          {asn.notes || 'Routine clinical monitoring.'}
+                        </div>
+
+                        {/* Live Status and Actions */}
+                        <div className="pt-2 border-t border-slate-800 flex flex-col gap-2">
+                          <div className="flex items-center justify-between text-xs">
+                            <span className="text-slate-400 text-[11px]">Current Status:</span>
+                            <span
+                              className={`text-[10px] px-2 py-0.5 rounded font-mono border ${
+                                asn.assignment_status === 'Completed'
+                                  ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/20'
+                                  : asn.assignment_status === 'In Progress'
+                                  ? 'bg-amber-500/10 text-amber-300 border-amber-500/20'
+                                  : 'bg-teal-500/10 text-teal-300 border-teal-500/20'
+                              }`}
+                            >
+                              {asn.assignment_status}
+                            </span>
+                          </div>
+
+                          <div className="flex items-center gap-2">
+                            {asn.assignment_status === 'Scheduled' && (
+                              <button
+                                type="button"
+                                disabled={isUpdating}
+                                onClick={() => handleUpdateAssignmentStatus(asn.assignment_id, 'In Progress')}
+                                className="flex-1 py-1.5 px-3 rounded-lg text-xs font-semibold bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 transition-colors cursor-pointer flex items-center justify-center gap-1 disabled:opacity-50"
+                              >
+                                {isUpdating ? <RefreshCw size={12} className="animate-spin" /> : <Clock size={12} />}
+                                <span>Start Task</span>
+                              </button>
+                            )}
+
+                            {asn.assignment_status === 'In Progress' && (
+                              <button
+                                type="button"
+                                disabled={isUpdating}
+                                onClick={() => handleUpdateAssignmentStatus(asn.assignment_id, 'Completed')}
+                                className="flex-1 py-1.5 px-3 rounded-lg text-xs font-semibold bg-emerald-500 hover:bg-emerald-400 text-slate-950 transition-colors cursor-pointer flex items-center justify-center gap-1 disabled:opacity-50"
+                              >
+                                {isUpdating ? <RefreshCw size={12} className="animate-spin" /> : <Check size={12} />}
+                                <span>Mark Completed</span>
+                              </button>
+                            )}
+
+                            <select
+                              value={asn.assignment_status}
+                              disabled={isUpdating}
+                              onChange={(e) => handleUpdateAssignmentStatus(asn.assignment_id, e.target.value)}
+                              className="px-2 py-1.5 rounded-lg bg-slate-950 border border-slate-800 text-[11px] text-slate-300 focus:outline-none focus:border-teal-500 cursor-pointer font-mono"
+                            >
+                              <option value="Scheduled">Scheduled</option>
+                              <option value="In Progress">In Progress</option>
+                              <option value="Completed">Completed</option>
+                              <option value="Cancelled">Cancelled</option>
+                            </select>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+              </div>
+            )}
           </div>
         )}
 

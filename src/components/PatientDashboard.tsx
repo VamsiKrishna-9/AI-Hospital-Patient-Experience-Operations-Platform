@@ -33,6 +33,7 @@ import {
   MapPin,
   Briefcase,
   ThumbsUp,
+  Users,
 } from 'lucide-react';
 import {
   PatientDashboardData,
@@ -66,7 +67,7 @@ export const PatientDashboard: React.FC<PatientDashboardProps> = ({ user, onLogo
   const [error, setError] = useState<string | null>(null);
 
   // Active navigation tab
-  const [activeTab, setActiveTab] = useState<'overview' | 'appointments' | 'encounters' | 'labs' | 'prescriptions' | 'feedback' | 'ai-assistant'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'appointments' | 'care-team' | 'encounters' | 'labs' | 'prescriptions' | 'feedback' | 'ai-assistant'>('overview');
 
   // AI Chatbot visibility & preference state
   const [chatbotEnabled, setChatbotEnabled] = useState<boolean>(() => aiChatService.isChatbotEnabled());
@@ -604,6 +605,7 @@ export const PatientDashboard: React.FC<PatientDashboardProps> = ({ user, onLogo
               {[
                 { id: 'overview', label: 'Overview & Next Visits' },
                 { id: 'appointments', label: `Appointments (${dashboardData.upcomingAppointments.length})` },
+                { id: 'care-team', label: `Assigned Care Team (${dashboardData.assignedStaff?.length || 0})` },
                 { id: 'encounters', label: `Recent Visits (${dashboardData.completedEncounters.length})` },
                 { id: 'labs', label: `Lab Results (${dashboardData.labReports.length})` },
                 { id: 'prescriptions', label: `Prescriptions (${dashboardData.prescriptions.length})` },
@@ -727,6 +729,156 @@ export const PatientDashboard: React.FC<PatientDashboardProps> = ({ user, onLogo
                         </div>
                       </div>
                     ))}
+                  </div>
+                )}
+
+                {/* Overview Care Team Snapshot */}
+                {activeTab === 'overview' && dashboardData.assignedStaff && dashboardData.assignedStaff.length > 0 && (
+                  <div className="pt-4 border-t border-[#DCE5EC] space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div className="space-y-0.5">
+                        <h3 className="text-sm font-bold text-[#172B4D] flex items-center gap-1.5">
+                          <Users size={15} className="text-[#059669]" />
+                          <span>Assigned Hospital Care Team & Clinical Staff</span>
+                        </h3>
+                        <p className="text-xs text-[#526581]">
+                          Assigned by your attending physician for personalized care and monitoring.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setActiveTab('care-team')}
+                        className="text-xs font-bold text-[#059669] hover:underline cursor-pointer"
+                      >
+                        View Details ({dashboardData.assignedStaff.length})
+                      </button>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                      {dashboardData.assignedStaff.slice(0, 3).map((stf) => (
+                        <div
+                          key={stf.assignment_id}
+                          className="p-3.5 rounded-xl bg-[#F8FAFC] border border-[#DCE5EC] space-y-2 hover:border-emerald-300 transition-colors"
+                        >
+                          <div className="flex items-start justify-between">
+                            <div>
+                              <h4 className="text-xs font-bold text-[#172B4D]">{stf.staff_name}</h4>
+                              <span className="text-[11px] text-[#059669] font-medium block">{stf.staff_role}</span>
+                              <span className="text-[10px] text-[#64748B]">{stf.department}</span>
+                            </div>
+                            <span
+                              className={`text-[10px] px-2 py-0.5 rounded-full font-bold font-mono ${
+                                stf.assignment_status === 'Completed'
+                                  ? 'bg-emerald-100 text-emerald-800'
+                                  : stf.assignment_status === 'In Progress'
+                                  ? 'bg-amber-100 text-amber-800'
+                                  : 'bg-teal-100 text-teal-800'
+                              }`}
+                            >
+                              {stf.assignment_status}
+                            </span>
+                          </div>
+                          <div className="text-[11px] text-[#334155] border-t border-slate-200 pt-1.5 font-medium">
+                            {stf.assignment_type}
+                            {stf.notes && <span className="text-[#64748B] block font-normal text-[10px] mt-0.5">{stf.notes}</span>}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* TAB: ASSIGNED CARE TEAM & STAFF */}
+            {activeTab === 'care-team' && (
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <div className="space-y-0.5">
+                    <h2 className="text-base sm:text-lg font-bold text-[#172B4D] flex items-center gap-2">
+                      <Users size={18} className="text-[#059669]" />
+                      <span>My Assigned Care Team & Hospital Staff</span>
+                    </h2>
+                    <p className="text-xs text-[#526581]">
+                      Clinical nurses, ward coordinators, and healthcare specialists assigned by your physician in <code className="text-[#047857] font-mono">silver_staff_assignment</code>.
+                    </p>
+                  </div>
+                  <span className="text-xs font-bold font-mono text-[#047857] bg-[#ECFDF5] px-2.5 py-1 rounded-lg border border-emerald-200">
+                    {dashboardData.assignedStaff?.length || 0} Assigned Staff
+                  </span>
+                </div>
+
+                {!dashboardData.assignedStaff || dashboardData.assignedStaff.length === 0 ? (
+                  <div className="p-8 sm:p-12 text-center rounded-2xl bg-white border border-[#DCE5EC] space-y-2">
+                    <Users size={28} className="mx-auto text-[#94A3B8]" />
+                    <h3 className="text-sm font-bold text-[#172B4D]">No Clinical Staff Assigned Yet</h3>
+                    <p className="text-xs text-[#526581] max-w-md mx-auto">
+                      No specific hospital staff members have been delegated to your chart at this time. Dedicated care specialists are assigned during hospital consultations and inpatient admissions.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    {dashboardData.assignedStaff.map((asn) => {
+                      const isUrgent = asn.priority === 'Urgent' || asn.priority === 'Critical';
+                      return (
+                        <div
+                          key={asn.assignment_id}
+                          className="p-5 rounded-2xl bg-white border border-[#DCE5EC] shadow-xs hover:border-[#059669]/60 hover:shadow-md transition-all space-y-3"
+                        >
+                          <div className="flex items-start justify-between gap-2 border-b border-[#F1F5F9] pb-3">
+                            <div>
+                              <h4 className="text-sm font-bold text-[#172B4D]">{asn.staff_name}</h4>
+                              <span className="text-xs text-[#059669] font-semibold block">{asn.staff_role}</span>
+                              <span className="text-[11px] text-[#64748B]">{asn.department}</span>
+                            </div>
+                            <div className="text-right shrink-0 space-y-1">
+                              <span
+                                className={`text-[10px] px-2 py-0.5 rounded-full font-mono font-bold block ${
+                                  isUrgent
+                                    ? 'bg-rose-100 text-rose-800 border border-rose-200'
+                                    : 'bg-slate-100 text-slate-700'
+                                }`}
+                              >
+                                {asn.priority || 'Normal'}
+                              </span>
+                              <span
+                                className={`text-[10px] px-2 py-0.5 rounded-full font-mono font-bold block ${
+                                  asn.assignment_status === 'Completed'
+                                    ? 'bg-emerald-100 text-emerald-800 border border-emerald-200'
+                                    : asn.assignment_status === 'In Progress'
+                                    ? 'bg-amber-100 text-amber-800 border border-amber-200'
+                                    : 'bg-teal-100 text-teal-800 border border-teal-200'
+                                }`}
+                              >
+                                {asn.assignment_status}
+                              </span>
+                            </div>
+                          </div>
+
+                          <div className="p-3 rounded-xl bg-[#F8FAFC] border border-[#E2E8F0] space-y-1 text-xs">
+                            <div className="flex items-center justify-between">
+                              <span className="text-[#64748B] text-[11px]">Assigned by:</span>
+                              <span className="text-[#172B4D] font-bold">{asn.doctor_name || 'Attending Physician'}</span>
+                            </div>
+                            <div className="flex items-center justify-between text-[11px]">
+                              <span className="text-[#64748B]">Service:</span>
+                              <span className="text-[#059669] font-semibold">{asn.assignment_type}</span>
+                            </div>
+                            <div className="flex items-center justify-between text-[11px]">
+                              <span className="text-[#64748B]">Date & Time:</span>
+                              <span className="text-[#334155] font-mono">{asn.assignment_date} {asn.start_time ? `at ${asn.start_time.slice(0, 5)}` : ''}</span>
+                            </div>
+                          </div>
+
+                          {asn.notes && (
+                            <div className="p-2.5 rounded-xl bg-[#ECFDF5] border border-emerald-100 text-xs text-[#065F46] leading-relaxed font-sans">
+                              <span className="text-[10px] font-bold text-[#047857] uppercase tracking-wider block mb-0.5">Care Instructions:</span>
+                              {asn.notes}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
                 )}
               </div>
