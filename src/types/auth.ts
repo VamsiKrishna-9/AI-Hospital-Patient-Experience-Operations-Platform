@@ -18,6 +18,7 @@ export type ScreenState =
 export interface AuthUser {
   id: string;
   name: string;
+  full_name?: string;
   email: string;
   role: HospitalRole;
   patient_id?: string;

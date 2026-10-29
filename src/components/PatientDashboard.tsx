@@ -43,6 +43,7 @@ import {
   PrescriptionRecord,
   FeedbackRecord,
   NotificationItem,
+  DoctorInfo,
 } from '../types/patient';
 import { patientService } from '../services/patientService';
 import { authService } from '../services/authService';
@@ -61,6 +62,7 @@ interface PatientDashboardProps {
 
 export const PatientDashboard: React.FC<PatientDashboardProps> = ({ user, onLogout, onRoleSwitch }) => {
   const [dashboardData, setDashboardData] = useState<PatientDashboardData | null>(null);
+  const [availableDoctors, setAvailableDoctors] = useState<DoctorInfo[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -97,6 +99,7 @@ export const PatientDashboard: React.FC<PatientDashboardProps> = ({ user, onLogo
 
   // Notifications dropdown
   const [isNotifOpen, setIsNotifOpen] = useState(false);
+  const [isRoleMenuOpen, setIsRoleMenuOpen] = useState(false);
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
 
   // Selected item modal for detailed view
@@ -119,21 +122,34 @@ export const PatientDashboard: React.FC<PatientDashboardProps> = ({ user, onLogo
   // Success toast for notifications
   const [successToast, setSuccessToast] = useState<string | null>(null);
 
-
   const fetchDashboard = async () => {
     setIsLoading(true);
     setError(null);
-    const res = await patientService.getDashboardData();
-    if (res.success && res.data) {
-      setDashboardData(res.data);
-      setNotifications(res.data.notifications || []);
-      if (res.data.completedEncounters.length > 0 && !feedbackDoctorId) {
-        setFeedbackDoctorId(res.data.completedEncounters[0].doctor_id);
+    try {
+      const [res, docs] = await Promise.all([
+        patientService.getDashboardData(),
+        patientService.getDoctors(),
+      ]);
+      if (res.success && res.data) {
+        setDashboardData(res.data);
+        setNotifications(res.data.notifications || []);
+        if (res.data.completedEncounters.length > 0 && !feedbackDoctorId) {
+          setFeedbackDoctorId(res.data.completedEncounters[0].doctor_id);
+        }
+      } else {
+        setError(res.message || 'Failed to load patient records.');
       }
-    } else {
-      setError(res.message || 'Failed to load patient records.');
+      if (docs && docs.length > 0) {
+        setAvailableDoctors(docs);
+        if (!feedbackDoctorId) {
+          setFeedbackDoctorId(docs[0].doctor_id);
+        }
+      }
+    } catch (err: any) {
+      setError(err?.message || 'Failed to connect to hospital records.');
+    } finally {
+      setIsLoading(false);
     }
-    setIsLoading(false);
   };
 
   useEffect(() => {
@@ -191,6 +207,11 @@ export const PatientDashboard: React.FC<PatientDashboardProps> = ({ user, onLogo
   };
 
   const handleLogout = async () => {
+    setDashboardData(null);
+    setNotifications([]);
+    setAvailableDoctors([]);
+    authService.clearSession();
+    patientService.clearSession();
     await patientService.logout();
     onLogout();
   };
@@ -294,10 +315,63 @@ export const PatientDashboard: React.FC<PatientDashboardProps> = ({ user, onLogo
               </div>
             </div>
 
-            {/* Institutional Patient Role Badge */}
-            <div className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-50 text-emerald-800 border border-emerald-200 text-xs font-semibold">
-              <span className="w-1.5 h-1.5 rounded-full bg-[#059669]" />
-              <span>Role: Patient</span>
+            {/* Institutional Patient Role / Workspace Switcher */}
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setIsRoleMenuOpen(!isRoleMenuOpen)}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#ECFDF5] text-[#047857] hover:bg-emerald-100/70 border border-emerald-200/80 text-xs font-semibold cursor-pointer transition-colors"
+                title="Switch hospital workspace"
+              >
+                <span className="w-1.5 h-1.5 rounded-full bg-[#059669]" />
+                <span>Role: Patient</span>
+                <ChevronRight size={13} className={'transform transition-transform text-[#059669] ' + (isRoleMenuOpen ? 'rotate-90' : '')} />
+              </button>
+
+              {isRoleMenuOpen && (
+                <div className="absolute right-0 mt-2 w-52 rounded-2xl bg-white border border-[#DCE5EC] shadow-2xl p-1.5 z-50 text-xs animate-in fade-in zoom-in-95 duration-150">
+                  <div className="px-2.5 py-1 text-[10px] font-bold text-[#64748B] uppercase tracking-wider border-b border-[#DCE5EC]">
+                    Switch Workspace
+                  </div>
+                  <div className="w-full text-left px-2.5 py-1.5 rounded-lg bg-emerald-50 text-[#047857] font-bold flex items-center justify-between">
+                    <span>Patient Portal</span>
+                    <CheckCircle2 size={13} className="text-[#059669]" />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsRoleMenuOpen(false);
+                      onRoleSwitch && onRoleSwitch('doctor');
+                    }}
+                    className="w-full text-left px-2.5 py-1.5 rounded-lg text-[#172B4D] hover:bg-[#F1F5F9] transition-colors flex items-center justify-between cursor-pointer"
+                  >
+                    <span>Doctor Workspace</span>
+                    <span className="text-[10px] text-teal-600 font-mono">Clinical</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsRoleMenuOpen(false);
+                      onRoleSwitch && onRoleSwitch('staff');
+                    }}
+                    className="w-full text-left px-2.5 py-1.5 rounded-lg text-[#172B4D] hover:bg-[#F1F5F9] transition-colors flex items-center justify-between cursor-pointer"
+                  >
+                    <span>Staff Portal</span>
+                    <span className="text-[10px] text-cyan-600 font-mono">Ward</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsRoleMenuOpen(false);
+                      onRoleSwitch && onRoleSwitch('admin');
+                    }}
+                    className="w-full text-left px-2.5 py-1.5 rounded-lg text-[#172B4D] hover:bg-[#F1F5F9] transition-colors flex items-center justify-between cursor-pointer border-t border-[#DCE5EC] mt-1"
+                  >
+                    <span>Admin Governance</span>
+                    <span className="text-[10px] text-indigo-600 font-mono">Admin</span>
+                  </button>
+                </div>
+              )}
             </div>
 
             {/* AI Assistant Quick Navigation or Restore Pill */}
@@ -402,15 +476,19 @@ export const PatientDashboard: React.FC<PatientDashboardProps> = ({ user, onLogo
                 <div className="space-y-2.5">
                   <div className="inline-flex flex-wrap items-center gap-2 px-3 py-1 rounded-full bg-white/20 backdrop-blur-md text-xs font-bold text-white border border-white/25 shadow-xs">
                     <span>Patient MRN: {dashboardData.patient.patient_id}</span>
-                    <span className="opacity-70">·</span>
-                    <span>Blood Group: {dashboardData.patient.blood_group || 'O+'}</span>
+                    {dashboardData.patient.blood_group && (
+                      <>
+                        <span className="opacity-70">·</span>
+                        <span>Blood Group: {dashboardData.patient.blood_group}</span>
+                      </>
+                    )}
                     {dashboardData.patient.age && (
                       <>
                         <span className="opacity-70">·</span>
                         <span>Age: {dashboardData.patient.age} yrs</span>
                       </>
                     )}
-                    {dashboardData.patient.gender && (
+                    {dashboardData.patient.gender && dashboardData.patient.gender !== 'Not specified' && (
                       <>
                         <span className="opacity-70">·</span>
                         <span>{dashboardData.patient.gender}</span>
@@ -427,15 +505,23 @@ export const PatientDashboard: React.FC<PatientDashboardProps> = ({ user, onLogo
                   </div>
 
                   <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-white">
-                    Good day, {dashboardData.patient.name || `${dashboardData.patient.first_name} ${dashboardData.patient.last_name}`}
+                    Good day, {dashboardData.patient.name || user?.name || `${dashboardData.patient.first_name || ''} ${dashboardData.patient.last_name || ''}`.trim() || 'Patient'}
                   </h1>
 
                   <p className="text-xs sm:text-sm text-emerald-50 max-w-xl leading-relaxed font-normal">
-                    Primary Physician:{' '}
-                    <strong className="text-white font-bold">
-                      {dashboardData.patient.primary_doctor_name || 'Dr. Marcus Chen, MD'}
-                    </strong>
-                    . Your care timeline, hospital encounters, diagnostics, and patient experience reviews are synchronized with the hospital database.
+                    {dashboardData.patient.primary_doctor_name ? (
+                      <>
+                        Primary Attending Physician:{' '}
+                        <strong className="text-white font-bold">
+                          {dashboardData.patient.primary_doctor_name}
+                        </strong>
+                        . Your clinical records, appointments, and care history are synchronized directly with your hospital database.
+                      </>
+                    ) : (
+                      <>
+                        No primary physician assigned yet. Schedule an appointment below to connect with an attending specialist.
+                      </>
+                    )}
                   </p>
                 </div>
 
@@ -626,7 +712,7 @@ export const PatientDashboard: React.FC<PatientDashboardProps> = ({ user, onLogo
                     <div className="w-12 h-12 rounded-full bg-[#F5F8FA] text-[#526581] mx-auto flex items-center justify-center border border-[#DCE5EC]">
                       <Calendar size={24} />
                     </div>
-                    <h3 className="text-sm font-bold text-[#172B4D]">No Upcoming Appointments</h3>
+                    <h3 className="text-sm font-bold text-[#172B4D]">You have no upcoming appointments.</h3>
                     <p className="text-xs text-[#526581] max-w-sm mx-auto leading-relaxed">
                       You do not have any appointments scheduled currently. Use the button below to reserve a consultation with your doctor.
                     </p>
@@ -775,8 +861,14 @@ export const PatientDashboard: React.FC<PatientDashboardProps> = ({ user, onLogo
                 </div>
 
                 {dashboardData.labReports.length === 0 ? (
-                  <div className="p-8 rounded-3xl bg-white border border-[#DCE5EC] shadow-sm text-center text-[#526581] text-xs">
-                    No diagnostic lab reports available for this patient ID.
+                  <div className="p-8 rounded-3xl bg-white border border-[#DCE5EC] shadow-sm text-center space-y-2">
+                    <div className="w-12 h-12 rounded-full bg-[#F5F8FA] text-[#526581] mx-auto flex items-center justify-center border border-[#DCE5EC]">
+                      <FileText size={22} />
+                    </div>
+                    <h3 className="text-sm font-bold text-[#172B4D]">No lab reports available.</h3>
+                    <p className="text-xs text-[#526581] max-w-sm mx-auto">
+                      Diagnostic pathology panels and laboratory reports ordered by your physician will appear here once processed.
+                    </p>
                   </div>
                 ) : (
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -846,8 +938,14 @@ export const PatientDashboard: React.FC<PatientDashboardProps> = ({ user, onLogo
                 </div>
 
                 {dashboardData.prescriptions.length === 0 ? (
-                  <div className="p-8 rounded-3xl bg-white border border-[#DCE5EC] shadow-sm text-center text-[#526581] text-xs">
-                    No active prescriptions recorded in patient chart.
+                  <div className="p-8 rounded-3xl bg-white border border-[#DCE5EC] shadow-sm text-center space-y-2">
+                    <div className="w-12 h-12 rounded-full bg-[#F5F8FA] text-[#526581] mx-auto flex items-center justify-center border border-[#DCE5EC]">
+                      <Pill size={22} />
+                    </div>
+                    <h3 className="text-sm font-bold text-[#172B4D]">No prescriptions available.</h3>
+                    <p className="text-xs text-[#526581] max-w-sm mx-auto">
+                      Active medications and outpatient prescription regimens prescribed by hospital staff will be listed here.
+                    </p>
                   </div>
                 ) : (
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -922,48 +1020,84 @@ export const PatientDashboard: React.FC<PatientDashboardProps> = ({ user, onLogo
                 </div>
 
                 {/* Rating Overview Summary Box */}
-                <div className="p-6 rounded-3xl bg-white border border-[#DCE5EC] shadow-sm">
-                  <h3 className="text-xs font-bold text-[#526581] uppercase tracking-wider mb-4">
-                    Clinical Performance Feedback Dimensions
-                  </h3>
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-                    <div className="p-4 rounded-2xl bg-[#F5F8FA] border border-[#DCE5EC] space-y-1">
-                      <span className="text-[11px] font-bold text-[#526581] block">Overall Care Rating</span>
-                      <div className="flex items-center gap-1.5 text-[#172B4D] font-extrabold text-xl">
-                        <Star size={18} className="fill-amber-400 text-amber-500" />
-                        <span>4.9 / 5.0</span>
-                      </div>
-                      <span className="text-[10px] text-[#047857] font-bold block">Patient Satisfaction</span>
-                    </div>
+                {(() => {
+                  const feedbackItems = dashboardData.feedbackList || [];
+                  const validOverall = feedbackItems.filter((f) => typeof f.rating === 'number' && f.rating > 0);
+                  const avgOverall = validOverall.length > 0
+                    ? (validOverall.reduce((sum, f) => sum + f.rating, 0) / validOverall.length).toFixed(1)
+                    : null;
 
-                    <div className="p-4 rounded-2xl bg-[#F5F8FA] border border-[#DCE5EC] space-y-1">
-                      <span className="text-[11px] font-bold text-[#526581] block">Doctor Attentiveness</span>
-                      <div className="flex items-center gap-1.5 text-[#172B4D] font-extrabold text-xl">
-                        <Star size={18} className="fill-emerald-400 text-emerald-600" />
-                        <span>5.0 / 5.0</span>
-                      </div>
-                      <span className="text-[10px] text-[#047857] font-bold block">Exemplary Care</span>
-                    </div>
+                  const validDoctor = feedbackItems.filter((f) => typeof f.doctor_rating === 'number' && f.doctor_rating > 0);
+                  const avgDoctor = validDoctor.length > 0
+                    ? (validDoctor.reduce((sum, f) => sum + f.doctor_rating!, 0) / validDoctor.length).toFixed(1)
+                    : null;
 
-                    <div className="p-4 rounded-2xl bg-[#F5F8FA] border border-[#DCE5EC] space-y-1">
-                      <span className="text-[11px] font-bold text-[#526581] block">Staff Courtesy</span>
-                      <div className="flex items-center gap-1.5 text-[#172B4D] font-extrabold text-xl">
-                        <Star size={18} className="fill-cyan-400 text-cyan-600" />
-                        <span>4.8 / 5.0</span>
-                      </div>
-                      <span className="text-[10px] text-cyan-800 font-bold block">Friendly Admissions</span>
-                    </div>
+                  const validStaff = feedbackItems.filter((f) => {
+                    const r = f.staff_rating ?? f.staff_behavior_rating;
+                    return typeof r === 'number' && r > 0;
+                  });
+                  const avgStaff = validStaff.length > 0
+                    ? (validStaff.reduce((sum, f) => sum + (f.staff_rating ?? f.staff_behavior_rating)!, 0) / validStaff.length).toFixed(1)
+                    : null;
 
-                    <div className="p-4 rounded-2xl bg-[#F5F8FA] border border-[#DCE5EC] space-y-1">
-                      <span className="text-[11px] font-bold text-[#526581] block">Cleanliness & Hygiene</span>
-                      <div className="flex items-center gap-1.5 text-[#172B4D] font-extrabold text-xl">
-                        <Star size={18} className="fill-purple-400 text-purple-600" />
-                        <span>5.0 / 5.0</span>
+                  const validClean = feedbackItems.filter((f) => typeof f.cleanliness_rating === 'number' && f.cleanliness_rating > 0);
+                  const avgClean = validClean.length > 0
+                    ? (validClean.reduce((sum, f) => sum + f.cleanliness_rating!, 0) / validClean.length).toFixed(1)
+                    : null;
+
+                  return (
+                    <div className="p-6 rounded-3xl bg-white border border-[#DCE5EC] shadow-sm">
+                      <h3 className="text-xs font-bold text-[#526581] uppercase tracking-wider mb-4">
+                        Clinical Performance Feedback Dimensions
+                      </h3>
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                        <div className="p-4 rounded-2xl bg-[#F5F8FA] border border-[#DCE5EC] space-y-1">
+                          <span className="text-[11px] font-bold text-[#526581] block">Overall Care Rating</span>
+                          <div className="flex items-center gap-1.5 text-[#172B4D] font-extrabold text-xl">
+                            <Star size={18} className="fill-amber-400 text-amber-500" />
+                            <span>{avgOverall ? `${avgOverall} / 5.0` : '—'}</span>
+                          </div>
+                          <span className="text-[10px] text-[#047857] font-bold block">
+                            {avgOverall ? `${validOverall.length} review${validOverall.length === 1 ? '' : 's'}` : 'No reviews logged'}
+                          </span>
+                        </div>
+
+                        <div className="p-4 rounded-2xl bg-[#F5F8FA] border border-[#DCE5EC] space-y-1">
+                          <span className="text-[11px] font-bold text-[#526581] block">Doctor Attentiveness</span>
+                          <div className="flex items-center gap-1.5 text-[#172B4D] font-extrabold text-xl">
+                            <Star size={18} className="fill-emerald-400 text-emerald-600" />
+                            <span>{avgDoctor ? `${avgDoctor} / 5.0` : '—'}</span>
+                          </div>
+                          <span className="text-[10px] text-[#047857] font-bold block">
+                            {avgDoctor ? `${validDoctor.length} rated` : 'No reviews logged'}
+                          </span>
+                        </div>
+
+                        <div className="p-4 rounded-2xl bg-[#F5F8FA] border border-[#DCE5EC] space-y-1">
+                          <span className="text-[11px] font-bold text-[#526581] block">Staff Courtesy</span>
+                          <div className="flex items-center gap-1.5 text-[#172B4D] font-extrabold text-xl">
+                            <Star size={18} className="fill-cyan-400 text-cyan-600" />
+                            <span>{avgStaff ? `${avgStaff} / 5.0` : '—'}</span>
+                          </div>
+                          <span className="text-[10px] text-cyan-800 font-bold block">
+                            {avgStaff ? `${validStaff.length} rated` : 'No reviews logged'}
+                          </span>
+                        </div>
+
+                        <div className="p-4 rounded-2xl bg-[#F5F8FA] border border-[#DCE5EC] space-y-1">
+                          <span className="text-[11px] font-bold text-[#526581] block">Cleanliness & Hygiene</span>
+                          <div className="flex items-center gap-1.5 text-[#172B4D] font-extrabold text-xl">
+                            <Star size={18} className="fill-purple-400 text-purple-600" />
+                            <span>{avgClean ? `${avgClean} / 5.0` : '—'}</span>
+                          </div>
+                          <span className="text-[10px] text-purple-800 font-bold block">
+                            {avgClean ? `${validClean.length} rated` : 'No reviews logged'}
+                          </span>
+                        </div>
                       </div>
-                      <span className="text-[10px] text-purple-800 font-bold block">Sanitized Facilities</span>
                     </div>
-                  </div>
-                </div>
+                  );
+                })()}
 
                 {/* Feedback List */}
                 {(!dashboardData.feedbackList || dashboardData.feedbackList.length === 0) ? (
@@ -1150,13 +1284,22 @@ export const PatientDashboard: React.FC<PatientDashboardProps> = ({ user, onLogo
                   value={feedbackDoctorId}
                   onChange={(e) => setFeedbackDoctorId(e.target.value)}
                   className="w-full p-3 rounded-xl bg-white border border-[#DCE5EC] text-[#172B4D] font-medium focus:outline-none focus:ring-2 focus:ring-[#059669]"
+                  required
                 >
-                  <option value="DOC-101">Dr. Marcus Chen, MD - Cardiology</option>
-                  <option value="DOC-102">Dr. Sarah Al-Mansoor, MD - General Medicine</option>
-                  <option value="DOC-103">Dr. James Thorne, MD - Orthopedics</option>
-                  <option value="DOC-104">Dr. Emily Watson, MD - Pediatrics</option>
-                  <option value="DOC-105">Dr. Robert Hayes, MD - Neurology</option>
-                  <option value="DOC-106">Dr. Priya Sharma, MD - General Medicine</option>
+                  <option value="">Select an Attending Physician...</option>
+                  {availableDoctors.map((doc) => (
+                    <option key={doc.doctor_id} value={doc.doctor_id}>
+                      {doc.doctor_name || doc.name} — {doc.specialty || doc.specialization || 'Clinical Specialist'}
+                    </option>
+                  ))}
+                  {availableDoctors.length === 0 && (dashboardData?.completedEncounters || []).map((enc) => (
+                    <option key={enc.doctor_id} value={enc.doctor_id}>
+                      {enc.doctor_name} — {enc.specialty || 'Attending Physician'}
+                    </option>
+                  ))}
+                  {availableDoctors.length === 0 && (dashboardData?.completedEncounters || []).length === 0 && (
+                    <option value="" disabled>No hospital physicians found in directory</option>
+                  )}
                 </select>
               </div>
 
