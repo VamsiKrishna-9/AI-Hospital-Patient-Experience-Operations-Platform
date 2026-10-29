@@ -963,14 +963,40 @@ app.post('/api/auth/common-login', async (req: Request, res: Response) => {
           userRecord = data;
         }
 
-        // B. Match by patient_id, doctor_id, or staff_id
+        // B. Match by patient_id, doctor_id, or staff_id (case-insensitive)
         if (!userRecord) {
+          const trimmed = rawInput.trim();
           const { data } = await adminClient
             .from('app_users')
             .select('*')
-            .or(`patient_id.eq.${rawInput.toUpperCase()},doctor_id.eq.${rawInput.toUpperCase()},staff_id.eq.${rawInput.toUpperCase()}`)
+            .or(`patient_id.ilike.${trimmed},doctor_id.ilike.${trimmed},staff_id.ilike.${trimmed},patient_id.eq.${trimmed.toUpperCase()},doctor_id.eq.${trimmed.toUpperCase()},staff_id.eq.${trimmed.toUpperCase()}`)
             .single();
           userRecord = data;
+        }
+
+        // B2. If userRecord still not found, check silver_patients for patient_id resolution
+        if (!userRecord) {
+          const { data: pRec } = await adminClient
+            .from('silver_patients')
+            .select('*')
+            .or(`patient_id.ilike.${rawInput.trim()},patient_id.eq.${rawInput.trim().toUpperCase()}`)
+            .single();
+          if (pRec?.email) {
+            const { data: uRec } = await adminClient
+              .from('app_users')
+              .select('*')
+              .eq('email', pRec.email.toLowerCase())
+              .single();
+            userRecord = uRec || {
+              id: `p-${pRec.patient_id}`,
+              email: pRec.email,
+              role: 'patient',
+              full_name: `${pRec.first_name || ''} ${pRec.last_name || ''}`.trim() || 'Patient',
+              patient_id: pRec.patient_id,
+              is_active: true,
+              status: 'active',
+            };
+          }
         }
 
         // C. Match by phone number
@@ -1195,19 +1221,25 @@ app.post('/api/auth/common-login', async (req: Request, res: Response) => {
   // 3. If in offline mode without database, support test personas gracefully
   if (!isDatabaseConnected) {
     const isPatientId = /^P\d+$/i.test(rawInput);
+    const isDoctorId = /^(D\d+|DOC-\d+)$/i.test(rawInput);
+    const isStaffId = /^(S\d+|STF-\d+)$/i.test(rawInput);
     let detectedRole: 'patient' | 'doctor' | 'staff' | 'admin' = 'patient';
     let userName = 'Vamsi Krishna Vadlamudi';
     let assignedPatientId = isPatientId ? rawInput.toUpperCase() : 'P1001';
+    let assignedDoctorId = isDoctorId ? rawInput.toUpperCase() : undefined;
+    let assignedStaffId = isStaffId ? rawInput.toUpperCase() : undefined;
 
     if (lookupKey.includes('admin') || lookupKey === 'adm-001') {
       detectedRole = 'admin';
       userName = 'Arthur Sterling, MHA';
-    } else if (lookupKey.includes('doc')) {
+    } else if (lookupKey.includes('doc') || isDoctorId) {
       detectedRole = 'doctor';
       userName = 'Dr. Marcus Vance, MD';
-    } else if (lookupKey.includes('staff') || lookupKey.includes('nurse')) {
+      assignedDoctorId = assignedDoctorId || 'D102456';
+    } else if (lookupKey.includes('staff') || lookupKey.includes('nurse') || isStaffId) {
       detectedRole = 'staff';
       userName = 'Sarah Jenkins, RN';
+      assignedStaffId = assignedStaffId || 'S104523';
     } else {
       detectedRole = 'patient';
       userName = isPatientId ? `Patient ${rawInput.toUpperCase()}` : 'Vamsi Krishna Vadlamudi';
@@ -1226,8 +1258,12 @@ app.post('/api/auth/common-login', async (req: Request, res: Response) => {
         email: rawInput.includes('@') ? lookupKey : (detectedRole === 'patient' ? 'vvkrishna879@gmail.com' : `${detectedRole}@hospital.org`),
         role: detectedRole,
         patient_id: detectedRole === 'patient' ? assignedPatientId : undefined,
+        doctor_id: detectedRole === 'doctor' ? assignedDoctorId : undefined,
+        staff_id: detectedRole === 'staff' ? assignedStaffId : undefined,
       },
-      patientId: assignedPatientId,
+      patientId: detectedRole === 'patient' ? assignedPatientId : undefined,
+      doctorId: detectedRole === 'doctor' ? assignedDoctorId : undefined,
+      staffId: detectedRole === 'staff' ? assignedStaffId : undefined,
       message: `Signed in as ${detectedRole.toUpperCase()}: ${userName}`,
     });
   }
@@ -1248,18 +1284,23 @@ app.post('/api/auth/common-register', async (req: Request, res: Response) => {
     password,
     phone,
     dateOfBirth,
-    medicalRegNumber,
     specialization,
     qualifications,
     yearsOfExperience,
     department,
     designation,
-    staffId,
-    adminInviteCode,
   } = req.body;
 
   const email = String(rawEmail || '').trim().toLowerCase();
   const name = String(fullName || '').trim();
+
+  // Enforce role boundary: Disallow public registration for Admin role
+  if (requestedRole === 'admin') {
+    return res.status(403).json({
+      success: false,
+      message: 'Admin accounts cannot be registered publicly. System administrators must be provisioned internally by hospital governance.',
+    });
+  }
 
   if (!email || !email.includes('@')) {
     return res.status(400).json({
@@ -1282,10 +1323,10 @@ app.post('/api/auth/common-register', async (req: Request, res: Response) => {
     });
   }
 
-  const role: 'patient' | 'doctor' | 'staff' | 'admin' =
-    ['patient', 'doctor', 'staff', 'admin'].includes(requestedRole) ? requestedRole : 'patient';
+  const role: 'patient' | 'doctor' | 'staff' =
+    ['patient', 'doctor', 'staff'].includes(requestedRole) ? (requestedRole as any) : 'patient';
 
-  let assignedRole: 'patient' | 'doctor' | 'staff' | 'admin' = 'patient';
+  let assignedRole: 'patient' | 'doctor' | 'staff' = 'patient';
   let isActive = true;
   let status: 'active' | 'pending_approval' | 'rejected' = 'active';
   let patientId: string | undefined = undefined;
@@ -1298,15 +1339,14 @@ app.post('/api/auth/common-register', async (req: Request, res: Response) => {
     assignedRole = 'patient';
     isActive = true;
     status = 'active';
-    patientId = `P${Math.floor(100000 + Math.random() * 900000)}`;
+    let genPatientId = `P${Math.floor(100000 + Math.random() * 900000)}`;
+    while (REGISTERED_ACCOUNTS.has(genPatientId) || REGISTERED_ACCOUNTS.has(genPatientId.toUpperCase())) {
+      genPatientId = `P${Math.floor(100000 + Math.random() * 900000)}`;
+    }
+    patientId = genPatientId;
     responseMessage = `Patient registration complete! Your official Patient ID is ${patientId}. You can now sign in.`;
   } else if (role === 'doctor') {
-    if (!medicalRegNumber || !String(medicalRegNumber).trim()) {
-      return res.status(400).json({
-        success: false,
-        message: 'Medical Registration Number is required for doctor registration.',
-      });
-    }
+    // Medical registration number is not required for signup per clinical governance update
     if (!specialization || !String(specialization).trim()) {
       return res.status(400).json({
         success: false,
@@ -1327,12 +1367,16 @@ app.post('/api/auth/common-register', async (req: Request, res: Response) => {
     }
 
     assignedRole = 'doctor';
-    // Clinical verification enforcement: Doctor accounts require administrative credential approval before access is granted
+    // Clinical verification enforcement: Doctor accounts require administrative approval before access is granted
     isActive = false;
     status = 'pending_approval';
     requiresApproval = true;
-    doctorId = `DOC-${Math.floor(1000 + Math.random() * 9000)}`;
-    responseMessage = `Doctor registration submitted successfully! Your credentials and Medical Registration Number (${medicalRegNumber}) are currently pending administrative review. You will receive access once approved by Hospital Governance.`;
+    let genDocId = `D${Math.floor(100000 + Math.random() * 900000)}`;
+    while (REGISTERED_ACCOUNTS.has(genDocId) || REGISTERED_ACCOUNTS.has(genDocId.toUpperCase())) {
+      genDocId = `D${Math.floor(100000 + Math.random() * 900000)}`;
+    }
+    doctorId = genDocId;
+    responseMessage = `Doctor registration submitted successfully! Your physician application is currently pending administrative review and credential verification. Your generated Doctor ID is ${doctorId}. You will receive access once approved by Hospital Governance.`;
   } else if (role === 'staff') {
     if (!department || !String(department).trim()) {
       return res.status(400).json({
@@ -1348,30 +1392,16 @@ app.post('/api/auth/common-register', async (req: Request, res: Response) => {
     }
 
     assignedRole = 'staff';
-    // Staff verification enforcement: Staff accounts require verification before access is granted
+    // Staff verification enforcement: Staff accounts require operational approval before access is granted
     isActive = false;
     status = 'pending_approval';
     requiresApproval = true;
-    assignedStaffId = staffId ? String(staffId).trim().toUpperCase() : `STF-${Math.floor(1000 + Math.random() * 9000)}`;
-    responseMessage = `Staff registration submitted successfully! Your application for ${department} is currently pending operational verification by Nursing Operations and Hospital Administration.`;
-  } else if (role === 'admin') {
-    // Administrator access security: Do not grant administrator privileges based on dropdown selection or client-side check.
-    // Validate Administrator Invitation Code via timing-safe check against server secrets
-    const cleanAdminCode = String(adminInviteCode || '').trim();
-    const validAdminCodes = getValidAdminInvitationCodes();
-    const isCodeValid = isInvitationCodeValid(cleanAdminCode, validAdminCodes);
-
-    if (!isCodeValid) {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid Administrator Invitation Code or Authorization Reference. Administrator access requires verified institutional credentials.',
-      });
+    let genStaffId = `S${Math.floor(100000 + Math.random() * 900000)}`;
+    while (REGISTERED_ACCOUNTS.has(genStaffId) || REGISTERED_ACCOUNTS.has(genStaffId.toUpperCase())) {
+      genStaffId = `S${Math.floor(100000 + Math.random() * 900000)}`;
     }
-
-    assignedRole = 'admin';
-    isActive = true;
-    status = 'active';
-    responseMessage = `Administrator account verified and provisioned successfully. You may now sign in with your credentials.`;
+    assignedStaffId = genStaffId;
+    responseMessage = `Staff registration submitted successfully! Your application for ${department} is currently pending operational verification by Nursing Operations and Hospital Administration. Your generated Staff ID is ${assignedStaffId}.`;
   }
 
   // 1. Live Supabase PostgreSQL Registration when connected
@@ -1449,6 +1479,27 @@ app.post('/api/auth/common-register', async (req: Request, res: Response) => {
             }
           }
 
+          try {
+            await adminClient
+              .from('app_users')
+              .upsert({
+                id: authUser.id,
+                email,
+                role: assignedRole,
+                full_name: name,
+                patient_id: authoritativePatientId || null,
+                doctor_id: doctorId || null,
+                staff_id: assignedStaffId || null,
+                is_active: isActive,
+                status,
+                phone: phone || null,
+                department: department || null,
+                specialty: specialization || null,
+              }, { onConflict: 'id' });
+          } catch (e) {
+            console.error('Error upserting app_users in Supabase:', e);
+          }
+
           const newAccount: RegisteredAccount = {
             id: authUser.id,
             email,
@@ -1462,7 +1513,7 @@ app.post('/api/auth/common-register', async (req: Request, res: Response) => {
             status,
             specialty: specialization,
             department,
-            medical_reg_number: medicalRegNumber,
+            medical_reg_number: undefined,
             qualifications,
             designation,
             years_of_experience: yearsOfExperience,
@@ -1470,11 +1521,20 @@ app.post('/api/auth/common-register', async (req: Request, res: Response) => {
             date_of_birth: dateOfBirth || '1995-01-01',
             created_at: new Date().toISOString(),
           };
-          REGISTERED_ACCOUNTS.set(email, newAccount);
+          REGISTERED_ACCOUNTS.set(email.toLowerCase(), newAccount);
           REGISTERED_ACCOUNTS.set(newAccount.id, newAccount);
-          if (authoritativePatientId) REGISTERED_ACCOUNTS.set(authoritativePatientId.toUpperCase(), newAccount);
-          if (doctorId) REGISTERED_ACCOUNTS.set(doctorId.toUpperCase(), newAccount);
-          if (assignedStaffId) REGISTERED_ACCOUNTS.set(assignedStaffId.toUpperCase(), newAccount);
+          if (authoritativePatientId) {
+            REGISTERED_ACCOUNTS.set(authoritativePatientId.toUpperCase(), newAccount);
+            REGISTERED_ACCOUNTS.set(authoritativePatientId.toLowerCase(), newAccount);
+          }
+          if (doctorId) {
+            REGISTERED_ACCOUNTS.set(doctorId.toUpperCase(), newAccount);
+            REGISTERED_ACCOUNTS.set(doctorId.toLowerCase(), newAccount);
+          }
+          if (assignedStaffId) {
+            REGISTERED_ACCOUNTS.set(assignedStaffId.toUpperCase(), newAccount);
+            REGISTERED_ACCOUNTS.set(assignedStaffId.toLowerCase(), newAccount);
+          }
 
           return res.json({
             success: true,
@@ -1519,7 +1579,7 @@ app.post('/api/auth/common-register', async (req: Request, res: Response) => {
     status,
     specialty: specialization,
     department,
-    medical_reg_number: medicalRegNumber,
+    medical_reg_number: undefined,
     qualifications,
     designation,
     years_of_experience: yearsOfExperience,
@@ -1528,11 +1588,20 @@ app.post('/api/auth/common-register', async (req: Request, res: Response) => {
     created_at: new Date().toISOString(),
   };
 
-  REGISTERED_ACCOUNTS.set(email, newAccount);
+  REGISTERED_ACCOUNTS.set(email.toLowerCase(), newAccount);
   REGISTERED_ACCOUNTS.set(newAccount.id, newAccount);
-  if (newAccount.patient_id) REGISTERED_ACCOUNTS.set(newAccount.patient_id.toUpperCase(), newAccount);
-  if (newAccount.doctor_id) REGISTERED_ACCOUNTS.set(newAccount.doctor_id.toUpperCase(), newAccount);
-  if (newAccount.staff_id) REGISTERED_ACCOUNTS.set(newAccount.staff_id.toUpperCase(), newAccount);
+  if (newAccount.patient_id) {
+    REGISTERED_ACCOUNTS.set(newAccount.patient_id.toUpperCase(), newAccount);
+    REGISTERED_ACCOUNTS.set(newAccount.patient_id.toLowerCase(), newAccount);
+  }
+  if (newAccount.doctor_id) {
+    REGISTERED_ACCOUNTS.set(newAccount.doctor_id.toUpperCase(), newAccount);
+    REGISTERED_ACCOUNTS.set(newAccount.doctor_id.toLowerCase(), newAccount);
+  }
+  if (newAccount.staff_id) {
+    REGISTERED_ACCOUNTS.set(newAccount.staff_id.toUpperCase(), newAccount);
+    REGISTERED_ACCOUNTS.set(newAccount.staff_id.toLowerCase(), newAccount);
+  }
 
   const sessionToken = isActive ? `session-token-${assignedRole}-${newAccount.id}` : undefined;
 

@@ -557,8 +557,6 @@ export const SignupScreen: React.FC<SignupScreenProps> = ({
                   ? 'doctor@hospital.org'
                   : accountType === 'staff'
                   ? 'staff@hospital.org'
-                  : accountType === 'admin'
-                  ? 'admin@hospital.org'
                   : 'patient@example.com'
               }
               className={`w-full pl-10 pr-4 py-2.5 rounded-xl bg-slate-900/90 border ${
@@ -608,40 +606,38 @@ export const SignupScreen: React.FC<SignupScreenProps> = ({
         </div>
 
         {/* Date of Birth (Patient, Doctor, Staff) */}
-        {accountType !== 'admin' && (
-          <div>
-            <label htmlFor="reg-dob" className="block text-xs font-medium text-slate-300 mb-1.5">
-              Date of Birth <span className="text-teal-400">*</span>
-            </label>
-            <div className="relative">
-              <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-500">
-                <Calendar size={16} />
-              </div>
-              <input
-                id="reg-dob"
-                type="date"
-                max={new Date().toISOString().split('T')[0]}
-                value={dateOfBirth}
-                onChange={(e) => {
-                  setDateOfBirth(e.target.value);
-                  if (fieldErrors.dateOfBirth) setFieldErrors((prev) => ({ ...prev, dateOfBirth: '' }));
-                }}
-                disabled={isLoading}
-                className={`w-full pl-10 pr-4 py-2.5 rounded-xl bg-slate-900/90 border ${
-                  fieldErrors.dateOfBirth ? 'border-rose-500' : 'border-slate-800'
-                } text-white placeholder-slate-500 text-sm focus:outline-none focus:border-teal-500 focus:ring-1 focus:ring-teal-500/40`}
-              />
+        <div>
+          <label htmlFor="reg-dob" className="block text-xs font-medium text-slate-300 mb-1.5">
+            Date of Birth <span className="text-teal-400">*</span>
+          </label>
+          <div className="relative">
+            <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-500">
+              <Calendar size={16} />
             </div>
-            {fieldErrors.dateOfBirth ? (
-              <p className="mt-1 text-xs text-rose-400 flex items-center gap-1">
-                <AlertCircle size={12} />
-                <span>{fieldErrors.dateOfBirth}</span>
-              </p>
-            ) : (
-              <p className="mt-1 text-[11px] text-slate-500">Cannot be a future date.</p>
-            )}
+            <input
+              id="reg-dob"
+              type="date"
+              max={new Date().toISOString().split('T')[0]}
+              value={dateOfBirth}
+              onChange={(e) => {
+                setDateOfBirth(e.target.value);
+                if (fieldErrors.dateOfBirth) setFieldErrors((prev) => ({ ...prev, dateOfBirth: '' }));
+              }}
+              disabled={isLoading}
+              className={`w-full pl-10 pr-4 py-2.5 rounded-xl bg-slate-900/90 border ${
+                fieldErrors.dateOfBirth ? 'border-rose-500' : 'border-slate-800'
+              } text-white placeholder-slate-500 text-sm focus:outline-none focus:border-teal-500 focus:ring-1 focus:ring-teal-500/40`}
+            />
           </div>
-        )}
+          {fieldErrors.dateOfBirth ? (
+            <p className="mt-1 text-xs text-rose-400 flex items-center gap-1">
+              <AlertCircle size={12} />
+              <span>{fieldErrors.dateOfBirth}</span>
+            </p>
+          ) : (
+            <p className="mt-1 text-[11px] text-slate-500">Cannot be a future date.</p>
+          )}
+        </div>
 
         {/* --- DOCTOR-SPECIFIC FIELDS --- */}
         {accountType === 'doctor' && (
@@ -928,32 +924,30 @@ export const SignupScreen: React.FC<SignupScreenProps> = ({
         </div>
 
         {/* Privacy Notice and Consent Checkbox (Patient, Doctor, Staff) */}
-        {accountType !== 'admin' && (
-          <div className="pt-1">
-            <label className="flex items-start gap-2.5 text-xs text-slate-400 cursor-pointer select-none">
-              <input
-                type="checkbox"
-                checked={acceptTerms}
-                onChange={(e) => {
-                  setAcceptTerms(e.target.checked);
-                  if (fieldErrors.acceptTerms) setFieldErrors((prev) => ({ ...prev, acceptTerms: '' }));
-                }}
-                disabled={isLoading}
-                className="mt-0.5 rounded border-slate-700 bg-slate-900 text-teal-500 focus:ring-teal-500 h-4 w-4 shrink-0"
-              />
-              <span className="leading-relaxed">
-                I consent to the{' '}
-                <span className="text-teal-400 font-medium">MediAI Healthcare Data Governance</span>, Terms of Service, and acknowledge HIPAA-compliant record management.
-              </span>
-            </label>
-            {fieldErrors.acceptTerms && (
-              <p className="mt-1 text-xs text-rose-400 flex items-center gap-1">
-                <AlertCircle size={12} />
-                <span>{fieldErrors.acceptTerms}</span>
-              </p>
-            )}
-          </div>
-        )}
+        <div className="pt-1">
+          <label className="flex items-start gap-2.5 text-xs text-slate-400 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={acceptTerms}
+              onChange={(e) => {
+                setAcceptTerms(e.target.checked);
+                if (fieldErrors.acceptTerms) setFieldErrors((prev) => ({ ...prev, acceptTerms: '' }));
+              }}
+              disabled={isLoading}
+              className="mt-0.5 rounded border-slate-700 bg-slate-900 text-teal-500 focus:ring-teal-500 h-4 w-4 shrink-0"
+            />
+            <span className="leading-relaxed">
+              I consent to the{' '}
+              <span className="text-teal-400 font-medium">MediAI Healthcare Data Governance</span>, Terms of Service, and acknowledge HIPAA-compliant record management.
+            </span>
+          </label>
+          {fieldErrors.acceptTerms && (
+            <p className="mt-1 text-xs text-rose-400 flex items-center gap-1">
+              <AlertCircle size={12} />
+              <span>{fieldErrors.acceptTerms}</span>
+            </p>
+          )}
+        </div>
 
         {/* Dynamic Submit Button */}
         <div className="pt-2">
