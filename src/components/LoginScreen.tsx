@@ -283,9 +283,6 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
             />
           </svg>
           <span>Continue with Google</span>
-          <span className="text-[10px] text-teal-400 bg-teal-950/80 px-2 py-0.5 rounded border border-teal-500/30 font-mono">
-            Supabase SSO
-          </span>
         </button>
 
         <div className="relative my-4">
