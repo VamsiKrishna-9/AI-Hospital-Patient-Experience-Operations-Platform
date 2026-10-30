@@ -3627,7 +3627,286 @@ app.post('/api/doctor/encounter', authenticateToken, async (req: Request, res: R
 });
 
 // Operational Room Overrides Map (Tracks real interactive staff operations per date and room)
+// NOTE: Maintained in-memory for the current session as a temporary non-persistent override.
 const OPERATIONAL_ROOM_OVERRIDES = new Map<string, any>();
+
+// --- DOCTOR-TO-STAFF WORKFLOW ENDPOINTS ---
+
+// 1. Doctor: Retrieve Staff Candidates for Assignment
+app.get('/api/doctor/staff-candidates', authenticateToken, async (req: Request, res: Response) => {
+  const client = getSupabaseAdmin();
+  if (!client) {
+    return res.status(503).json({ success: false, message: 'Database connection unavailable.' });
+  }
+
+  try {
+    const { data, error } = await client
+      .from('silver_staff')
+      .select('staff_id, staff_name, role, department, shift, hospital_branch, is_active')
+      .order('staff_name', { ascending: true });
+
+    if (error) {
+      return res.status(500).json({ success: false, message: error.message });
+    }
+
+    return res.json({
+      success: true,
+      candidates: (data || []).map((s: any) => ({
+        staffId: s.staff_id,
+        staffName: s.staff_name,
+        role: s.role || 'Clinical Staff',
+        department: s.department || 'General Ward',
+        shift: s.shift || 'General Shift',
+        branch: s.hospital_branch || 'Main Campus',
+        isActive: s.is_active !== false,
+      })),
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, message: sanitizeError(err) });
+  }
+});
+
+// 2. Doctor: Retrieve Operational Ward Beds (Temporary in-memory overrides)
+app.get('/api/doctor/ward-beds', authenticateToken, async (req: Request, res: Response) => {
+  const targetDate = req.query.date ? String(req.query.date) : getHospitalLocalDateTime().dateStr;
+  const wardBeds: any[] = [];
+  for (const [key, override] of OPERATIONAL_ROOM_OVERRIDES.entries()) {
+    if (key.startsWith(`${targetDate}_`)) {
+      wardBeds.push({
+        id: override.roomId,
+        room: override.roomId.replace('RM-', 'Room '),
+        bed: 'Bed A',
+        floor: 'Floor 4',
+        wing: 'West Wing',
+        status: override.status,
+        patientId: override.patientId || null,
+        patientName: override.patientName || null,
+        admissionType: override.status === 'Occupied' ? 'Inpatient' : 'None',
+        patient: override.patientName || 'None',
+        doctor: override.doctorId ? `Doctor ${override.doctorId}` : 'None',
+        admissionInfo: override.admissionInfo || '',
+        isTemporaryOverride: true,
+      });
+    }
+  }
+
+  return res.json({
+    success: true,
+    targetDate,
+    wardBeds,
+    notice: 'Canonical Silver database does not provide a persistent rooms table. Any returned beds reflect temporary in-memory operational overrides.',
+  });
+});
+
+// 3. Doctor: Assign Staff Member to Patient
+app.post('/api/doctor/assign-staff', authenticateToken, async (req: Request, res: Response) => {
+  const client = getSupabaseAdmin();
+  const appUser = (req as any).appUser;
+  const {
+    staffId,
+    patientId,
+    doctorId,
+    assignmentType,
+    assignmentDate,
+    startTime,
+    endTime,
+    priority,
+    notes,
+    roomId,
+    bedId,
+  } = req.body;
+
+  if (!client) {
+    return res.status(503).json({ success: false, message: 'Database connection unavailable.' });
+  }
+
+  if (!staffId) {
+    return res.status(400).json({ success: false, message: 'staffId is required to assign staff.' });
+  }
+
+  try {
+    // Verify staff exists in silver_staff
+    const { data: stf, error: stfErr } = await client
+      .from('silver_staff')
+      .select('staff_id, staff_name')
+      .eq('staff_id', staffId)
+      .maybeSingle();
+
+    if (stfErr) {
+      return res.status(500).json({ success: false, message: stfErr.message });
+    }
+    if (!stf) {
+      return res.status(400).json({ success: false, message: `Staff member with ID ${staffId} not found in silver_staff.` });
+    }
+
+    // Verify patient if provided
+    let verifiedPatient: any = null;
+    if (patientId) {
+      const { data: pat, error: patErr } = await client
+        .from('silver_patients')
+        .select('patient_id, name')
+        .eq('patient_id', patientId)
+        .maybeSingle();
+
+      if (patErr) {
+        return res.status(500).json({ success: false, message: patErr.message });
+      }
+      if (!pat) {
+        return res.status(400).json({ success: false, message: `Patient with ID ${patientId} not found in silver_patients.` });
+      }
+      verifiedPatient = pat;
+    }
+
+    // Resolve doctor ID
+    let resolvedDoctorId = doctorId || appUser?.doctor_id;
+    if (!resolvedDoctorId && appUser?.email) {
+      const { data: doc } = await client
+        .from('silver_doctors')
+        .select('doctor_id')
+        .eq('email', appUser.email)
+        .maybeSingle();
+      if (doc?.doctor_id) resolvedDoctorId = doc.doctor_id;
+    }
+
+    // Verify doctor exists in silver_doctors if resolvedDoctorId provided
+    if (resolvedDoctorId) {
+      const { data: docRec } = await client
+        .from('silver_doctors')
+        .select('doctor_id')
+        .eq('doctor_id', resolvedDoctorId)
+        .maybeSingle();
+      if (!docRec) {
+        resolvedDoctorId = null;
+      }
+    }
+
+    const validPriorities = ['Low', 'Normal', 'High', 'Urgent', 'Critical'];
+    const resolvedPriority = validPriorities.includes(priority) ? priority : 'Normal';
+    const resolvedDate = assignmentDate || getHospitalLocalDateTime().dateStr;
+
+    // Combine room/bed location into notes if provided
+    let combinedNotes = notes || '';
+    if (roomId) {
+      const locPrefix = `[Ward Location: Room ${roomId.replace(/^RM-?/i, '')}${bedId ? ` (${bedId})` : ''}]`;
+      if (!combinedNotes.includes('[Ward Location:')) {
+        combinedNotes = combinedNotes ? `${locPrefix} ${combinedNotes}` : locPrefix;
+      }
+    }
+
+    const asgId = `ASG${Date.now().toString().slice(-6)}`;
+    const { data: newAsg, error: insertErr } = await client
+      .from('silver_staff_assignment')
+      .insert({
+        assignment_id: asgId,
+        staff_id: staffId,
+        patient_id: verifiedPatient?.patient_id || patientId || null,
+        doctor_id: resolvedDoctorId || null,
+        assignment_type: assignmentType || 'Clinical Patient Care',
+        assignment_date: resolvedDate,
+        start_time: startTime || '08:00:00',
+        end_time: endTime || '16:00:00',
+        priority: resolvedPriority,
+        assignment_status: 'Scheduled',
+        notes: combinedNotes || null,
+      })
+      .select()
+      .single();
+
+    if (insertErr) {
+      return res.status(500).json({ success: false, message: insertErr.message });
+    }
+
+    return res.status(201).json({
+      success: true,
+      message: `Staff member ${stf.staff_name} (${staffId}) assigned successfully to patient ${verifiedPatient?.name || patientId || 'chart'}.`,
+      assignment: newAsg,
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, message: sanitizeError(err) });
+  }
+});
+
+// 4. Doctor: Retrieve Staff Assignments for a Specific Patient
+app.get('/api/doctor/patient-assignments/:patientId', authenticateToken, async (req: Request, res: Response) => {
+  const client = getSupabaseAdmin();
+  const { patientId } = req.params;
+
+  if (!client) {
+    return res.status(503).json({ success: false, message: 'Database connection unavailable.' });
+  }
+
+  if (!patientId) {
+    return res.status(400).json({ success: false, message: 'patientId parameter is required.' });
+  }
+
+  try {
+    const { data: patient, error: pErr } = await client
+      .from('silver_patients')
+      .select('patient_id, name, age, gender')
+      .eq('patient_id', patientId)
+      .maybeSingle();
+
+    if (pErr) {
+      return res.status(500).json({ success: false, message: pErr.message });
+    }
+
+    if (!patient) {
+      return res.status(404).json({ success: false, message: `Patient ${patientId} not found in database.` });
+    }
+
+    const { data, error } = await client
+      .from('silver_staff_assignment')
+      .select(`
+        assignment_id,
+        staff_id,
+        patient_id,
+        doctor_id,
+        assignment_type,
+        assignment_date,
+        start_time,
+        end_time,
+        priority,
+        assignment_status,
+        notes,
+        silver_patients(patient_id, name, age, gender),
+        silver_doctors(doctor_id, doctor_name, specialty),
+        silver_staff!silver_staff_assignment_staff_id_fkey(staff_id, staff_name, role, department)
+      `)
+      .eq('patient_id', patientId)
+      .order('assignment_date', { ascending: false });
+
+    if (error) {
+      return res.status(500).json({ success: false, message: error.message });
+    }
+
+    const assignments = (data || []).map((a: any) => ({
+      assignmentId: a.assignment_id,
+      patientId: a.patient_id,
+      patientName: a.silver_patients?.name || patient.name,
+      staffId: a.staff_id,
+      staffName: a.silver_staff?.staff_name || 'Staff Member',
+      staffRole: a.silver_staff?.role || 'Clinical Staff',
+      doctorId: a.doctor_id,
+      doctorName: a.silver_doctors?.doctor_name || 'Attending Physician',
+      assignmentType: a.assignment_type,
+      assignmentDate: a.assignment_date,
+      startTime: a.start_time ? String(a.start_time).slice(0, 5) : '08:00',
+      endTime: a.end_time ? String(a.end_time).slice(0, 5) : '16:00',
+      priority: a.priority || 'Normal',
+      status: a.assignment_status || 'Scheduled',
+      notes: a.notes,
+    }));
+
+    return res.json({
+      success: true,
+      patientId,
+      patientName: patient.name,
+      assignments,
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, message: sanitizeError(err) });
+  }
+});
 
 // 17. Staff Ward & Clinical Operations Overview
 app.get('/api/staff/overview', authenticateToken, async (req: Request, res: Response) => {
@@ -3835,6 +4114,110 @@ app.get('/api/staff/overview', authenticateToken, async (req: Request, res: Resp
   });
 });
 
+// --- STAFF DASHBOARD & WORKFLOW ENDPOINTS ---
+
+// 1. Staff: Retrieve Assignments strictly for authenticated staff member
+app.get('/api/staff/my-assignments', authenticateToken, async (req: Request, res: Response) => {
+  const client = getSupabaseAdmin();
+  const appUser = (req as any).appUser;
+  const targetDate = req.query.date ? String(req.query.date) : (req.query.targetDate ? String(req.query.targetDate) : null);
+
+  if (!client) {
+    return res.status(503).json({ success: false, message: 'Database connection unavailable.' });
+  }
+
+  // Resolve staff_id strictly from authenticated appUser
+  let staffId = appUser?.staff_id || '';
+  if (!staffId && appUser?.email) {
+    try {
+      const { data: stf } = await client.from('silver_staff').select('staff_id').eq('email', appUser.email).maybeSingle();
+      if (stf?.staff_id) staffId = stf.staff_id;
+    } catch {
+      // keep staffId empty
+    }
+  }
+
+  if (!staffId) {
+    return res.json({
+      success: true,
+      staffId: '',
+      assignments: [],
+      message: 'No authenticated staff member profile found for this user.',
+    });
+  }
+
+  const staffIdFilter = [staffId];
+  if (staffId.includes('-')) {
+    const digits = staffId.replace(/\D/g, '');
+    if (digits) staffIdFilter.push(`STF${digits.padStart(6, '0')}`);
+  }
+
+  try {
+    let query = client
+      .from('silver_staff_assignment')
+      .select(`
+        assignment_id,
+        staff_id,
+        patient_id,
+        doctor_id,
+        assignment_type,
+        assignment_date,
+        start_time,
+        end_time,
+        priority,
+        assignment_status,
+        notes,
+        silver_patients(patient_id, name, age, gender),
+        silver_doctors(doctor_id, doctor_name, specialty),
+        silver_staff!silver_staff_assignment_staff_id_fkey(staff_id, staff_name, role, department)
+      `)
+      .in('staff_id', staffIdFilter);
+
+    if (targetDate) {
+      query = query.eq('assignment_date', targetDate);
+    }
+
+    query = query.order('assignment_date', { ascending: false }).order('start_time', { ascending: true });
+
+    const { data, error } = await query;
+    if (error) {
+      return res.status(500).json({ success: false, message: error.message });
+    }
+
+    // STRICT: Only assignments belonging to this staff member with verified Silver records.
+    // NEVER fall back to other staff members' assignments!
+    const assignments = (data || [])
+      .filter((a: any) => staffIdFilter.includes(a.staff_id))
+      .filter((a: any) => a.silver_patients && a.silver_doctors && a.silver_staff)
+      .map((a: any) => ({
+        assignmentId: a.assignment_id,
+        patientId: a.patient_id,
+        patientName: a.silver_patients?.name || 'Patient information unavailable',
+        doctorId: a.doctor_id,
+        doctorName: a.silver_doctors?.doctor_name || 'Attending Physician',
+        specialty: a.silver_doctors?.specialty || 'General Practice',
+        task: a.assignment_type || 'Clinical Care & Monitoring',
+        instructions: a.notes || 'Clinical instructions provided by attending physician.',
+        assignmentDate: a.assignment_date,
+        startTime: a.start_time ? String(a.start_time).slice(0, 5) : '08:00',
+        dueTime: a.end_time ? String(a.end_time).slice(0, 5) : '16:00',
+        priority: a.priority || 'Normal',
+        status: a.assignment_status || 'Scheduled',
+        staffName: a.silver_staff?.staff_name || 'Staff Member',
+      }));
+
+    return res.json({
+      success: true,
+      staffId,
+      targetDate: targetDate || 'all',
+      assignments,
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, message: sanitizeError(err) });
+  }
+});
+
+// 2. Staff: Update Operational Room Status (Temporary in-memory override)
 app.post('/api/staff/rooms/update-status', authenticateToken, async (req: Request, res: Response) => {
   const { roomId, status, patientId, doctorId, admissionInfo, targetDate } = req.body;
   const client = getSupabaseAdmin();
@@ -3855,7 +4238,7 @@ app.post('/api/staff/rooms/update-status', authenticateToken, async (req: Reques
     }
   }
 
-  // Persist operational room status override for the date
+  // Persist operational room status override for the date (in-memory temporary non-persistent override)
   OPERATIONAL_ROOM_OVERRIDES.set(`${dateStr}_${roomId}`, {
     roomId,
     status,
@@ -3864,72 +4247,210 @@ app.post('/api/staff/rooms/update-status', authenticateToken, async (req: Reques
     doctorId: status === 'Occupied' ? doctorId : null,
     admissionInfo,
     timestamp: nowIso,
+    isTemporaryOverride: true,
   });
 
   return res.json({
     success: true,
-    message: `Room ${roomId} status updated to ${status} successfully.`,
+    message: `Room ${roomId} status updated to ${status} (temporary in-memory override).`,
     roomId,
     status,
     patientName: verifiedPatientName,
     timestamp: nowIso,
+    isTemporaryOverride: true,
+    notice: 'Operational room status is maintained in-memory for this session as no persistent silver_rooms table exists in canonical schema.',
   });
 });
 
-app.post('/api/staff/assignments/update', authenticateToken, async (req: Request, res: Response) => {
-  const { assignmentId, status } = req.body;
+// 3. Staff: Assignment Status Update Handler with Ownership Validation
+const handleAssignmentStatusUpdate = async (req: Request, res: Response) => {
+  const { assignmentId, status, notes } = req.body;
   const client = getSupabaseAdmin();
+  const appUser = (req as any).appUser;
 
-  if (client && assignmentId && status) {
-    try {
-      await client
-        .from('silver_staff_assignment')
-        .update({ assignment_status: status, updated_at: new Date().toISOString() })
-        .eq('assignment_id', assignmentId);
-    } catch (err) {
-      console.error('Failed to update assignment status in database', err);
-    }
+  if (!assignmentId || !status) {
+    return res.status(400).json({ success: false, message: 'assignmentId and status are required.' });
   }
 
-  return res.json({
-    success: true,
-    message: `Assignment status updated to ${status}.`,
-    assignmentId,
-    status,
-  });
-});
+  const validStatuses = ['Scheduled', 'Active', 'In Progress', 'Completed', 'Cancelled', 'Reassigned'];
+  if (!validStatuses.includes(status)) {
+    return res.status(400).json({
+      success: false,
+      message: `Invalid status "${status}". Allowed statuses: ${validStatuses.join(', ')}`,
+    });
+  }
 
+  if (!client) {
+    return res.status(503).json({ success: false, message: 'Database connection unavailable.' });
+  }
+
+  try {
+    // Fetch current assignment to verify existence and check ownership
+    const { data: currentAsg, error: fetchErr } = await client
+      .from('silver_staff_assignment')
+      .select('assignment_id, staff_id, assignment_status, notes')
+      .eq('assignment_id', assignmentId)
+      .maybeSingle();
+
+    if (fetchErr) {
+      return res.status(500).json({ success: false, message: fetchErr.message });
+    }
+
+    if (!currentAsg) {
+      return res.status(404).json({ success: false, message: `Assignment ${assignmentId} not found in database.` });
+    }
+
+    // Ownership enforcement: authenticated staff must own the assignment (or be an Admin)
+    const userRole = (appUser?.role || '').toLowerCase();
+    const isStaffOrAdmin = userRole === 'staff' || userRole === 'admin';
+    if (!isStaffOrAdmin) {
+      return res.status(403).json({ success: false, message: 'Unauthorized: Staff or Admin role required.' });
+    }
+
+    if (userRole !== 'admin') {
+      const authStaffId = appUser?.staff_id || '';
+      const allowedIds = [authStaffId];
+      if (authStaffId.includes('-')) {
+        const digits = authStaffId.replace(/\D/g, '');
+        if (digits) allowedIds.push(`STF${digits.padStart(6, '0')}`);
+      }
+      if (currentAsg.staff_id && !allowedIds.includes(currentAsg.staff_id)) {
+        return res.status(403).json({
+          success: false,
+          message: 'Unauthorized: You can only update assignments assigned to your own staff ID.',
+        });
+      }
+    }
+
+    // Perform genuine database update
+    const updatePayload: any = {
+      assignment_status: status,
+    };
+    if (notes !== undefined) {
+      updatePayload.notes = notes;
+    }
+
+    const { data: updatedData, error: updateErr } = await client
+      .from('silver_staff_assignment')
+      .update(updatePayload)
+      .eq('assignment_id', assignmentId)
+      .select()
+      .single();
+
+    if (updateErr) {
+      return res.status(500).json({ success: false, message: updateErr.message });
+    }
+
+    return res.json({
+      success: true,
+      message: `Assignment ${assignmentId} status updated to ${status}.`,
+      assignment: updatedData,
+      assignmentId,
+      status,
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, message: sanitizeError(err) });
+  }
+};
+
+app.post('/api/staff/assignments/update', authenticateToken, handleAssignmentStatusUpdate);
+app.post('/api/staff/assignment-status', authenticateToken, handleAssignmentStatusUpdate);
+
+// 4. Staff: Log Clinical Vitals (Appends to existing genuine encounter or active assignment notes without creating fake encounters)
 app.post('/api/staff/log-vitals', authenticateToken, async (req: Request, res: Response) => {
   const { patientId, patientName, bp, hr, temp, spo2 } = req.body;
   const client = getSupabaseAdmin();
   const nowIso = new Date().toISOString();
 
-  if (client) {
-    try {
-      const vitId = `VIT${Date.now().toString().slice(-6)}`;
-      await client.from('silver_encounters').insert({
-        encounter_id: vitId,
-        patient_id: patientId || null,
-        encounter_date: nowIso.split('T')[0],
-        encounter_type: 'Nursing Vitals Triage',
-        chief_complaint: 'Routine Vitals Check',
-        diagnosis: 'Vitals Recorded',
-        treatment_plan: `BP ${bp || '120/80'}, HR ${hr || 72} bpm, Temp ${temp || '37.0'}C, SpO2 ${spo2 || 98}%`,
-        notes: `Clinical vitals logged for ${patientName || 'Inpatient'}: BP ${bp || '120/80'}, HR ${hr || 72} bpm, Temp ${temp || '37.0'}°C, SpO2 ${spo2 || 98}%.`,
-        created_at: nowIso,
-        updated_at: nowIso,
-      });
-    } catch (err: any) {
-      console.error('Failed to log vitals to database', err);
-    }
+  if (!bp && !hr && !temp && !spo2) {
+    return res.status(400).json({ success: false, message: 'At least one vital sign value must be provided.' });
   }
 
-  return res.json({
-    success: true,
-    message: `Vitals recorded for ${patientName || 'Patient'}: BP ${bp || '120/80'}, HR ${hr || 72} bpm, Temp ${temp || '37.0'}°C, SpO2 ${spo2 || 98}%.`,
-    timestamp: nowIso,
-  });
+  if (!client) {
+    return res.status(503).json({ success: false, message: 'Database connection unavailable.' });
+  }
+
+  try {
+    let verifiedPatient: any = null;
+    if (patientId) {
+      const { data: pRec } = await client
+        .from('silver_patients')
+        .select('patient_id, name')
+        .eq('patient_id', patientId)
+        .maybeSingle();
+      verifiedPatient = pRec;
+    }
+
+    const vitalsSummary = `BP ${bp || '120/80'}, HR ${hr || 72} bpm, Temp ${temp || '37.0'}°C, SpO2 ${spo2 || 98}%`;
+
+    // Strictly avoid creating fake standalone clinical encounters (VIT...).
+    // Check if patient has a genuine active encounter today to append nursing observations,
+    // or active staff assignment to document completion.
+    let updatedTarget: string | null = null;
+
+    if (verifiedPatient?.patient_id) {
+      const today = getHospitalLocalDateTime().dateStr;
+      const { data: existingEnc } = await client
+        .from('silver_encounters')
+        .select('encounter_id, notes')
+        .eq('patient_id', verifiedPatient.patient_id)
+        .eq('encounter_date', today)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (existingEnc) {
+        const appendedNotes = existingEnc.notes
+          ? `${existingEnc.notes} | [Nursing Vitals ${nowIso.slice(11, 16)}: ${vitalsSummary}]`
+          : `[Nursing Vitals ${nowIso.slice(11, 16)}: ${vitalsSummary}]`;
+
+        const { error: encErr } = await client
+          .from('silver_encounters')
+          .update({ notes: appendedNotes, updated_at: nowIso })
+          .eq('encounter_id', existingEnc.encounter_id);
+
+        if (!encErr) {
+          updatedTarget = `Encounter ${existingEnc.encounter_id}`;
+        }
+      }
+
+      const { data: existingAsg } = await client
+        .from('silver_staff_assignment')
+        .select('assignment_id, notes, assignment_status')
+        .eq('patient_id', verifiedPatient.patient_id)
+        .eq('assignment_date', today)
+        .in('assignment_status', ['Scheduled', 'Active', 'In Progress'])
+        .limit(1)
+        .maybeSingle();
+
+      if (existingAsg) {
+        const appendedNotes = existingAsg.notes
+          ? `${existingAsg.notes} | [Vitals logged: ${vitalsSummary}]`
+          : `[Vitals logged: ${vitalsSummary}]`;
+
+        await client
+          .from('silver_staff_assignment')
+          .update({ notes: appendedNotes, assignment_status: 'Completed' })
+          .eq('assignment_id', existingAsg.assignment_id);
+
+        updatedTarget = updatedTarget ? `${updatedTarget} & Assignment ${existingAsg.assignment_id}` : `Assignment ${existingAsg.assignment_id}`;
+      }
+    }
+
+    return res.json({
+      success: true,
+      message: `Vitals recorded for ${verifiedPatient?.name || patientName || 'Patient'}: ${vitalsSummary}.${updatedTarget ? ` Linked to ${updatedTarget}.` : ''}`,
+      patientId: verifiedPatient?.patient_id || patientId || null,
+      patientName: verifiedPatient?.name || patientName,
+      vitals: { bp, hr, temp, spo2 },
+      updatedTarget,
+      timestamp: nowIso,
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, message: sanitizeError(err) });
+  }
 });
+
 
 // 18. Admin Governance & Hospital Executive Overview
 app.get('/api/admin/overview', authenticateToken, async (req: Request, res: Response) => {
