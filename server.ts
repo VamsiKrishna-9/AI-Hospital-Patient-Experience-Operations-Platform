@@ -3673,6 +3673,10 @@ app.get('/api/doctor/staff-candidates', authenticateToken, async (req: Request, 
       query = query.or(`staff_name.ilike.%${term}%,staff_id.ilike.%${term}%,department.ilike.%${term}%`);
     }
 
+    if (req.query.activeOnly === 'true' || req.query.active === 'true' || req.query.is_active === 'true' || req.query.status === 'Active') {
+      query = query.eq('is_active', true);
+    }
+
     const { data, error } = await query;
 
     if (error) {
@@ -3683,12 +3687,16 @@ app.get('/api/doctor/staff-candidates', authenticateToken, async (req: Request, 
       success: true,
       candidates: (data || []).map((s: any) => ({
         staffId: s.staff_id,
+        staff_id: s.staff_id,
         staffName: s.staff_name,
+        name: s.staff_name,
         role: s.role || 'Clinical Staff',
         department: s.department || 'General Ward',
         shift: s.shift || 'General Shift',
         branch: s.hospital_branch || 'Main Campus',
+        hospital_branch: s.hospital_branch || 'Main Campus',
         isActive: s.is_active !== false,
+        is_active: s.is_active !== false,
       })),
     });
   } catch (err: any) {
@@ -3787,27 +3795,51 @@ app.post('/api/doctor/assign-staff', authenticateToken, async (req: Request, res
       verifiedPatient = pat;
     }
 
-    // Resolve doctor ID
-    let resolvedDoctorId = doctorId || appUser?.doctor_id;
-    if (!resolvedDoctorId && appUser?.email) {
-      const { data: doc } = await client
-        .from('silver_doctors')
-        .select('doctor_id')
-        .eq('email', appUser.email)
-        .maybeSingle();
-      if (doc?.doctor_id) resolvedDoctorId = doc.doctor_id;
+    // Resolve doctor identity strictly from authenticated user and silver_doctors
+    // Never trust client-supplied doctor ID over the authenticated identity!
+    let resolvedDoctorId: string | null = null;
+    const userRole = (appUser?.role || '').toLowerCase();
+
+    if (userRole === 'doctor') {
+      // For doctor users, always enforce their authenticated doctor identity
+      if (appUser?.doctor_id) {
+        resolvedDoctorId = appUser.doctor_id;
+      } else if (appUser?.email) {
+        const { data: doc } = await client
+          .from('silver_doctors')
+          .select('doctor_id')
+          .eq('email', appUser.email)
+          .maybeSingle();
+        if (doc?.doctor_id) resolvedDoctorId = doc.doctor_id;
+      }
+    } else if (userRole === 'admin') {
+      // Admin can specify a doctorId or use their own profile
+      if (doctorId) {
+        resolvedDoctorId = doctorId;
+      } else if (appUser?.doctor_id) {
+        resolvedDoctorId = appUser.doctor_id;
+      }
+    } else if (appUser?.doctor_id) {
+      resolvedDoctorId = appUser.doctor_id;
     }
 
-    // Verify doctor exists in silver_doctors if resolvedDoctorId provided
+    // Verify resolved doctor ID exists in canonical silver_doctors
     if (resolvedDoctorId) {
       const { data: docRec } = await client
         .from('silver_doctors')
-        .select('doctor_id')
+        .select('doctor_id, doctor_name')
         .eq('doctor_id', resolvedDoctorId)
         .maybeSingle();
       if (!docRec) {
         resolvedDoctorId = null;
       }
+    }
+
+    if (!resolvedDoctorId) {
+      return res.status(403).json({
+        success: false,
+        message: 'A verified attending physician record in silver_doctors is required to create a clinical staff assignment.',
+      });
     }
 
     const validPriorities = ['Low', 'Normal', 'High', 'Urgent', 'Critical'];
