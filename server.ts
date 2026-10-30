@@ -175,131 +175,10 @@ async function authenticateToken(req: Request, res: Response, next: NextFunction
   }
 
   const token = authHeader.split(' ')[1];
-
-  if (token && (token.startsWith('session-token-') || token.startsWith('demo-session-token-'))) {
-    const raw = token.startsWith('demo-session-token-')
-      ? token.slice('demo-session-token-'.length)
-      : token.slice('session-token-'.length);
-    const [rolePart, ...rest] = raw.split('-');
-    const userIdOrSuffix = rest.join('-');
-    const role = (['patient', 'doctor', 'staff', 'admin'].includes(rolePart) ? rolePart : 'patient') as any;
-
-    // 1. Resolve directly from live Supabase PostgreSQL app_users if active
-    const admin = getSupabaseAdmin();
-    if (admin && isDatabaseConnected && userIdOrSuffix) {
-      try {
-        let dbUser: any = null;
-        if (userIdOrSuffix.length > 20) {
-          const { data } = await admin
-            .from('app_users')
-            .select('*')
-            .eq('id', userIdOrSuffix)
-            .single();
-          dbUser = data;
-        }
-        if (!dbUser && /^P\d+/i.test(userIdOrSuffix)) {
-          const { data } = await admin
-            .from('app_users')
-            .select('*')
-            .eq('patient_id', userIdOrSuffix.toUpperCase())
-            .single();
-          dbUser = data;
-        }
-        if (!dbUser && /^STF/i.test(userIdOrSuffix)) {
-          const { data } = await admin
-            .from('app_users')
-            .select('*')
-            .eq('staff_id', userIdOrSuffix)
-            .maybeSingle();
-          dbUser = data;
-        }
-        if (!dbUser && /^DOC/i.test(userIdOrSuffix)) {
-          const { data } = await admin
-            .from('app_users')
-            .select('*')
-            .eq('doctor_id', userIdOrSuffix)
-            .maybeSingle();
-          dbUser = data;
-        }
-        if (!dbUser && userIdOrSuffix.includes('@')) {
-          const { data } = await admin
-            .from('app_users')
-            .select('*')
-            .eq('email', userIdOrSuffix.toLowerCase())
-            .single();
-          dbUser = data;
-        }
-        if (dbUser) {
-          (req as any).authUser = { id: dbUser.id, email: dbUser.email };
-          (req as any).appUser = dbUser;
-          (req as any).authenticatedPatientId = dbUser.patient_id;
-          (req as any).userToken = token;
-          return next();
-        }
-      } catch (err) {
-        // Fallback to in-memory lookup
-      }
-    }
-
-    // 2. Resolve from in-memory account registry
-    const inMem = REGISTERED_ACCOUNTS.get(userIdOrSuffix.toLowerCase()) ||
-                  REGISTERED_ACCOUNTS.get(userIdOrSuffix.toUpperCase()) ||
-                  REGISTERED_ACCOUNTS.get(userIdOrSuffix) ||
-                  Array.from(REGISTERED_ACCOUNTS.values()).find((a) =>
-                    a.id === userIdOrSuffix ||
-                    a.patient_id?.toUpperCase() === userIdOrSuffix.toUpperCase() ||
-                    a.doctor_id?.toUpperCase() === userIdOrSuffix.toUpperCase() ||
-                    a.staff_id?.toUpperCase() === userIdOrSuffix.toUpperCase() ||
-                    a.email?.toLowerCase() === userIdOrSuffix.toLowerCase()
-                  );
-    if (inMem) {
-      (req as any).authUser = { id: inMem.id, email: inMem.email };
-      (req as any).appUser = {
-        id: inMem.id,
-        role: inMem.role,
-        patient_id: inMem.patient_id,
-        doctor_id: inMem.doctor_id,
-        staff_id: inMem.staff_id,
-        full_name: inMem.fullName,
-        email: inMem.email,
-        is_active: true,
-      };
-      (req as any).authenticatedPatientId = inMem.patient_id;
-      (req as any).userToken = token;
-      return next();
-    }
-
-    const testPatientId = 'P1001';
-    const resolvedStaffId = role === 'staff' ? (userIdOrSuffix && /^STF/i.test(userIdOrSuffix) ? userIdOrSuffix : 'STF-4401') : null;
-    const resolvedDoctorId = role === 'doctor' ? (userIdOrSuffix && /^DOC/i.test(userIdOrSuffix) ? userIdOrSuffix : 'DOC-7721') : null;
-
-    (req as any).authUser = { id: `demo-${role}-user`, email: role === 'patient' ? 'vvkrishna879@gmail.com' : `${role}@hospital.org` };
-    (req as any).appUser = {
-      id: `demo-${role}-user`,
-      role,
-      patient_id: role === 'patient' ? testPatientId : null,
-      doctor_id: resolvedDoctorId,
-      staff_id: resolvedStaffId,
-      full_name:
-        role === 'doctor'
-          ? 'Dr. Marcus Vance, MD'
-          : role === 'staff'
-          ? (resolvedStaffId ? `Staff ${resolvedStaffId}` : 'Clinical Staff')
-          : role === 'admin'
-          ? 'Arthur Sterling, MHA'
-          : 'Vamsi Krishna Vadlamudi',
-      email: role === 'patient' ? 'vvkrishna879@gmail.com' : `${role}@hospital.org`,
-      is_active: true,
-    };
-    (req as any).authenticatedPatientId = role === 'patient' ? testPatientId : null;
-    (req as any).userToken = token;
-    return next();
-  }
-
   const client = getSupabaseAdmin();
 
   if (!isDatabaseConnected || !client) {
-    return res.status(401).json({
+    return res.status(503).json({
       success: false,
       message: 'Authentication service unavailable. Connect Supabase to validate sessions.',
     });
@@ -323,7 +202,7 @@ async function authenticateToken(req: Request, res: Response, next: NextFunction
       .single();
 
     if (appUserError || !appUser) {
-      return res.status(401).json({
+      return res.status(403).json({
         success: false,
         message: 'User profile not found in application registry.',
       });
@@ -515,30 +394,20 @@ app.post('/api/auth/patient/login', async (req: Request, res: Response) => {
       });
     }
 
-    // 2. Authenticate through Supabase Auth or registered accounts
-    let token: string | null = null;
+    // 2. Authenticate strictly through Supabase Auth
     const { data: authData, error: authError } = await anonClient.auth.signInWithPassword({
       email: userRecord.email,
       password,
     });
-    if (!authError && authData?.session) {
-      token = authData.session.access_token;
-    } else {
-      const inMem = REGISTERED_ACCOUNTS.get(userRecord.email.toLowerCase()) ||
-                    REGISTERED_ACCOUNTS.get(userRecord.patient_id?.toUpperCase() || '') ||
-                    REGISTERED_ACCOUNTS.get(userRecord.id);
-      const expectedPassword = inMem?.password || 'Patient@2026';
-      if (expectedPassword === password) {
-        token = `session-token-patient-${userRecord.id}`;
-      }
-    }
 
-    if (!token) {
+    if (authError || !authData?.session || !authData?.session?.access_token) {
       return res.status(401).json({
         success: false,
         message: 'Invalid Patient ID or password.',
       });
     }
+
+    const token = authData.session.access_token;
 
     // 3. Fetch patient profile from silver_patients
     const { data: patientRecord } = await adminClient
@@ -554,7 +423,7 @@ app.post('/api/auth/patient/login', async (req: Request, res: Response) => {
       return res.json({
         success: true,
         mustChangePassword: true,
-        tempToken: authData?.session?.access_token || token,
+        tempToken: token,
         patientId: userRecord.patient_id,
         patient: formattedProfile,
         message: 'Password change required on initial access.',
@@ -564,7 +433,7 @@ app.post('/api/auth/patient/login', async (req: Request, res: Response) => {
     return res.json({
       success: true,
       message: 'Authenticated successfully.',
-      token: authData?.session?.access_token || token,
+      token,
       patientId: userRecord.patient_id,
       patient: formattedProfile,
     });
@@ -1052,7 +921,7 @@ app.post('/api/auth/common-login', async (req: Request, res: Response) => {
           userRecord = data;
         }
 
-        if (userRecord) {
+          if (userRecord) {
           // Verify that the account is active and authorized
           if (userRecord.is_active === false || userRecord.status === 'pending_approval') {
             return res.status(403).json({
@@ -1061,93 +930,46 @@ app.post('/api/auth/common-login', async (req: Request, res: Response) => {
             });
           }
 
-          // Attempt Supabase live signInWithPassword
+          // Authenticate strictly through Supabase Auth
           const { data: authData, error: authError } = await anonClient.auth.signInWithPassword({
             email: userRecord.email,
             password,
           });
 
-          if (!authError && authData.session) {
-            let patientProfile = null;
-            if (userRecord.role === 'patient') {
-              const { data: patientRecord } = await adminClient
-                .from('silver_patients')
-                .select('*')
-                .eq('patient_id', userRecord.patient_id)
-                .single();
-              patientProfile = formatPatientProfile(patientRecord || userRecord);
-            }
-
-            return res.json({
-              success: true,
-              role: userRecord.role,
-              token: authData.session.access_token,
-              mustChangePassword: Boolean(userRecord.must_change_password),
-              patientId: userRecord.patient_id,
-              patient: patientProfile,
-              user: {
-                id: userRecord.id,
-                email: userRecord.email,
-                role: userRecord.role,
-                name: userRecord.full_name || 'Hospital User',
-                patient_id: userRecord.patient_id,
-                doctor_id: userRecord.doctor_id,
-                staff_id: userRecord.staff_id,
-              },
-              message: `Authenticated successfully as ${userRecord.role}.`,
+          if (authError || !authData.session || !authData.session.access_token) {
+            return res.status(401).json({
+              success: false,
+              message: 'Invalid password or credentials. Please check your login details.',
             });
           }
 
-          // Fallback check against in-memory registry credentials or persona password
-          const inMem = REGISTERED_ACCOUNTS.get(userRecord.email.toLowerCase()) ||
-                        REGISTERED_ACCOUNTS.get(userRecord.patient_id?.toUpperCase() || '') ||
-                        REGISTERED_ACCOUNTS.get(userRecord.id);
-
-          const defaultRolePassword = userRecord.role === 'doctor'
-            ? 'Doctor@2026'
-            : userRecord.role === 'staff'
-            ? 'Staff@2026'
-            : userRecord.role === 'admin'
-            ? 'Admin@2026'
-            : 'Patient@2026';
-          const expectedPassword = inMem?.password || defaultRolePassword;
-
-          if (expectedPassword && expectedPassword === password) {
-            let patientProfile = null;
-            if (userRecord.role === 'patient') {
-              const { data: patientRecord } = await adminClient
-                .from('silver_patients')
-                .select('*')
-                .eq('patient_id', userRecord.patient_id)
-                .single();
-              patientProfile = formatPatientProfile(patientRecord || userRecord);
-            }
-
-            const sessionToken = `session-token-${userRecord.role}-${userRecord.id}`;
-            return res.json({
-              success: true,
-              role: userRecord.role,
-              token: sessionToken,
-              mustChangePassword: Boolean(userRecord.must_change_password),
-              patientId: userRecord.patient_id,
-              patient: patientProfile,
-              user: {
-                id: userRecord.id,
-                email: userRecord.email,
-                role: userRecord.role,
-                name: userRecord.full_name || 'Hospital User',
-                patient_id: userRecord.patient_id,
-                doctor_id: userRecord.doctor_id,
-                staff_id: userRecord.staff_id,
-              },
-              message: `Authenticated successfully as ${userRecord.role}.`,
-            });
+          let patientProfile = null;
+          if (userRecord.role === 'patient') {
+            const { data: patientRecord } = await adminClient
+              .from('silver_patients')
+              .select('*')
+              .eq('patient_id', userRecord.patient_id)
+              .single();
+            patientProfile = formatPatientProfile(patientRecord || userRecord);
           }
 
-          // Password did not match this found user account
-          return res.status(401).json({
-            success: false,
-            message: 'Invalid password. Please check your credentials.',
+          return res.json({
+            success: true,
+            role: userRecord.role,
+            token: authData.session.access_token,
+            mustChangePassword: Boolean(userRecord.must_change_password),
+            patientId: userRecord.patient_id,
+            patient: patientProfile,
+            user: {
+              id: userRecord.id,
+              email: userRecord.email,
+              role: userRecord.role,
+              name: userRecord.full_name || 'Hospital User',
+              patient_id: userRecord.patient_id,
+              doctor_id: userRecord.doctor_id,
+              staff_id: userRecord.staff_id,
+            },
+            message: `Authenticated successfully as ${userRecord.role}.`,
           });
         }
       } catch (err) {
@@ -4418,10 +4240,11 @@ const handleAssignmentStatusUpdate = async (req: Request, res: Response) => {
 app.post('/api/staff/assignments/update', authenticateToken, handleAssignmentStatusUpdate);
 app.post('/api/staff/assignment-status', authenticateToken, handleAssignmentStatusUpdate);
 
-// 4. Staff: Log Clinical Vitals (Appends to existing genuine encounter or active assignment notes without creating fake encounters)
+// 4. Staff: Log Clinical Vitals (Appends to existing genuine encounter or active assignment notes without creating fake encounters or marking completed automatically)
 app.post('/api/staff/log-vitals', authenticateToken, async (req: Request, res: Response) => {
   const { patientId, patientName, bp, hr, temp, spo2 } = req.body;
   const client = getSupabaseAdmin();
+  const appUser = (req as any).appUser;
   const nowIso = new Date().toISOString();
 
   if (!bp && !hr && !temp && !spo2) {
@@ -4443,11 +4266,13 @@ app.post('/api/staff/log-vitals', authenticateToken, async (req: Request, res: R
       verifiedPatient = pRec;
     }
 
-    const vitalsSummary = `BP ${bp || '120/80'}, HR ${hr || 72} bpm, Temp ${temp || '37.0'}°C, SpO2 ${spo2 || 98}%`;
+    const parts: string[] = [];
+    if (bp) parts.push(`BP ${bp}`);
+    if (hr) parts.push(`HR ${hr} bpm`);
+    if (temp) parts.push(`Temp ${temp}°C`);
+    if (spo2) parts.push(`SpO2 ${spo2}%`);
+    const vitalsSummary = parts.length > 0 ? parts.join(', ') : 'Clinical Vitals Recorded';
 
-    // Strictly avoid creating fake standalone clinical encounters (VIT...).
-    // Check if patient has a genuine active encounter today to append nursing observations,
-    // or active staff assignment to document completion.
     let updatedTarget: string | null = null;
 
     if (verifiedPatient?.patient_id) {
@@ -4476,26 +4301,36 @@ app.post('/api/staff/log-vitals', authenticateToken, async (req: Request, res: R
         }
       }
 
-      const { data: existingAsg } = await client
-        .from('silver_staff_assignment')
-        .select('assignment_id, notes, assignment_status')
-        .eq('patient_id', verifiedPatient.patient_id)
-        .eq('assignment_date', today)
-        .in('assignment_status', ['Scheduled', 'Active', 'In Progress'])
-        .limit(1)
-        .maybeSingle();
+      // Verify staff ownership before appending notes to assignment
+      let authStaffId = appUser?.staff_id || '';
+      if (!authStaffId && appUser?.email) {
+        const { data: stfRec } = await client.from('silver_staff').select('staff_id').eq('email', appUser.email).maybeSingle();
+        if (stfRec?.staff_id) authStaffId = stfRec.staff_id;
+      }
 
-      if (existingAsg) {
-        const appendedNotes = existingAsg.notes
-          ? `${existingAsg.notes} | [Vitals logged: ${vitalsSummary}]`
-          : `[Vitals logged: ${vitalsSummary}]`;
-
-        await client
+      if (authStaffId) {
+        const { data: existingAsg } = await client
           .from('silver_staff_assignment')
-          .update({ notes: appendedNotes, assignment_status: 'Completed' })
-          .eq('assignment_id', existingAsg.assignment_id);
+          .select('assignment_id, notes, staff_id')
+          .eq('patient_id', verifiedPatient.patient_id)
+          .eq('assignment_date', today)
+          .eq('staff_id', authStaffId)
+          .limit(1)
+          .maybeSingle();
 
-        updatedTarget = updatedTarget ? `${updatedTarget} & Assignment ${existingAsg.assignment_id}` : `Assignment ${existingAsg.assignment_id}`;
+        if (existingAsg) {
+          const appendedNotes = existingAsg.notes
+            ? `${existingAsg.notes} | [Vitals logged: ${vitalsSummary}]`
+            : `[Vitals logged: ${vitalsSummary}]`;
+
+          // Update notes only, preserving assignment status (never auto-mark Completed)
+          await client
+            .from('silver_staff_assignment')
+            .update({ notes: appendedNotes, updated_at: nowIso })
+            .eq('assignment_id', existingAsg.assignment_id);
+
+          updatedTarget = updatedTarget ? `${updatedTarget} & Assignment ${existingAsg.assignment_id}` : `Assignment ${existingAsg.assignment_id}`;
+        }
       }
     }
 
@@ -4515,7 +4350,7 @@ app.post('/api/staff/log-vitals', authenticateToken, async (req: Request, res: R
 
 
 // 18. Admin Governance & Hospital Executive Overview
-app.get('/api/admin/overview', authenticateToken, async (req: Request, res: Response) => {
+app.get('/api/admin/overview', authenticateToken, requireAdminRole, async (req: Request, res: Response) => {
   const client = getSupabaseAdmin();
   const appUser = (req as any).appUser;
 
@@ -4529,16 +4364,16 @@ app.get('/api/admin/overview', authenticateToken, async (req: Request, res: Resp
   };
 
   // Query live counts across canonical Silver tables
-  let totalActivePatients = 95083;
-  let totalPhysicians = 1380;
-  let totalClinicalStaff = 8795;
-  let totalEncounters = 158398;
-  let patientSatisfactionScore = 4.88;
-  let avgWaitTimeMinutes = 14.2;
+  let totalActivePatients = 0;
+  let totalPhysicians = 0;
+  let totalClinicalStaff = 0;
+  let totalEncounters = 0;
+  let patientSatisfactionScore = 0;
+  let avgWaitTimeMinutes = 0;
   let patientFeedback: any[] = [];
   let staffRoster: any[] = [];
 
-  if (client) {
+  if (client && isDatabaseConnected) {
     try {
       const [patCount, docCount, staffCount, encCount, fbRes, docSample, staffSample] = await Promise.all([
         client.from('silver_patients').select('*', { count: 'exact', head: true }),
@@ -4562,10 +4397,10 @@ app.get('/api/admin/overview', authenticateToken, async (req: Request, res: Resp
           .limit(4),
       ]);
 
-      if (patCount.count) totalActivePatients = patCount.count;
-      if (docCount.count) totalPhysicians = docCount.count;
-      if (staffCount.count) totalClinicalStaff = staffCount.count;
-      if (encCount.count) totalEncounters = encCount.count;
+      if (patCount.count !== null && patCount.count !== undefined) totalActivePatients = patCount.count;
+      if (docCount.count !== null && docCount.count !== undefined) totalPhysicians = docCount.count;
+      if (staffCount.count !== null && staffCount.count !== undefined) totalClinicalStaff = staffCount.count;
+      if (encCount.count !== null && encCount.count !== undefined) totalEncounters = encCount.count;
 
       if (fbRes.data && fbRes.data.length > 0) {
         patientFeedback = fbRes.data.map((fb: any) => ({
@@ -4579,8 +4414,8 @@ app.get('/api/admin/overview', authenticateToken, async (req: Request, res: Resp
           date: fb.feedback_date || new Date().toISOString().split('T')[0],
         }));
 
-        const totalRating = fbRes.data.reduce((acc: number, f: any) => acc + (Number(f.rating) || 5), 0);
-        patientSatisfactionScore = Number((totalRating / fbRes.data.length).toFixed(2));
+        const totalRating = fbRes.data.reduce((acc: number, f: any) => acc + (Number(f.rating) || 0), 0);
+        patientSatisfactionScore = fbRes.data.length > 0 ? Number((totalRating / fbRes.data.length).toFixed(2)) : 0;
       }
 
       if (docSample.data && staffSample.data) {
@@ -4610,23 +4445,23 @@ app.get('/api/admin/overview', authenticateToken, async (req: Request, res: Resp
   }
 
   const executiveMetrics = {
-    bedOccupancyRate: 86.4,
-    avgWaitTimeMinutes,
+    bedOccupancyRate: 0,
+    avgWaitTimeMinutes: 0,
     totalActivePatients,
     totalPhysicians,
     totalClinicalStaff,
     patientSatisfactionScore,
-    monthlyDischarges: Math.round(totalEncounters / 36),
-    emergencyThroughputRatio: 98.2,
+    monthlyDischarges: totalEncounters > 0 ? Math.round(totalEncounters / 36) : 0,
+    emergencyThroughputRatio: 0,
   };
 
   const departments = [
-    { id: 'DEP-CARD', name: 'Cardiology & Vascular Medicine', totalBeds: 45, occupiedBeds: 41, rate: 91.1, doctorsOnDuty: 8, status: 'High Occupancy' },
-    { id: 'DEP-ICU', name: 'Intensive Care Unit (ICU/CCU)', totalBeds: 24, occupiedBeds: 21, rate: 87.5, doctorsOnDuty: 6, status: 'Critical Reserve' },
-    { id: 'DEP-EMERG', name: 'Emergency & Trauma Center', totalBeds: 36, occupiedBeds: 30, rate: 83.3, doctorsOnDuty: 10, status: 'Nominal Operations' },
-    { id: 'DEP-SURG', name: 'Surgical & Post-Op Ward', totalBeds: 50, occupiedBeds: 42, rate: 84.0, doctorsOnDuty: 11, status: 'Nominal Operations' },
-    { id: 'DEP-PED', name: 'Pediatrics & Neonatal Care', totalBeds: 30, occupiedBeds: 22, rate: 73.3, doctorsOnDuty: 5, status: 'Available Capacity' },
-    { id: 'DEP-ONCO', name: 'Oncology & Infusion Suites', totalBeds: 28, occupiedBeds: 25, rate: 89.3, doctorsOnDuty: 4, status: 'High Occupancy' },
+    { id: 'DEP-CARD', name: 'Cardiology & Vascular Medicine', totalBeds: 0, occupiedBeds: 0, rate: 0, doctorsOnDuty: 0, status: 'Not Available' },
+    { id: 'DEP-ICU', name: 'Intensive Care Unit (ICU/CCU)', totalBeds: 0, occupiedBeds: 0, rate: 0, doctorsOnDuty: 0, status: 'Not Available' },
+    { id: 'DEP-EMERG', name: 'Emergency & Trauma Center', totalBeds: 0, occupiedBeds: 0, rate: 0, doctorsOnDuty: 0, status: 'Not Available' },
+    { id: 'DEP-SURG', name: 'Surgical & Post-Op Ward', totalBeds: 0, occupiedBeds: 0, rate: 0, doctorsOnDuty: 0, status: 'Not Available' },
+    { id: 'DEP-PED', name: 'Pediatrics & Neonatal Care', totalBeds: 0, occupiedBeds: 0, rate: 0, doctorsOnDuty: 0, status: 'Not Available' },
+    { id: 'DEP-ONCO', name: 'Oncology & Infusion Suites', totalBeds: 0, occupiedBeds: 0, rate: 0, doctorsOnDuty: 0, status: 'Not Available' },
   ];
 
   return res.json({
@@ -5339,7 +5174,7 @@ app.get('/api/admin/roster', authenticateToken, requireAdminRole, async (req: Re
   }
 });
 
-app.post('/api/admin/broadcast', authenticateToken, (req: Request, res: Response) => {
+app.post('/api/admin/broadcast', authenticateToken, requireAdminRole, (req: Request, res: Response) => {
   const { title, message, priority, targetDepartment } = req.body;
   return res.json({
     success: true,
