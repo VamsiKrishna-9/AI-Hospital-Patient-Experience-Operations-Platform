@@ -7,24 +7,15 @@ import React, { useState, useEffect } from 'react';
 import {
   HeartPulse,
   Bed,
-  Users,
-  Activity,
   LogOut,
   Clock,
-  AlertCircle,
   CheckCircle2,
-  Plus,
   RefreshCw,
   Search,
-  Thermometer,
   ShieldAlert,
   ChevronRight,
   ChevronLeft,
   ClipboardList,
-  Building,
-  Check,
-  X,
-  Sparkles,
   Calendar,
 } from 'lucide-react';
 import { AuthUser, HospitalRole } from '../types/auth';
@@ -172,7 +163,6 @@ export const StaffDashboard: React.FC<StaffDashboardProps> = ({ user, onLogout }
 
   const [selectedDate, setSelectedDate] = useState<string>(getTodayKolkata);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
-  const [schemaNotice, setSchemaNotice] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
   // Interactive Calendar Popover State matching Admin Dashboard
@@ -226,11 +216,6 @@ export const StaffDashboard: React.FC<StaffDashboardProps> = ({ user, onLogout }
         setVitalsTasks(data.vitalsTasks || []);
         setPatientsList(data.patientsList || []);
         setDoctorsList(data.doctorsList || []);
-        if (data.schemaNotice?.message) {
-          setSchemaNotice(data.schemaNotice.message);
-        } else {
-          setSchemaNotice(null);
-        }
         if (data.wardBeds?.length > 0 && (!selectedBed || !data.wardBeds.some((b: any) => b.id === selectedBed.id))) {
           setSelectedBed(data.wardBeds[0]);
         } else if (!data.wardBeds || data.wardBeds.length === 0) {
