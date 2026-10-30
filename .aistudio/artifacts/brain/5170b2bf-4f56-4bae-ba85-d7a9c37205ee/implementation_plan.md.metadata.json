@@ -1,6 +1,6 @@
 {
-  "summary":  "Implementation plan to synchronize live Supabase user identity and role-based routing, eliminate synthetic mock fallbacks across all dashboards, and display only genuine clinical database records.",
-  "updatedAt":  "2026-10-27T09:54:15.344296344Z",
+  "summary":  "Implementation plan for architecting the Doctor Dashboard to clearly distinguish Outpatient Checkup Clinic patients from Admitted Inpatients. Includes dedicated Outpatient Clinic and Inpatient Rounds tabs, an interactive 'Admit to Hospital Bed' workflow from outpatient consultations with ward bed allocation and bedside nurse delegation, and contextual clinic vs. ward KPI metric badging.",
+  "updatedAt":  "2026-10-30T10:16:47.353047308Z",
   "requestFeedback":  true,
   "userFacing":  true
 }
