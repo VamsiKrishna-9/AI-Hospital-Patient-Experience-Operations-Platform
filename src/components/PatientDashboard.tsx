@@ -197,7 +197,7 @@ export const PatientDashboard: React.FC<PatientDashboardProps> = ({ user, onLogo
     if (res.success) {
       setIsFeedbackModalOpen(false);
       setFeedbackComments('');
-      setSuccessToast('Thank you! Your feedback has been recorded in silver_feedback.');
+      setSuccessToast('Thank you! Your feedback has been recorded in the hospital care ledger.');
       fetchDashboard();
       setTimeout(() => setSuccessToast(null), 5000);
     } else {
@@ -644,7 +644,7 @@ export const PatientDashboard: React.FC<PatientDashboardProps> = ({ user, onLogo
                       Upcoming Scheduled Appointments
                     </h2>
                     <p className="text-xs text-[#526581]">
-                      Authoritative schedule synchronized with <code className="text-[#047857] font-mono">silver_appointments</code>.
+                      Authoritative schedule synchronized with clinical hospital records.
                     </p>
                   </div>
                   <button
@@ -892,7 +892,7 @@ export const PatientDashboard: React.FC<PatientDashboardProps> = ({ user, onLogo
                     Past Clinical Encounters & Visits
                   </h2>
                   <p className="text-xs text-[#526581]">
-                    Authoritative clinical records retrieved from <code className="text-[#047857] font-mono">silver_encounters</code>.
+                    Authoritative clinical records retrieved from hospital encounters.
                   </p>
                 </div>
 
@@ -956,7 +956,7 @@ export const PatientDashboard: React.FC<PatientDashboardProps> = ({ user, onLogo
                     Laboratory & Diagnostic Results
                   </h2>
                   <p className="text-xs text-[#526581]">
-                    Synchronized laboratory records from <code className="text-[#047857] font-mono">silver_lab_results</code>.
+                    Synchronized laboratory records from clinical diagnostic systems.
                   </p>
                 </div>
 
@@ -1033,7 +1033,7 @@ export const PatientDashboard: React.FC<PatientDashboardProps> = ({ user, onLogo
                     Active Medications & Prescriptions
                   </h2>
                   <p className="text-xs text-[#526581]">
-                    Pharmacy and medication ledger from <code className="text-[#047857] font-mono">silver_prescriptions</code>.
+                    Pharmacy and medication ledger from clinical pharmacy records.
                   </p>
                 </div>
 
@@ -1106,7 +1106,7 @@ export const PatientDashboard: React.FC<PatientDashboardProps> = ({ user, onLogo
                       Patient Care Experience & Hospital Reviews
                     </h2>
                     <p className="text-xs text-[#526581]">
-                      Authoritative feedback ledger synchronized with <code className="text-[#047857] font-mono">silver_feedback</code>.
+                      Authoritative feedback ledger synchronized with hospital quality registry.
                     </p>
                   </div>
                   <button
@@ -1362,7 +1362,7 @@ export const PatientDashboard: React.FC<PatientDashboardProps> = ({ user, onLogo
                 </div>
                 <div>
                   <h3 className="font-bold text-base text-[#172B4D]">Submit Care Experience Review</h3>
-                  <p className="text-[11px] text-[#526581]">Stored directly into <code className="text-[#047857] font-mono">silver_feedback</code></p>
+                  <p className="text-[11px] text-[#526581]">Stored directly into hospital quality registry</p>
                 </div>
               </div>
               <button
