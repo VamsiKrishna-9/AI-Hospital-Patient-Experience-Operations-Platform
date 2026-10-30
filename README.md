@@ -6,7 +6,7 @@
 [![Express](https://img.shields.io/badge/Express-4.21-lightgrey.svg)](https://expressjs.com/)
 [![Supabase](https://img.shields.io/badge/Supabase-PostgreSQL_%26_Auth-3ecf8e.svg)](https://supabase.com/)
 [![Google Gen AI](https://img.shields.io/badge/Gemini-3.8_Flash-orange.svg)](https://ai.google.dev/)
-[![Tests](https://img.shields.io/badge/Tests-25_Unit_%2B_44_E2E_Passing-success.svg)](https://nodejs.org/api/test.html)
+[![Tests](https://img.shields.io/badge/Tests-40_Passing_(100%25)-success.svg)](https://nodejs.org/api/test.html)
 
 **MediAI** is an intelligent, full-stack hospital patient experience and clinical operations platform. It unifies patient access, appointment scheduling, electronic health records (EHR), clinical workflows, staff operational management, and hospital telemetry into a single, cohesive system.
 
@@ -19,6 +19,7 @@ Built on modern cloud standards and the Medallion Data Architecture, MediAI brid
 - [Key Objectives](#key-objectives)
 - [System Architecture](#system-architecture)
 - [User Roles & Implemented Features](#user-roles--implemented-features)
+- [Date-Filtered Admin Dashboard (Phase 1)](#date-filtered-admin-dashboard-phase-1)
 - [AI Hospital Assistant & Clinical Safety Architecture](#ai-hospital-assistant--clinical-safety-architecture)
 - [Unified Authentication & Security Architecture](#unified-authentication--security-architecture)
 - [Medallion Architecture & Canonical Silver Schema](#medallion-architecture--canonical-silver-schema)
@@ -26,7 +27,7 @@ Built on modern cloud standards and the Medallion Data Architecture, MediAI brid
 - [Environment Configuration](#environment-configuration)
 - [Local Development & Testing](#local-development--testing)
 - [Recent Pull Requests & Feature Changelog](#recent-pull-requests--feature-changelog)
-- [Current Project Status — October 28, 2026](#current-project-status--october-28-2026)
+- [Current Project Status — October 29, 2026](#current-project-status--october-29-2026)
 - [Deployment & GitHub Publishing](#deployment--github-publishing)
 - [License & Compliance Notice](#license--compliance-notice)
 
@@ -135,6 +136,61 @@ MediAI provides specialized operational workspaces for four distinct hospital ro
 
 ---
 
+## Date-Filtered Admin Dashboard (Phase 1)
+
+Integrating functionality inspired by the hospital system's Power BI Admin Dashboard, MediAI provides a unified, date-filtered operational command center directly in `AdminDashboard.tsx` adhering to MediAI's signature dark navy background, teal/cyan accents, and responsive layout:
+
+```
+┌────────────────────────────────────────────────────────────────────────────────────────┐
+│                        MediAI Date-Filtered Admin Command Center                       │
+├────────────────────────────────────────────────────────────────────────────────────────┤
+│  [Date Picker: 2026-09-29]  [Today]  [Latest Ops: 2026-09-30]  [< Day >]  [Refresh ⟳]   │
+│  Hospital Timezone: Asia/Kolkata (IST)                                                 │
+├────────────────────────────────────────────────────────────────────────────────────────┤
+│  ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐  ┌─────────────────┐ │
+│  │  Patient Visits  │  │  Doctors on Duty │  │   Staff Present  │  │Total Appts (49) │ │
+│  │        43        │  │       120        │  │       104        │  │   49 Bookings   │ │
+│  │ silver_encounters│  │appts & assignments│  │silver_staff_asgn │  │silver_appoint   │ │
+│  └──────────────────┘  └──────────────────┘  └──────────────────┘  └─────────────────┘ │
+├────────────────────────────────────────────────────────────────────────────────────────┤
+│  ┌─────────────────────────────────────────┐  ┌──────────────────────────────────────┐ │
+│  │   Appointments by Department (Bar Chart)│  │ Appointment Status Distribution      │ │
+│  │   - Child Specialist: 5 appts (10.2%)   │  │ [======== Completed: 67.3% (33)    ]│ │
+│  │   - Internal Medicine: 5 appts (10.2%)  │  │ [===      Scheduled: 14.3% (7)     ]│ │
+│  │   - Orthopedic Surgery: 4 appts (8.2%)  │  │ [==       Cancelled: 10.2% (5)     ]│ │
+│  │   - Emergency Medicine: 4 appts (8.2%)  │  │ [==       No Show:    8.2% (4)     ]│ │
+│  └─────────────────────────────────────────┘  └──────────────────────────────────────┘ │
+├────────────────────────────────────────────────────────────────────────────────────────┤
+│  ┌───────────────────────────────────────────────────────────────────────────────────┐ │
+│  │               7-Day Patient Visits & Appointments Comparative Trend               │ │
+│  │      [Visits: 43 | Appts: 49] on Selected Date • Click column to switch date      │ │
+│  └───────────────────────────────────────────────────────────────────────────────────┘ │
+└────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 1. Key Metrics & Data Sources
+
+| Dashboard Metric | Data Source (Canonical Silver Table) | Calculation Methodology |
+| :--- | :--- | :--- |
+| **Patient Visits** | `silver_encounters` | Exact count of clinical encounters matching `encounter_date = selectedDate`. |
+| **Total Appointments** | `silver_appointments` | Exact count of patient bookings matching `appointment_date = selectedDate`. |
+| **Appointment Status Distribution** | `silver_appointments` | Grouped breakdown by `status` (`Completed`, `Scheduled`, `Cancelled`, `No Show`, `Confirmed`) with percentages. |
+| **Appointments by Department** | `silver_appointments` ⋈ `silver_doctors` | Joins appointments with physician specialties (`specialty`) on `doctor_id` for `selectedDate`, ordered descending. |
+| **Staff Present** | `silver_staff_assignment` | Distinct active `staff_id` with non-cancelled shift assignments on `assignment_date = selectedDate`. |
+| **Doctors on Duty** | `silver_appointments` ∪ `silver_staff_assignment` | Union of distinct `doctor_id` with active consultations or duty assignments on `selectedDate`. |
+| **7-Day Volume Trend** | `silver_encounters` & `silver_appointments` | Comparative daily counts across the 7 days ending on `selectedDate`. |
+
+### 2. Timezone & Boundary Guarantees
+- **Strict Hospital Timezone**: All date boundaries default to and respect `Asia/Kolkata` (IST) using IANA resolution (`getHospitalLocalDateTime('Asia/Kolkata')`).
+- **No UTC Shift Errors**: Date arithmetic computes boundaries explicitly without local host machine drift.
+- **Empty State & Zero Handling**: Unrecorded dates (e.g. future dates or dates with no visits) cleanly display 0 values and offer 1-click navigation to the latest operational date (`2026-09-30`).
+
+### 3. Backend Endpoints & Role Authorization
+- `GET /api/admin/dashboard-stats?date=YYYY-MM-DD`: Protected endpoint requiring verified `admin` role via `authenticateToken` and `requireAdminRole`. Returns compact aggregated datasets in < 2 seconds.
+- `GET /api/admin/daily-analytics`: Alias route forwarding directly to `/api/admin/dashboard-stats`.
+
+---
+
 ## AI Hospital Assistant & Clinical Safety Architecture
 
 The **MediAI AI Hospital Assistant** is a 24/7 intelligent patient companion engineered to enhance patient navigation, improve access to hospital services, and enforce strict clinical safety boundaries.
@@ -221,6 +277,26 @@ MediAI implements a hardened, unified authentication system designed specificall
 - **Strict Administrator Guard (`requireAdminRole`)**: Guarded against unauthorized callers (returning HTTP `403 Forbidden`).
 - **Clinical Identifier Preservation**: When an administrator reassigns a doctor or staff member to a patient role, their clinical identifiers (`doctor_id`, `staff_id`) are preserved in `historical_identifiers` for longitudinal medical audit compliance while immediately revoking privileged dashboard access.
 - **Dual-Layer Synchronization**: Updates synchronously commit to both the active application registry and Supabase PostgreSQL `public.app_users` and `public.audit_logs`.
+
+### 5. Account-to-Employee Mapping & Shift Governance (`GET /api/admin/users`)
+- **Verified Primary Key Relationships**: Links platform user accounts (`app_users`) to physical employee tables using canonical foreign keys rather than heuristic name matching:
+  - Doctor accounts: `app_users.doctor_id` ➔ `silver_doctors.doctor_id` (Primary Key).
+  - Staff accounts: `app_users.staff_id` ➔ `silver_staff.staff_id` (Primary Key).
+  - Patient accounts: `app_users.patient_id` ➔ `silver_patients.patient_id`.
+  - Supabase Auth: `app_users.id` ➔ `auth.users.id` (UUID).
+- **Verified Mapping States**:
+  - `Linked`: Account is confirmed and bound to an existing row in `silver_doctors` or `silver_staff`.
+  - `Unlinked`: Registered doctor/staff account lacks an assigned employee ID in their profile.
+  - `Needs Review`: Account has an assigned ID, but no matching record exists in the silver database table.
+  - `Administrator`: Privileged executive governance accounts with full platform management rights.
+  - `Patient`: Outpatient and inpatient consumer accounts.
+- **Shared Date Synchronization (`Asia/Kolkata`)**: Roster schedules and shift activities dynamically synchronize with the Admin Operations & Clinical Performance selected date without requiring re-authentication or page reloads.
+- **Multi-Assignment Preservation Without Row Duplication**: When an employee has multiple clinical assignments or booked consultations on the selected date (`silver_staff_assignment`, `silver_appointments`), they are displayed in a clean multi-assignment badge stack within their unified profile rather than duplicating the employee record.
+- **Department & Shift Filtering**:
+  - Filter and group workforce by verified department (`silver_doctors.specialty` and `silver_staff.department`).
+  - Filter by clinical shift window (`Morning`, `Evening`, `Night`, `Rotational`, `Off Duty`).
+  - Search by Name, Email, Employee ID, or account UUID.
+- **Scheduled vs. Physical Attendance Distinction**: Explicitly identifies operational status as `Scheduled`, `In Progress`, `Completed`, or `Off Duty` based on assignment and consultation status without falsely claiming biometric badge-in attendance.
 
 ---
 

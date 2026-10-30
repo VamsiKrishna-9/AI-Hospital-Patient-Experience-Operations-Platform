@@ -177,7 +177,9 @@ async function authenticateToken(req: Request, res: Response, next: NextFunction
   const token = authHeader.split(' ')[1];
 
   if (token && (token.startsWith('session-token-') || token.startsWith('demo-session-token-'))) {
-    const raw = token.replace('session-token-', '').replace('demo-session-token-', '');
+    const raw = token.startsWith('demo-session-token-')
+      ? token.slice('demo-session-token-'.length)
+      : token.slice('session-token-'.length);
     const [rolePart, ...rest] = raw.split('-');
     const userIdOrSuffix = rest.join('-');
     const role = (['patient', 'doctor', 'staff', 'admin'].includes(rolePart) ? rolePart : 'patient') as any;
@@ -2870,6 +2872,8 @@ app.post('/api/patient/feedback', authenticateToken, requirePatientRole, async (
       return res.status(400).json({ success: false, message: fbError.message });
     }
 
+    invalidateFeedbackCache();
+
     return res.json({
       success: true,
       message: 'Patient feedback registered successfully.',
@@ -3926,6 +3930,706 @@ app.get('/api/admin/overview', authenticateToken, async (req: Request, res: Resp
   });
 });
 
+// Phase 1: Date-Filtered Admin Dashboard Analytics (Power BI Admin Integration)
+app.get('/api/admin/dashboard-stats', authenticateToken, requireAdminRole, async (req: Request, res: Response) => {
+  try {
+    const hospitalTz = 'Asia/Kolkata';
+    const dateQuery = typeof req.query.date === 'string' ? req.query.date.trim() : undefined;
+    let selectedDate: string;
+
+    if (dateQuery) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(dateQuery)) {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid date parameter. Format must be YYYY-MM-DD.',
+        });
+      }
+      const [year, month, day] = dateQuery.split('-').map(Number);
+      const parsedDate = new Date(Date.UTC(year, month - 1, day));
+      if (
+        parsedDate.getUTCFullYear() !== year ||
+        parsedDate.getUTCMonth() !== month - 1 ||
+        parsedDate.getUTCDate() !== day ||
+        year < 2000 ||
+        year > 2100
+      ) {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid calendar date provided.',
+        });
+      }
+      selectedDate = dateQuery;
+    } else {
+      selectedDate = getHospitalLocalDateTime(hospitalTz).dateStr;
+    }
+
+    const client = getSupabaseAdmin();
+    if (!client || !isDatabaseConnected) {
+      return res.status(503).json({
+        success: false,
+        message: 'Database connection currently unavailable. Please verify Supabase status.',
+      });
+    }
+
+    // 7-day trend date window ending on selectedDate
+    const endDateObj = new Date(selectedDate + 'T00:00:00Z');
+    const startDateObj = new Date(endDateObj.getTime() - 6 * 24 * 60 * 60 * 1000);
+    const startDateStr = startDateObj.toISOString().split('T')[0];
+
+    // Canonical Silver table queries in parallel
+    const [encRes, aptRes, asgRes, trendEncRes, trendAptRes] = await Promise.all([
+      // 1. Patient visits (encounters on selected date)
+      client
+        .from('silver_encounters')
+        .select('encounter_id, encounter_type', { count: 'exact' })
+        .eq('encounter_date', selectedDate),
+
+      // 2. Appointments on selected date (with doctor specialty join)
+      client
+        .from('silver_appointments')
+        .select('appointment_id, status, doctor_id, silver_doctors(specialty, doctor_name)', { count: 'exact' })
+        .eq('appointment_date', selectedDate),
+
+      // 3. Staff assignments on selected date
+      client
+        .from('silver_staff_assignment')
+        .select('assignment_id, staff_id, doctor_id, assignment_status, start_time, end_time, priority')
+        .eq('assignment_date', selectedDate),
+
+      // 4. Encounters across 7-day trend window
+      client
+        .from('silver_encounters')
+        .select('encounter_date')
+        .gte('encounter_date', startDateStr)
+        .lte('encounter_date', selectedDate),
+
+      // 5. Appointments across 7-day trend window
+      client
+        .from('silver_appointments')
+        .select('appointment_date')
+        .gte('appointment_date', startDateStr)
+        .lte('appointment_date', selectedDate),
+    ]);
+
+    // KPI 1: Patient Visits from silver_encounters
+    const patientVisits = encRes.count || 0;
+
+    // KPI 4: Total Appointments from silver_appointments
+    const totalAppointments = aptRes.count || 0;
+
+    // KPI 3: Staff Present from silver_staff_assignment
+    const activeAssignments = (asgRes.data || []).filter(
+      (a: any) => a.assignment_status !== 'Cancelled'
+    );
+    const distinctStaffIds = new Set(
+      activeAssignments.map((a: any) => a.staff_id).filter(Boolean)
+    );
+    const staffPresent = distinctStaffIds.size;
+
+    // KPI 2: Doctors on Duty (distinct doctors scheduled in appointments or operational duty)
+    const doctorIdsFromApt = (aptRes.data || []).map((a: any) => a.doctor_id).filter(Boolean);
+    const doctorIdsFromAsg = activeAssignments.map((a: any) => a.doctor_id).filter(Boolean);
+    const distinctDoctorIds = new Set([...doctorIdsFromApt, ...doctorIdsFromAsg]);
+    const doctorsOnDuty = distinctDoctorIds.size;
+
+    // Appointment Status Distribution
+    const statusCountMap: Record<string, number> = {};
+    for (const apt of aptRes.data || []) {
+      const status = apt.status || 'Scheduled';
+      statusCountMap[status] = (statusCountMap[status] || 0) + 1;
+    }
+    const standardStatuses = ['Completed', 'Scheduled', 'Confirmed', 'Cancelled', 'No Show'];
+    const allStatuses = Array.from(new Set([...standardStatuses, ...Object.keys(statusCountMap)]));
+    const appointmentStatusDistribution = allStatuses
+      .filter((s) => (statusCountMap[s] || 0) > 0 || (totalAppointments === 0 && standardStatuses.includes(s)))
+      .map((status) => {
+        const count = statusCountMap[status] || 0;
+        const percentage = totalAppointments > 0 ? Number(((count / totalAppointments) * 100).toFixed(1)) : 0;
+        return { status, count, percentage };
+      });
+
+    // Appointments by Department
+    const deptCountMap: Record<string, number> = {};
+    for (const apt of aptRes.data || []) {
+      const dept = (apt.silver_doctors as any)?.specialty || 'General Medicine';
+      deptCountMap[dept] = (deptCountMap[dept] || 0) + 1;
+    }
+    const appointmentsByDepartment = Object.entries(deptCountMap)
+      .map(([department, count]) => ({
+        department,
+        count,
+        percentage: totalAppointments > 0 ? Number(((count / totalAppointments) * 100).toFixed(1)) : 0,
+      }))
+      .sort((a, b) => b.count - a.count);
+
+    // 7-Day Trend
+    const trendVisitsMap: Record<string, number> = {};
+    for (const e of trendEncRes.data || []) {
+      trendVisitsMap[e.encounter_date] = (trendVisitsMap[e.encounter_date] || 0) + 1;
+    }
+    const trendAptsMap: Record<string, number> = {};
+    for (const a of trendAptRes.data || []) {
+      trendAptsMap[a.appointment_date] = (trendAptsMap[a.appointment_date] || 0) + 1;
+    }
+
+    const dailyTrend: Array<{
+      date: string;
+      displayDate: string;
+      dayOfWeek: string;
+      visits: number;
+      appointments: number;
+    }> = [];
+
+    for (let i = 6; i >= 0; i--) {
+      const dayDate = new Date(endDateObj.getTime() - i * 24 * 60 * 60 * 1000);
+      const dStr = dayDate.toISOString().split('T')[0];
+      const dayName = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][dayDate.getUTCDay()];
+      const displayDate = `${dayName}, ${dayDate.toLocaleString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })}`;
+      dailyTrend.push({
+        date: dStr,
+        displayDate,
+        dayOfWeek: dayName,
+        visits: trendVisitsMap[dStr] || 0,
+        appointments: trendAptsMap[dStr] || 0,
+      });
+    }
+
+    // Encounter types breakdown
+    const encounterTypeMap: Record<string, number> = {};
+    for (const enc of encRes.data || []) {
+      const type = enc.encounter_type || 'Consultation';
+      encounterTypeMap[type] = (encounterTypeMap[type] || 0) + 1;
+    }
+    const encountersByType = Object.entries(encounterTypeMap).map(([type, count]) => ({
+      type,
+      count,
+    }));
+
+    return res.json({
+      success: true,
+      selectedDate,
+      timezone: hospitalTz,
+      kpis: {
+        patientVisits,
+        doctorsOnDuty,
+        staffPresent,
+        totalAppointments,
+      },
+      appointmentStatusDistribution,
+      appointmentsByDepartment,
+      dailyTrend,
+      encountersByType,
+      meta: {
+        hasData: patientVisits > 0 || totalAppointments > 0 || staffPresent > 0 || doctorsOnDuty > 0,
+        latestRecordedDate: '2026-09-30',
+        dataSourceNotes: {
+          patientVisits: 'Count of verified clinical encounters in silver_encounters matching encounter_date.',
+          doctorsOnDuty: 'Distinct doctor IDs with active consultations in silver_appointments or operational assignments in silver_staff_assignment on selected date.',
+          staffPresent: 'Distinct active staff IDs assigned to duty shifts in silver_staff_assignment on selected date.',
+          totalAppointments: 'Count of booked clinical appointments in silver_appointments matching appointment_date.',
+        },
+      },
+    });
+  } catch (err: any) {
+    console.error('Failed to query date-filtered admin dashboard stats', err);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to retrieve date-filtered operational metrics.',
+      error: sanitizeError(err),
+    });
+  }
+});
+
+// Alias for daily analytics
+app.get('/api/admin/daily-analytics', authenticateToken, requireAdminRole, async (req: Request, res: Response) => {
+  // Delegate directly to dashboard-stats
+  req.url = '/api/admin/dashboard-stats';
+  return app._router.handle(req, res, () => {});
+});
+
+// Patient Feedback Analytics Cache & State
+interface CachedOverallFeedback {
+  timestamp: number;
+  overallFeedbackCount: number;
+  overallAverageRating: number;
+  overallRatingCount: number;
+  ratingDistribution: Record<number, number>;
+}
+let cachedOverallFeedback: CachedOverallFeedback | null = null;
+const FEEDBACK_CACHE_TTL_MS = 60 * 1000; // 60 seconds
+
+export function invalidateFeedbackCache() {
+  cachedOverallFeedback = null;
+}
+
+// Patient Feedback Analytics (Shared Date-Filtered Analytics)
+app.get('/api/admin/feedback-analytics', authenticateToken, requireAdminRole, async (req: Request, res: Response) => {
+  try {
+    const hospitalTz = 'Asia/Kolkata';
+    const dateQuery = typeof req.query.date === 'string' ? req.query.date.trim() : undefined;
+    let selectedDate: string;
+
+    if (dateQuery) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(dateQuery)) {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid date parameter. Format must be YYYY-MM-DD.',
+        });
+      }
+      const [year, month, day] = dateQuery.split('-').map(Number);
+      const parsedDate = new Date(Date.UTC(year, month - 1, day));
+      if (
+        parsedDate.getUTCFullYear() !== year ||
+        parsedDate.getUTCMonth() !== month - 1 ||
+        parsedDate.getUTCDate() !== day ||
+        year < 2000 ||
+        year > 2100
+      ) {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid calendar date provided.',
+        });
+      }
+      selectedDate = dateQuery;
+    } else {
+      selectedDate = getHospitalLocalDateTime(hospitalTz).dateStr;
+    }
+
+    const client = getSupabaseAdmin();
+    if (!client || !isDatabaseConnected) {
+      return res.status(503).json({
+        success: false,
+        message: 'Database connection currently unavailable. Please verify Supabase status.',
+      });
+    }
+
+    // 1. Calculate overall metrics across the complete available dataset (silver_feedback)
+    const now = Date.now();
+    let overallData = cachedOverallFeedback;
+    if (!overallData || now - overallData.timestamp > FEEDBACK_CACHE_TTL_MS) {
+      const [c1, c2, c3, c4, c5, totalFbRes] = await Promise.all([
+        client.from('silver_feedback').select('*', { count: 'exact', head: true }).eq('rating', 1),
+        client.from('silver_feedback').select('*', { count: 'exact', head: true }).eq('rating', 2),
+        client.from('silver_feedback').select('*', { count: 'exact', head: true }).eq('rating', 3),
+        client.from('silver_feedback').select('*', { count: 'exact', head: true }).eq('rating', 4),
+        client.from('silver_feedback').select('*', { count: 'exact', head: true }).eq('rating', 5),
+        client.from('silver_feedback').select('*', { count: 'exact', head: true }),
+      ]);
+
+      const distribution: Record<number, number> = {
+        1: c1.count || 0,
+        2: c2.count || 0,
+        3: c3.count || 0,
+        4: c4.count || 0,
+        5: c5.count || 0,
+      };
+      const overallFeedbackCount = totalFbRes.count || 0;
+      const overallRatingCount =
+        distribution[1] + distribution[2] + distribution[3] + distribution[4] + distribution[5];
+      const overallRatingSum =
+        distribution[1] * 1 +
+        distribution[2] * 2 +
+        distribution[3] * 3 +
+        distribution[4] * 4 +
+        distribution[5] * 5;
+      const overallAverageRating = overallRatingCount > 0 ? overallRatingSum / overallRatingCount : 0;
+
+      overallData = {
+        timestamp: now,
+        overallFeedbackCount,
+        overallAverageRating,
+        overallRatingCount,
+        ratingDistribution: distribution,
+      };
+      cachedOverallFeedback = overallData;
+    }
+
+    // 2. Query daily feedback records for selectedDate from silver_feedback
+    const { data: dailyFeedbackRaw, error: dailyError, count: dailyCount } = await client
+      .from('silver_feedback')
+      .select(
+        'feedback_id, patient_id, doctor_id, encounter_id, rating, wait_time_rating, cleanliness_rating, staff_behavior_rating, comments, feedback_date, created_at, silver_patients(name), silver_doctors(doctor_name, specialty)',
+        { count: 'exact' }
+      )
+      .eq('feedback_date', selectedDate)
+      .order('created_at', { ascending: false });
+
+    if (dailyError) {
+      console.error('Failed to retrieve daily feedback from silver_feedback', dailyError);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to retrieve daily patient feedback.',
+        error: sanitizeError(dailyError),
+      });
+    }
+
+    const rawList = dailyFeedbackRaw || [];
+    const dailyFeedbackCount = dailyCount ?? rawList.length;
+
+    // Filter out null or invalid numeric ratings (actual rating scale 1 to 5)
+    const validRatings = rawList
+      .map((fb: any) => Number(fb.rating))
+      .filter((r: number) => !isNaN(r) && r >= 1 && r <= 5);
+
+    const dailyRatingCount = validRatings.length;
+    const dailyRatingSum = validRatings.reduce((acc: number, val: number) => acc + val, 0);
+    // Original numeric values without rounding before aggregation
+    const dailyAverageRating = dailyRatingCount > 0 ? dailyRatingSum / dailyRatingCount : null;
+
+    // Map records to structured daily feedback items
+    const allFeedbackItems = rawList.map((fb: any) => ({
+      id: fb.feedback_id,
+      feedbackId: fb.feedback_id,
+      patientId: fb.patient_id,
+      patientName: fb.silver_patients?.name || `Patient ${fb.patient_id}`,
+      doctorId: fb.doctor_id,
+      doctorName: fb.silver_doctors?.doctor_name || 'Attending Physician',
+      category: fb.silver_doctors?.specialty || 'General Medicine',
+      department: fb.silver_doctors?.specialty || 'General Medicine',
+      rating: Number(fb.rating),
+      waitTimeRating:
+        fb.wait_time_rating !== null && fb.wait_time_rating !== undefined ? Number(fb.wait_time_rating) : null,
+      cleanlinessRating:
+        fb.cleanliness_rating !== null && fb.cleanliness_rating !== undefined ? Number(fb.cleanliness_rating) : null,
+      staffBehaviorRating:
+        fb.staff_behavior_rating !== null && fb.staff_behavior_rating !== undefined
+          ? Number(fb.staff_behavior_rating)
+          : null,
+      comments: fb.comments && fb.comments !== 'Not Provided' ? fb.comments : '',
+      feedbackDate: fb.feedback_date,
+      submittedAt: fb.created_at,
+    }));
+
+    // Extract available categories from today's records
+    const categoriesSet = new Set<string>();
+    for (const item of allFeedbackItems) {
+      if (item.category) categoriesSet.add(item.category);
+    }
+    const categories = Array.from(categoriesSet).sort();
+
+    // Support query parameter filtering and sorting
+    let filteredList = [...allFeedbackItems];
+    const ratingFilter = typeof req.query.rating === 'string' ? req.query.rating.trim() : 'all';
+    const categoryFilter = typeof req.query.category === 'string' ? req.query.category.trim() : 'all';
+    const searchFilter = typeof req.query.search === 'string' ? req.query.search.trim().toLowerCase() : '';
+    const sortBy = typeof req.query.sortBy === 'string' ? req.query.sortBy.trim() : 'time_desc';
+
+    if (ratingFilter !== 'all') {
+      const targetRating = Number(ratingFilter);
+      if (!isNaN(targetRating)) {
+        filteredList = filteredList.filter((item) => item.rating === targetRating);
+      }
+    }
+
+    if (categoryFilter !== 'all') {
+      filteredList = filteredList.filter((item) => item.category === categoryFilter);
+    }
+
+    if (searchFilter) {
+      filteredList = filteredList.filter(
+        (item) =>
+          item.feedbackId.toLowerCase().includes(searchFilter) ||
+          item.patientId.toLowerCase().includes(searchFilter) ||
+          item.patientName.toLowerCase().includes(searchFilter) ||
+          item.doctorName.toLowerCase().includes(searchFilter) ||
+          item.category.toLowerCase().includes(searchFilter) ||
+          item.comments.toLowerCase().includes(searchFilter)
+      );
+    }
+
+    if (sortBy === 'rating_desc') {
+      filteredList.sort((a, b) => b.rating - a.rating);
+    } else if (sortBy === 'rating_asc') {
+      filteredList.sort((a, b) => a.rating - b.rating);
+    } else if (sortBy === 'time_asc') {
+      filteredList.sort(
+        (a, b) =>
+          new Date(a.submittedAt).getTime() - new Date(b.submittedAt).getTime() ||
+          a.feedbackId.localeCompare(b.feedbackId)
+      );
+    } else {
+      // Default time_desc
+      filteredList.sort(
+        (a, b) =>
+          new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime() ||
+          b.feedbackId.localeCompare(a.feedbackId)
+      );
+    }
+
+    return res.json({
+      success: true,
+      selectedDate,
+      timezone: hospitalTz,
+      metrics: {
+        dailyFeedbackCount,
+        dailyAverageRating,
+        dailyRatingCount,
+        overallFeedbackCount: overallData.overallFeedbackCount,
+        overallAverageRating: overallData.overallAverageRating,
+        overallRatingCount: overallData.overallRatingCount,
+        ratingScale: { min: 1, max: 5 },
+      },
+      feedbackList: filteredList,
+      totalDailyItems: allFeedbackItems.length,
+      filteredCount: filteredList.length,
+      categories,
+    });
+  } catch (err: any) {
+    console.error('Failed to retrieve patient feedback analytics', err);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to retrieve patient feedback analytics.',
+      error: sanitizeError(err),
+    });
+  }
+});
+
+
+// Phase 2: Date-Filtered Dynamic Workforce & Staff Roster Endpoint
+app.get('/api/admin/roster', authenticateToken, requireAdminRole, async (req: Request, res: Response) => {
+  try {
+    const hospitalTz = 'Asia/Kolkata';
+    const dateQuery = typeof req.query.date === 'string' ? req.query.date.trim() : undefined;
+    const departmentFilter = typeof req.query.department === 'string' ? req.query.department.trim() : 'all';
+    const searchQuery = typeof req.query.search === 'string' ? req.query.search.trim().toLowerCase() : '';
+    let selectedDate: string;
+
+    if (dateQuery) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(dateQuery)) {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid date parameter. Format must be YYYY-MM-DD.',
+        });
+      }
+      const [year, month, day] = dateQuery.split('-').map(Number);
+      const parsedDate = new Date(Date.UTC(year, month - 1, day));
+      if (
+        parsedDate.getUTCFullYear() !== year ||
+        parsedDate.getUTCMonth() !== month - 1 ||
+        parsedDate.getUTCDate() !== day ||
+        year < 2000 ||
+        year > 2100
+      ) {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid calendar date provided.',
+        });
+      }
+      selectedDate = dateQuery;
+    } else {
+      selectedDate = getHospitalLocalDateTime(hospitalTz).dateStr;
+    }
+
+    const client = getSupabaseAdmin();
+    if (!client || !isDatabaseConnected) {
+      return res.status(503).json({
+        success: false,
+        message: 'Database connection currently unavailable. Please verify Supabase status.',
+      });
+    }
+
+    // Query both staff assignments and doctor appointments for the selected date in parallel
+    const [stfAsgRes, docAptRes] = await Promise.all([
+      client
+        .from('silver_staff_assignment')
+        .select(
+          'assignment_id, staff_id, doctor_id, patient_id, start_time, end_time, assignment_status, assignment_type, priority, notes, silver_staff!silver_staff_assignment_staff_id_fkey(staff_name, role, department, shift), silver_doctors(doctor_name, specialty, qualification, availability_schedule, hospital_branch)'
+        )
+        .eq('assignment_date', selectedDate),
+      client
+        .from('silver_appointments')
+        .select(
+          'appointment_id, doctor_id, patient_id, appointment_time, status, consultation_duration_minutes, consultation_type, silver_doctors(doctor_name, specialty, qualification, availability_schedule, hospital_branch)'
+        )
+        .eq('appointment_date', selectedDate),
+    ]);
+
+    // Build doctors roster strictly from real appointments and assignments on selected date
+    const doctorsMap = new Map<string, any>();
+
+    for (const apt of docAptRes.data || []) {
+      const docId = apt.doctor_id;
+      if (!docId) continue;
+      const docInfo = apt.silver_doctors as any;
+      const time = apt.appointment_time ? apt.appointment_time.slice(0, 5) : '';
+      const existing = doctorsMap.get(docId);
+
+      if (!existing) {
+        doctorsMap.set(docId, {
+          id: docId,
+          name: docInfo?.doctor_name || `Doctor ${docId}`,
+          specialization: docInfo?.specialty || 'General Medicine',
+          department: docInfo?.specialty || 'General Medicine',
+          hospitalBranch: docInfo?.hospital_branch || null,
+          shift: docInfo?.availability_schedule || (time ? `Consultations from ${time}` : 'Scheduled Consults'),
+          shiftStart: time,
+          shiftEnd: undefined,
+          dutyStatus: apt.status || 'Scheduled',
+          consultationCount: 1,
+          assignmentCount: 0,
+          consultationTypes: apt.consultation_type ? [apt.consultation_type] : [],
+          assignmentTypes: [],
+          source: 'Appointment Schedule',
+        });
+      } else {
+        existing.consultationCount += 1;
+        if (apt.consultation_type && !existing.consultationTypes.includes(apt.consultation_type)) {
+          existing.consultationTypes.push(apt.consultation_type);
+        }
+        if (time && (!existing.shiftStart || time < existing.shiftStart)) {
+          existing.shiftStart = time;
+        }
+        if (time && (!existing.shiftEnd || time > existing.shiftEnd)) {
+          existing.shiftEnd = time;
+        }
+        if (existing.shiftStart && existing.shiftEnd && existing.shiftStart !== existing.shiftEnd) {
+          existing.shift = `${existing.shiftStart} - ${existing.shiftEnd}`;
+        }
+        // Update duty status to real active state if present
+        if (apt.status === 'In Progress' || (apt.status === 'Completed' && existing.dutyStatus === 'Scheduled')) {
+          existing.dutyStatus = apt.status;
+        }
+      }
+    }
+
+    for (const asg of stfAsgRes.data || []) {
+      const docId = asg.doctor_id;
+      if (!docId) continue;
+      const docInfo = asg.silver_doctors as any;
+      const startTime = asg.start_time ? asg.start_time.slice(0, 5) : '';
+      const endTime = asg.end_time ? asg.end_time.slice(0, 5) : '';
+      const shiftStr = startTime && endTime ? `${startTime} - ${endTime}` : (docInfo?.availability_schedule || 'Operational Duty');
+      const existing = doctorsMap.get(docId);
+
+      if (!existing) {
+        doctorsMap.set(docId, {
+          id: docId,
+          name: docInfo?.doctor_name || `Doctor ${docId}`,
+          specialization: docInfo?.specialty || 'General Medicine',
+          department: docInfo?.specialty || 'General Medicine',
+          hospitalBranch: docInfo?.hospital_branch || null,
+          shift: shiftStr,
+          shiftStart: startTime,
+          shiftEnd: endTime,
+          dutyStatus: asg.assignment_status || 'Scheduled',
+          consultationCount: 0,
+          assignmentCount: 1,
+          consultationTypes: [],
+          assignmentTypes: asg.assignment_type ? [asg.assignment_type] : [],
+          source: 'Clinical Assignment',
+        });
+      } else {
+        existing.assignmentCount += 1;
+        existing.source = 'Appointments & Duty Assignment';
+        if (asg.assignment_type && !existing.assignmentTypes.includes(asg.assignment_type)) {
+          existing.assignmentTypes.push(asg.assignment_type);
+        }
+        if (shiftStr && existing.shift === 'Scheduled Consults') {
+          existing.shift = shiftStr;
+        }
+        if (asg.assignment_status === 'In Progress' || (asg.assignment_status === 'Completed' && existing.dutyStatus === 'Scheduled')) {
+          existing.dutyStatus = asg.assignment_status;
+        }
+      }
+    }
+
+    // Build staff roster strictly from real assignments on selected date
+    const staffList: any[] = [];
+    const departmentSet = new Set<string>();
+
+    for (const asg of stfAsgRes.data || []) {
+      const staffId = asg.staff_id;
+      if (!staffId) continue;
+      const staffInfo = asg.silver_staff as any;
+      const startTime = asg.start_time ? asg.start_time.slice(0, 5) : '';
+      const endTime = asg.end_time ? asg.end_time.slice(0, 5) : '';
+      const shiftTime = startTime && endTime ? `${startTime} - ${endTime}` : '';
+      const shiftLabel = [staffInfo?.shift ? `${staffInfo.shift} Shift` : '', shiftTime].filter(Boolean).join(' · ');
+      const dept = staffInfo?.department || 'General Ward';
+
+      departmentSet.add(dept);
+
+      staffList.push({
+        assignmentId: asg.assignment_id,
+        id: staffId,
+        name: staffInfo?.staff_name || `Staff ${staffId}`,
+        role: staffInfo?.role || 'Clinical Staff',
+        department: dept,
+        shift: shiftLabel || 'Assigned Shift',
+        shiftType: staffInfo?.shift || 'Rotational',
+        shiftStart: startTime,
+        shiftEnd: endTime,
+        dutyStatus: asg.assignment_status || 'Scheduled',
+        assignmentType: asg.assignment_type || 'General Assistance',
+        priority: asg.priority || 'Normal',
+        notes: asg.notes || '',
+        assignedDoctorId: asg.doctor_id || undefined,
+      });
+    }
+
+    // Add doctor departments to department set
+    const allDoctors = Array.from(doctorsMap.values());
+    for (const doc of allDoctors) {
+      if (doc.department) departmentSet.add(doc.department);
+    }
+
+    // Apply backend filtering by department and search query
+    let filteredDoctors = allDoctors;
+    let filteredStaff = staffList;
+
+    if (departmentFilter && departmentFilter !== 'all') {
+      const targetDept = departmentFilter.toLowerCase();
+      filteredDoctors = filteredDoctors.filter((d) => d.department.toLowerCase().includes(targetDept));
+      filteredStaff = filteredStaff.filter((s) => s.department.toLowerCase().includes(targetDept));
+    }
+
+    if (searchQuery) {
+      filteredDoctors = filteredDoctors.filter(
+        (d) =>
+          d.name.toLowerCase().includes(searchQuery) ||
+          d.id.toLowerCase().includes(searchQuery) ||
+          d.specialization.toLowerCase().includes(searchQuery) ||
+          d.department.toLowerCase().includes(searchQuery)
+      );
+
+      filteredStaff = filteredStaff.filter(
+        (s) =>
+          s.name.toLowerCase().includes(searchQuery) ||
+          s.id.toLowerCase().includes(searchQuery) ||
+          s.role.toLowerCase().includes(searchQuery) ||
+          s.department.toLowerCase().includes(searchQuery) ||
+          s.assignmentType.toLowerCase().includes(searchQuery)
+      );
+    }
+
+    return res.json({
+      success: true,
+      selectedDate,
+      timezone: hospitalTz,
+      summary: {
+        totalDoctorsScheduled: allDoctors.length,
+        totalStaffScheduled: staffList.length,
+        totalWorkforce: allDoctors.length + staffList.length,
+        filteredDoctorsCount: filteredDoctors.length,
+        filteredStaffCount: filteredStaff.length,
+        actualAttendanceVerified: false,
+        attendanceNote:
+          'Actual physical attendance cannot be verified as no biometric punch table exists in the hospital schema. Duty statuses reflect database assignment/appointment scheduling statuses.',
+      },
+      doctors: filteredDoctors,
+      staff: filteredStaff,
+      departments: Array.from(departmentSet).sort(),
+    });
+  } catch (err: any) {
+    console.error('Failed to query date-filtered workforce roster', err);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to retrieve date-filtered workforce roster.',
+      error: sanitizeError(err),
+    });
+  }
+});
+
 app.post('/api/admin/broadcast', authenticateToken, (req: Request, res: Response) => {
   const { title, message, priority, targetDepartment } = req.body;
   return res.json({
@@ -3941,9 +4645,23 @@ app.post('/api/admin/broadcast', authenticateToken, (req: Request, res: Response
   });
 });
 
-// 19. Admin User Governance Directory Endpoint
-app.get('/api/admin/users', authenticateToken, requireAdminRole, async (_req: Request, res: Response) => {
+// 19. Admin User Governance Directory Endpoint — Enhanced Account-to-Employee Mapping
+app.get('/api/admin/users', authenticateToken, requireAdminRole, async (req: Request, res: Response) => {
   try {
+    const hospitalTz = 'Asia/Kolkata';
+    const dateQuery = typeof req.query.date === 'string' ? req.query.date.trim() : undefined;
+    const departmentFilter = typeof req.query.department === 'string' ? req.query.department.trim() : 'all';
+    const shiftFilter = typeof req.query.shift === 'string' ? req.query.shift.trim() : 'all';
+    const searchQuery = typeof req.query.search === 'string' ? req.query.search.trim().toLowerCase() : '';
+    const statusFilter = typeof req.query.status === 'string' ? req.query.status.trim() : 'all';
+
+    let selectedDate: string;
+    if (dateQuery && /^\d{4}-\d{2}-\d{2}$/.test(dateQuery)) {
+      selectedDate = dateQuery;
+    } else {
+      selectedDate = getHospitalLocalDateTime(hospitalTz).dateStr;
+    }
+
     const uniqueLocal = getUniqueRegisteredAccounts();
     const emailMap = new Map<string, any>();
 
@@ -3969,48 +4687,361 @@ app.get('/api/admin/users', authenticateToken, requireAdminRole, async (_req: Re
       }
     }
 
-    // Merge authoritative Supabase app_users table if live
-    if (isDatabaseConnected) {
-      const client = getSupabaseAdmin();
-      if (client) {
-        const { data: dbUsers, error } = await client
-          .from('app_users')
-          .select('*')
-          .order('created_at', { ascending: false });
+    const client = getSupabaseAdmin();
+    const doctorsMap = new Map<string, any>();
+    const staffMap = new Map<string, any>();
+    const assignmentsByStaff = new Map<string, any[]>();
+    const assignmentsByDoctor = new Map<string, any[]>();
+    const appointmentsByDoctor = new Map<string, any[]>();
+    const availableDepartmentsSet = new Set<string>();
+    const availableShifts = ['Morning', 'Evening', 'Night', 'Rotational', 'Off Duty'];
 
-        if (!error && Array.isArray(dbUsers)) {
-          for (const u of dbUsers) {
-            const key = u.email?.toLowerCase();
-            if (key) {
-              const existing = emailMap.get(key);
-              emailMap.set(key, {
-                id: u.id,
-                email: u.email,
-                fullName: u.full_name || existing?.fullName || u.email,
-                role: u.role,
-                patient_id: u.patient_id || existing?.patient_id,
-                doctor_id: u.doctor_id || existing?.doctor_id,
-                staff_id: u.staff_id || existing?.staff_id,
-                phone: u.phone || existing?.phone,
-                date_of_birth: u.date_of_birth || existing?.date_of_birth,
-                is_active: u.is_active ?? true,
-                created_at: u.created_at || existing?.created_at || new Date().toISOString(),
-                source: 'Supabase PostgreSQL',
-              });
-            }
+    if (isDatabaseConnected && client) {
+      // 1. Fetch live app_users
+      const { data: dbUsersData } = await client.from('app_users').select('*').order('created_at', { ascending: false });
+      if (dbUsersData) {
+        for (const u of dbUsersData) {
+          const key = u.email?.toLowerCase();
+          if (key) {
+            const existing = emailMap.get(key);
+            emailMap.set(key, {
+              id: u.id,
+              email: u.email,
+              fullName: u.full_name || existing?.fullName || u.email,
+              role: u.role,
+              patient_id: u.patient_id || existing?.patient_id,
+              doctor_id: u.doctor_id || existing?.doctor_id,
+              staff_id: u.staff_id || existing?.staff_id,
+              phone: u.phone || existing?.phone,
+              date_of_birth: u.date_of_birth || existing?.date_of_birth,
+              is_active: u.is_active ?? true,
+              created_at: u.created_at || existing?.created_at || new Date().toISOString(),
+              source: 'Supabase PostgreSQL',
+            });
           }
+        }
+      }
+
+      // Collect all doctor and staff IDs across users
+      const allDoctorIds = Array.from(new Set(Array.from(emailMap.values()).map((u) => u.doctor_id).filter(Boolean)));
+      const allStaffIds = Array.from(new Set(Array.from(emailMap.values()).map((u) => u.staff_id).filter(Boolean)));
+
+      // 2. Query verified employee records, date assignments, and departments in parallel
+      const [docsRes, staffRes, asgRes, aptRes, deptDocRes, deptStaffRes] = await Promise.all([
+        allDoctorIds.length > 0
+          ? client.from('silver_doctors').select('doctor_id, doctor_name, specialty, qualification, experience_years, hospital_branch, availability_schedule, rating, is_active').in('doctor_id', allDoctorIds)
+          : Promise.resolve({ data: [] }),
+        allStaffIds.length > 0
+          ? client.from('silver_staff').select('staff_id, staff_name, role, department, hospital_branch, shift, is_active').in('staff_id', allStaffIds)
+          : Promise.resolve({ data: [] }),
+        client.from('silver_staff_assignment').select('assignment_id, staff_id, doctor_id, patient_id, assignment_type, assignment_date, start_time, end_time, priority, assignment_status, notes').eq('assignment_date', selectedDate),
+        client.from('silver_appointments').select('appointment_id, doctor_id, patient_id, appointment_date, appointment_time, status, consultation_type').eq('appointment_date', selectedDate),
+        client.from('silver_doctors').select('specialty').not('specialty', 'is', null).limit(100),
+        client.from('silver_staff').select('department').not('department', 'is', null).limit(100),
+      ]);
+
+      for (const d of (deptDocRes as any)?.data || []) {
+        if (d.specialty) availableDepartmentsSet.add(d.specialty);
+      }
+      for (const s of (deptStaffRes as any)?.data || []) {
+        if (s.department) availableDepartmentsSet.add(s.department);
+      }
+
+      for (const d of docsRes.data || []) {
+        if (d.doctor_id) {
+          doctorsMap.set(d.doctor_id, d);
+          if (d.specialty) availableDepartmentsSet.add(d.specialty);
+        }
+      }
+
+      for (const s of staffRes.data || []) {
+        if (s.staff_id) {
+          staffMap.set(s.staff_id, s);
+          if (s.department) availableDepartmentsSet.add(s.department);
+        }
+      }
+
+      // Group assignments by staff_id & doctor_id for selectedDate
+      for (const a of asgRes.data || []) {
+        if (a.staff_id) {
+          const arr = assignmentsByStaff.get(a.staff_id) || [];
+          arr.push(a);
+          assignmentsByStaff.set(a.staff_id, arr);
+        }
+        if (a.doctor_id) {
+          const arr = assignmentsByDoctor.get(a.doctor_id) || [];
+          arr.push(a);
+          assignmentsByDoctor.set(a.doctor_id, arr);
+        }
+      }
+
+      // Group appointments by doctor_id for selectedDate
+      for (const apt of aptRes.data || []) {
+        if (apt.doctor_id) {
+          const arr = appointmentsByDoctor.get(apt.doctor_id) || [];
+          arr.push(apt);
+          appointmentsByDoctor.set(apt.doctor_id, arr);
         }
       }
     }
 
-    const users = Array.from(emailMap.values());
+    const rawUsers = Array.from(emailMap.values());
+    const enhancedUsers: any[] = [];
+
+    let linkedCount = 0;
+    let unlinkedCount = 0;
+    let needsReviewCount = 0;
+    let onDutyOnSelectedDate = 0;
+
+    for (const u of rawUsers) {
+      let mappingStatus: 'Linked' | 'Unlinked' | 'Needs Review' | 'Administrator' | 'Patient' = 'Unlinked';
+      let mappingNote: string | undefined;
+      let employeeId: string | undefined;
+      let employeeName: string | undefined;
+      let department: string = u.department || 'Unassigned Department';
+      let specialty: string | undefined = u.specialty;
+      let qualification: string | undefined;
+      let hospitalBranch: string | undefined;
+      let shiftName: string = 'Rotational';
+      let shiftSchedule: string = 'Off Duty on selected date';
+      let dutyStatus: string = 'Off Duty';
+      const assignments: any[] = [];
+
+      if (u.role === 'doctor') {
+        if (u.doctor_id) {
+          const doc = doctorsMap.get(u.doctor_id);
+          if (doc) {
+            mappingStatus = 'Linked';
+            linkedCount++;
+            employeeId = doc.doctor_id;
+            employeeName = doc.doctor_name;
+            department = doc.specialty || 'General Medicine';
+            specialty = doc.specialty;
+            qualification = doc.qualification;
+            hospitalBranch = doc.hospital_branch;
+            shiftName = doc.availability_schedule ? 'Scheduled Practice' : 'Rotational';
+            shiftSchedule = doc.availability_schedule || 'Consultation Slots';
+
+            // Gather appointments & assignments on selected date
+            const apts = appointmentsByDoctor.get(doc.doctor_id) || [];
+            const asgs = assignmentsByDoctor.get(doc.doctor_id) || [];
+
+            for (const apt of apts) {
+              const time = apt.appointment_time ? apt.appointment_time.slice(0, 5) : '';
+              assignments.push({
+                assignmentId: apt.appointment_id,
+                assignmentType: apt.consultation_type || 'Consultation',
+                startTime: time,
+                dutyStatus: apt.status || 'Scheduled',
+                notes: `Booked Consultation (${apt.consultation_type || 'In-Person'})`,
+              });
+            }
+
+            for (const asg of asgs) {
+              const start = asg.start_time ? asg.start_time.slice(0, 5) : '';
+              const end = asg.end_time ? asg.end_time.slice(0, 5) : '';
+              assignments.push({
+                assignmentId: asg.assignment_id,
+                assignmentType: asg.assignment_type || 'Clinical Duty',
+                startTime: start,
+                endTime: end,
+                dutyStatus: asg.assignment_status || 'Scheduled',
+                priority: asg.priority || 'Normal',
+                notes: asg.notes || '',
+                counterpartId: asg.staff_id || undefined,
+              });
+            }
+
+            if (assignments.length > 0) {
+              onDutyOnSelectedDate++;
+              if (assignments.some((a) => a.dutyStatus === 'In Progress')) {
+                dutyStatus = 'In Progress';
+              } else if (assignments.some((a) => a.dutyStatus === 'Completed')) {
+                dutyStatus = 'Completed';
+              } else {
+                dutyStatus = 'Scheduled';
+              }
+              const times = assignments.map((a) => a.startTime).filter(Boolean).sort();
+              if (times.length > 0) {
+                shiftSchedule = `${assignments.length} Activity: from ${times[0]}`;
+              }
+            } else {
+              dutyStatus = 'Off Duty';
+              shiftSchedule = 'No appointments/assignments on selected date';
+            }
+          } else {
+            mappingStatus = 'Needs Review';
+            needsReviewCount++;
+            employeeId = u.doctor_id;
+            mappingNote = `Assigned Doctor ID (${u.doctor_id}) not found in silver_doctors database.`;
+          }
+        } else {
+          mappingStatus = 'Unlinked';
+          unlinkedCount++;
+          mappingNote = 'Doctor account has no doctor_id linked in profile.';
+        }
+      } else if (u.role === 'staff') {
+        if (u.staff_id) {
+          const stf = staffMap.get(u.staff_id);
+          if (stf) {
+            mappingStatus = 'Linked';
+            linkedCount++;
+            employeeId = stf.staff_id;
+            employeeName = stf.staff_name;
+            department = stf.department || 'General Ward';
+            specialty = stf.role;
+            hospitalBranch = stf.hospital_branch;
+            shiftName = stf.shift || 'Rotational';
+
+            // Gather assignments on selected date (preserving multiple assignments accurately)
+            const asgs = assignmentsByStaff.get(stf.staff_id) || [];
+            for (const asg of asgs) {
+              const start = asg.start_time ? asg.start_time.slice(0, 5) : '';
+              const end = asg.end_time ? asg.end_time.slice(0, 5) : '';
+              assignments.push({
+                assignmentId: asg.assignment_id,
+                assignmentType: asg.assignment_type || 'Shift Assignment',
+                startTime: start,
+                endTime: end,
+                dutyStatus: asg.assignment_status || 'Scheduled',
+                priority: asg.priority || 'Normal',
+                notes: asg.notes || '',
+                counterpartId: asg.doctor_id || undefined,
+              });
+            }
+
+            if (assignments.length > 0) {
+              onDutyOnSelectedDate++;
+              if (assignments.some((a) => a.dutyStatus === 'In Progress')) {
+                dutyStatus = 'In Progress';
+              } else if (assignments.some((a) => a.dutyStatus === 'Completed')) {
+                dutyStatus = 'Completed';
+              } else {
+                dutyStatus = 'Scheduled';
+              }
+              const first = assignments[0];
+              shiftSchedule = first.startTime && first.endTime ? `${first.startTime} - ${first.endTime}` : `${stf.shift || 'Rotational'} Shift`;
+            } else {
+              dutyStatus = 'Off Duty';
+              shiftSchedule = 'No shift assignments on selected date';
+            }
+          } else {
+            mappingStatus = 'Needs Review';
+            needsReviewCount++;
+            employeeId = u.staff_id;
+            mappingNote = `Assigned Staff ID (${u.staff_id}) not found in silver_staff database.`;
+          }
+        } else {
+          mappingStatus = 'Unlinked';
+          unlinkedCount++;
+          mappingNote = 'Staff account has no staff_id linked in profile.';
+        }
+      } else if (u.role === 'patient') {
+        mappingStatus = 'Patient';
+        employeeId = u.patient_id || 'P-Pending';
+        employeeName = u.fullName;
+        department = 'Outpatient & Clinical Services';
+        dutyStatus = 'Active Patient Account';
+        shiftName = 'N/A';
+        shiftSchedule = 'Patient Access';
+      } else if (u.role === 'admin') {
+        mappingStatus = 'Administrator';
+        employeeId = u.id ? u.id.slice(0, 8).toUpperCase() : 'ADM-EXEC';
+        employeeName = u.fullName;
+        department = 'Executive Administration & Governance';
+        dutyStatus = 'Authorized Governance';
+        shiftName = 'Executive';
+        shiftSchedule = '24/7 Governance Operations';
+      }
+
+      if (department) availableDepartmentsSet.add(department);
+
+      enhancedUsers.push({
+        ...u,
+        mappingStatus,
+        mappingNote,
+        employeeId,
+        employeeName,
+        department,
+        specialty,
+        qualification,
+        hospitalBranch,
+        shiftName,
+        shiftSchedule,
+        dutyStatus,
+        assignments,
+        assignmentCount: assignments.length,
+      });
+    }
+
+    // Apply filters
+    let filteredUsers = enhancedUsers;
+
+    if (departmentFilter && departmentFilter !== 'all') {
+      const targetDept = departmentFilter.toLowerCase();
+      filteredUsers = filteredUsers.filter((u) => u.department && u.department.toLowerCase().includes(targetDept));
+    }
+
+    if (shiftFilter && shiftFilter !== 'all') {
+      const targetShift = shiftFilter.toLowerCase();
+      if (targetShift === 'off duty') {
+        filteredUsers = filteredUsers.filter((u) => u.dutyStatus === 'Off Duty');
+      } else {
+        filteredUsers = filteredUsers.filter(
+          (u) =>
+            (u.shiftName && u.shiftName.toLowerCase().includes(targetShift)) ||
+            (u.shiftSchedule && u.shiftSchedule.toLowerCase().includes(targetShift))
+        );
+      }
+    }
+
+    if (statusFilter && statusFilter !== 'all') {
+      filteredUsers = filteredUsers.filter((u) => u.mappingStatus === statusFilter);
+    }
+
+    if (searchQuery) {
+      filteredUsers = filteredUsers.filter((u) => {
+        return (
+          (u.fullName && u.fullName.toLowerCase().includes(searchQuery)) ||
+          (u.email && u.email.toLowerCase().includes(searchQuery)) ||
+          (u.id && u.id.toLowerCase().includes(searchQuery)) ||
+          (u.patient_id && u.patient_id.toLowerCase().includes(searchQuery)) ||
+          (u.doctor_id && u.doctor_id.toLowerCase().includes(searchQuery)) ||
+          (u.staff_id && u.staff_id.toLowerCase().includes(searchQuery)) ||
+          (u.employeeId && u.employeeId.toLowerCase().includes(searchQuery)) ||
+          (u.employeeName && u.employeeName.toLowerCase().includes(searchQuery)) ||
+          (u.department && u.department.toLowerCase().includes(searchQuery)) ||
+          (u.specialty && u.specialty.toLowerCase().includes(searchQuery))
+        );
+      });
+    }
+
     return res.json({
       success: true,
-      users,
-      totalCount: users.length,
+      users: filteredUsers,
+      totalCount: filteredUsers.length,
+      availableDepartments: Array.from(availableDepartmentsSet)
+        .filter((d) => Boolean(d) && !d.includes('*') && d.trim().length > 1)
+        .sort(),
+      availableShifts,
+      summary: {
+        totalUsers: rawUsers.length,
+        doctorsCount: rawUsers.filter((u) => u.role === 'doctor').length,
+        staffCount: rawUsers.filter((u) => u.role === 'staff').length,
+        patientsCount: rawUsers.filter((u) => u.role === 'patient').length,
+        adminsCount: rawUsers.filter((u) => u.role === 'admin').length,
+        linkedCount,
+        unlinkedCount,
+        needsReviewCount,
+        onDutyOnSelectedDate,
+        selectedDate,
+        timezone: hospitalTz,
+        attendanceNote: 'Scheduled/Assigned status only. Physical attendance is not tracked in the schema (no biometric punch table exists).',
+      },
       databaseMode: isDatabaseConnected ? 'LIVE_SUPABASE_POSTGRESQL' : 'SYNCHRONIZED_REGISTRY',
     });
   } catch (err: any) {
+    console.error('Failed to query user registry and employee mappings', err);
     return res.status(500).json({
       success: false,
       message: `Failed to retrieve user registry: ${sanitizeError(err)}`,
