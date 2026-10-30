@@ -9,14 +9,21 @@ import {
   EyeOff,
   Lock,
   Mail,
+  IdCard,
   ArrowRight,
   Loader2,
   AlertCircle,
   CheckCircle2,
+  Stethoscope,
+  HeartPulse,
   ShieldCheck,
+  User,
+  Sparkles,
 } from 'lucide-react';
-import { HospitalRole, ScreenState, AuthUser } from '../types/auth';
+import { HospitalRole, ScreenState, AuthResponse, AuthUser } from '../types/auth';
+import { ROLES_CONFIG } from '../data/roles';
 import { authService } from '../services/authService';
+import { patientService } from '../services/patientService';
 
 interface LoginScreenProps {
   onNavigate: (
@@ -42,7 +49,49 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
   const [error, setError] = useState<string | null>(null);
   const [verificationNotice, setVerificationNotice] = useState<string | null>(null);
 
+  // Auto-detect role from typed identifier
+  const detectRoleFromInput = (input: string): {
+    role: HospitalRole;
+    label: string;
+    icon: React.ReactNode;
+  } => {
+    const clean = input.trim().toLowerCase();
+    if (/^p\d+/i.test(clean) || clean.includes('patient')) {
+      return {
+        role: 'patient',
+        label: 'Patient Care Portal',
+        icon: <IdCard size={13} className="text-teal-400" />,
+      };
+    }
+    if (clean.includes('doc') || clean.includes('physician')) {
+      return {
+        role: 'doctor',
+        label: 'Clinical Physician Workspace',
+        icon: <Stethoscope size={13} className="text-cyan-400" />,
+      };
+    }
+    if (clean.includes('staff') || clean.includes('nurse')) {
+      return {
+        role: 'staff',
+        label: 'Nursing & Ward Operations',
+        icon: <HeartPulse size={13} className="text-emerald-400" />,
+      };
+    }
+    if (clean.includes('admin') || clean.includes('gov')) {
+      return {
+        role: 'admin',
+        label: 'Hospital Governance & Executive',
+        icon: <ShieldCheck size={13} className="text-indigo-400" />,
+      };
+    }
+    return {
+      role: 'patient',
+      label: 'MediAI Hospital Identity',
+      icon: <User size={13} className="text-slate-400" />,
+    };
+  };
 
+  const detected = detectRoleFromInput(identifier);
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -94,7 +143,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
     const cleanInput = identifier.trim();
 
     if (!cleanInput) {
-      setError('Please enter your registered email address or ID.');
+      setError('Please enter your Patient ID or official email address.');
       return;
     }
 
@@ -112,26 +161,25 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
         rememberMe,
       });
 
-      if (response.success && response.user) {
-        // Enforce account authorization check before navigating
-        if ((response.user as any).is_active === false || (response.user as any).status === 'pending_approval') {
-          setError('Your account is pending verification and approval by Hospital Administration. Please check back later.');
-          return;
-        }
-
-        const userRole = response.user.role;
+      if (response.success) {
+        const userRole = response.user?.role || detected.role;
         onRoleChange(userRole);
 
         if (response.mustChangePassword) {
           onNavigate('change-password', userRole, {
-            patientId: response.patientId || response.user.patient_id,
+            patientId: response.patientId || cleanInput,
             tempToken: response.tempToken,
           });
           return;
         }
 
         // Dedicated post-login routing for each role
-        if (userRole === 'doctor') {
+        if (userRole === 'patient') {
+          onNavigate('patient-dashboard', 'patient', {
+            patientId: response.patientId || cleanInput,
+            user: response.user,
+          });
+        } else if (userRole === 'doctor') {
           onNavigate('doctor-dashboard', 'doctor', {
             user: response.user,
           });
@@ -144,10 +192,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
             user: response.user,
           });
         } else {
-          onNavigate('patient-dashboard', 'patient', {
-            patientId: response.patientId || response.user.patient_id,
-            user: response.user,
-          });
+          onNavigate('patient-dashboard', 'patient');
         }
         return;
       }
@@ -164,15 +209,8 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
     setError(null);
     setIsLoading(true);
     try {
-      const remembered = authService.getRememberedIdentity();
-      const loginEmail = identifier.includes('@')
-        ? identifier.trim()
-        : (remembered?.email && remembered.email.includes('@'))
-        ? remembered.email.trim()
-        : undefined;
-
       const response = await authService.googleLogin({
-        email: loginEmail,
+        email: identifier.includes('@') ? identifier.trim() : undefined,
       });
 
       if (response.success && response.user) {
@@ -214,7 +252,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
           Sign In to MediAI
         </h2>
         <p className="text-xs sm:text-sm text-slate-400">
-          Enter your registered email address or ID to access your hospital workspace and medical records.
+          Enter your Patient ID or hospital email. The platform automatically routes you to your authorized care or clinical workspace.
         </p>
       </div>
 
@@ -245,6 +283,9 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
             />
           </svg>
           <span>Continue with Google</span>
+          <span className="text-[10px] text-teal-400 bg-teal-950/80 px-2 py-0.5 rounded border border-teal-500/30 font-mono">
+            Supabase SSO
+          </span>
         </button>
 
         <div className="relative my-4">
@@ -283,13 +324,19 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
         <div>
           <div className="flex items-center justify-between mb-1.5">
             <label htmlFor="common-identifier" className="block text-xs font-medium text-slate-300">
-              Email Address or ID
+              Patient ID or Hospital Email
             </label>
+            {identifier.trim() && (
+              <span className="inline-flex items-center gap-1 text-[11px] text-slate-400 bg-slate-900 px-2 py-0.5 rounded border border-slate-800 font-mono">
+                {detected.icon}
+                <span>{detected.label}</span>
+              </span>
+            )}
           </div>
 
           <div className="relative">
             <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-500">
-              <Mail size={16} />
+              {identifier.includes('@') ? <Mail size={16} /> : <IdCard size={16} />}
             </div>
             <input
               id="common-identifier"
@@ -301,10 +348,13 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
                 if (error) setError(null);
               }}
               disabled={isLoading}
-              placeholder="Enter your registered email address or ID"
+              placeholder="e.g. P182162 or doctor@hospital.org"
               className="w-full pl-10 pr-4 py-2.5 rounded-xl bg-slate-900/90 border border-slate-800 text-white placeholder-slate-500 text-sm focus:outline-none focus:border-teal-500 focus:ring-1 focus:ring-teal-500/40 font-mono"
             />
           </div>
+          <p className="mt-1 text-[11px] text-slate-500">
+            Accepts Patient ID (e.g. P182162) or institutional email (Doctor, Staff, Admin).
+          </p>
         </div>
 
         <div>
@@ -391,7 +441,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
           onClick={() => onNavigate('signup', 'patient')}
           className="font-semibold text-teal-400 hover:text-teal-300 transition-colors ml-1 cursor-pointer"
         >
-          Register as Patient, Doctor, or Staff
+          Register as Patient or Staff
         </button>
       </div>
     </div>

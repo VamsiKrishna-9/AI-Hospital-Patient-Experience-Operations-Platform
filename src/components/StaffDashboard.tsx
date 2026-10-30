@@ -60,8 +60,9 @@ interface VitalsTaskItem {
   status: string;
 }
 
-export const StaffDashboard: React.FC<StaffDashboardProps> = ({ user, onLogout }) => {
+export const StaffDashboard: React.FC<StaffDashboardProps> = ({ user, onLogout, onRoleSwitch }) => {
   const [activeTab, setActiveTab] = useState<'beds' | 'triage' | 'vitals'>('beds');
+  const [isRoleMenuOpen, setIsRoleMenuOpen] = useState(false);
   const [beds, setBeds] = useState<WardBedItem[]>([]);
   const [triageQueue, setTriageQueue] = useState<TriageQueueItem[]>([]);
   const [vitalsTasks, setVitalsTasks] = useState<VitalsTaskItem[]>([]);
@@ -221,10 +222,10 @@ export const StaffDashboard: React.FC<StaffDashboardProps> = ({ user, onLogout }
           </nav>
 
           {/* Zone 3: Primary Action & Profile */}
-          <div className="flex items-center gap-2 sm:gap-2.5 shrink-0">
+          <div className="flex items-center gap-3 shrink-0">
             <button
               onClick={() => setIsVitalsModalOpen(true)}
-              className="hidden sm:inline-flex items-center justify-center gap-1.5 h-8 px-3 rounded-lg text-xs font-semibold bg-teal-500 hover:bg-teal-400 text-slate-950 transition-colors cursor-pointer shrink-0 shadow-sm"
+              className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-teal-500 hover:bg-teal-400 text-slate-950 transition-colors cursor-pointer"
             >
               <Plus size={14} />
               <span>Record Vitals</span>
@@ -233,19 +234,67 @@ export const StaffDashboard: React.FC<StaffDashboardProps> = ({ user, onLogout }
               <div className="text-xs font-medium text-white">{user?.name || 'Sarah Jenkins, RN'}</div>
               <div className="text-[10px] text-slate-400 font-mono">Station 4B Lead</div>
             </div>
-            {/* Institutional Verified Role Badge (Single-Role Enforced for Security) */}
-            <div
-              className="inline-flex items-center justify-center gap-1.5 h-8 px-2.5 sm:px-3 rounded-lg border border-emerald-500/30 bg-emerald-950/40 text-xs font-medium text-slate-200 shrink-0 select-none shadow-xs"
-              title="Verified Institutional Role: Ward & Triage Staff"
-            >
-              <HeartPulse size={14} className="text-emerald-400 shrink-0" />
-              <span className="text-slate-400 hidden sm:inline">Role:</span>
-              <span className="text-emerald-300 font-bold">Staff</span>
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setIsRoleMenuOpen(!isRoleMenuOpen)}
+                className="px-2.5 py-1.5 rounded-lg border border-slate-800 bg-slate-900 text-slate-300 hover:text-white text-xs font-medium flex items-center gap-1.5 transition-colors cursor-pointer"
+                title="Switch hospital workspace"
+              >
+                <span className="text-slate-500 hidden sm:inline">Role:</span>
+                <span className="text-emerald-400 font-bold">Staff</span>
+                <ChevronRight size={13} className={`transform transition-transform text-slate-500 ${isRoleMenuOpen ? 'rotate-90' : ''}`} />
+              </button>
+
+              {isRoleMenuOpen && (
+                <div className="absolute right-0 mt-2 w-52 rounded-xl bg-slate-900 border border-slate-800 shadow-2xl p-1.5 z-50 text-xs">
+                  <div className="px-2.5 py-1 text-[10px] font-bold text-slate-500 uppercase tracking-wider border-b border-slate-800">
+                    Switch Workspace
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsRoleMenuOpen(false);
+                      onRoleSwitch?.('patient');
+                    }}
+                    className="w-full text-left px-2.5 py-1.5 rounded-lg text-slate-300 hover:text-white hover:bg-slate-800 transition-colors flex items-center justify-between cursor-pointer"
+                  >
+                    <span>Patient Portal</span>
+                    <span className="text-[10px] text-teal-400 font-mono">Care</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsRoleMenuOpen(false);
+                      onRoleSwitch?.('doctor');
+                    }}
+                    className="w-full text-left px-2.5 py-1.5 rounded-lg text-slate-300 hover:text-white hover:bg-slate-800 transition-colors flex items-center justify-between cursor-pointer"
+                  >
+                    <span>Doctor Workspace</span>
+                    <span className="text-[10px] text-cyan-400 font-mono">Clinical</span>
+                  </button>
+                  <div className="w-full text-left px-2.5 py-1.5 rounded-lg bg-emerald-500/10 text-emerald-300 font-bold flex items-center justify-between">
+                    <span>Staff / Ward 4B</span>
+                    <CheckCircle2 size={13} className="text-emerald-400" />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsRoleMenuOpen(false);
+                      onRoleSwitch?.('admin');
+                    }}
+                    className="w-full text-left px-2.5 py-1.5 rounded-lg text-indigo-300 hover:text-indigo-200 hover:bg-slate-800 transition-colors flex items-center justify-between cursor-pointer border-t border-slate-800 mt-1"
+                  >
+                    <span>Admin Governance</span>
+                    <span className="text-[10px] bg-indigo-500/20 text-indigo-400 px-1 rounded font-mono">Admin</span>
+                  </button>
+                </div>
+              )}
             </div>
 
             <button
               onClick={onLogout}
-              className="inline-flex items-center justify-center gap-1.5 h-8 px-2.5 sm:px-3 rounded-lg border border-slate-800 bg-slate-900 hover:bg-slate-800 text-xs text-slate-300 hover:text-white transition-colors cursor-pointer shrink-0"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-800 bg-slate-900 hover:bg-slate-800 text-xs text-slate-300 hover:text-white transition-colors cursor-pointer"
             >
               <LogOut size={14} />
               <span className="hidden sm:inline">Sign Out</span>
@@ -477,54 +526,48 @@ export const StaffDashboard: React.FC<StaffDashboardProps> = ({ user, onLogout }
               </div>
             </div>
 
-            {triageQueue.length === 0 ? (
-              <div className="p-8 text-center rounded-xl bg-slate-900/40 border border-slate-800 text-slate-400 text-xs">
-                No emergent triage intake waiting in the queue at this time.
-              </div>
-            ) : (
-              <div className="space-y-3">
-                {triageQueue.map((t) => (
-                  <div
-                    key={t.ticket}
-                    className="p-4 rounded-xl bg-slate-900/60 border border-slate-800 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4"
-                  >
-                    <div className="space-y-1">
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs font-mono font-bold text-teal-400 bg-slate-950 px-2 py-0.5 rounded border border-slate-800">
-                          {t.ticket}
-                        </span>
-                        <span className="text-sm font-bold text-white">{t.patient}</span>
-                        <span className="text-xs text-slate-500">({t.age}y)</span>
-                        <span className="text-xs text-slate-400 font-mono">· {t.arrival}</span>
-                      </div>
-                      <div className="text-xs text-slate-300">{t.complaint}</div>
-                      <div className="text-[11px] text-slate-500">Target Station: {t.status} · Bed: {t.assignedBed}</div>
-                    </div>
-
-                    <div className="flex items-center gap-3">
-                      <span
-                        className={`text-xs px-2.5 py-1 rounded font-mono ${
-                          t.acuity.includes('Emergent')
-                            ? 'bg-rose-500/10 text-rose-300 border border-rose-500/20'
-                            : 'bg-amber-500/10 text-amber-300 border border-amber-500/20'
-                        }`}
-                      >
-                        {t.acuity}
+            <div className="space-y-3">
+              {triageQueue.map((t) => (
+                <div
+                  key={t.ticket}
+                  className="p-4 rounded-xl bg-slate-900/60 border border-slate-800 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4"
+                >
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-mono font-bold text-teal-400 bg-slate-950 px-2 py-0.5 rounded border border-slate-800">
+                        {t.ticket}
                       </span>
-                      <button
-                        onClick={() => {
-                          setVitalsPatient(`${t.patient} (${t.ticket})`);
-                          setIsVitalsModalOpen(true);
-                        }}
-                        className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-teal-500 hover:bg-teal-400 text-slate-950 transition-colors cursor-pointer"
-                      >
-                        Intake Vitals
-                      </button>
+                      <span className="text-sm font-bold text-white">{t.patient}</span>
+                      <span className="text-xs text-slate-500">({t.age}y)</span>
+                      <span className="text-xs text-slate-400 font-mono">· {t.arrival}</span>
                     </div>
+                    <div className="text-xs text-slate-300">{t.complaint}</div>
+                    <div className="text-[11px] text-slate-500">Target Station: {t.status} · Bed: {t.assignedBed}</div>
                   </div>
-                ))}
-              </div>
-            )}
+
+                  <div className="flex items-center gap-3">
+                    <span
+                      className={`text-xs px-2.5 py-1 rounded font-mono ${
+                        t.acuity.includes('Emergent')
+                          ? 'bg-rose-500/10 text-rose-300 border border-rose-500/20'
+                          : 'bg-amber-500/10 text-amber-300 border border-amber-500/20'
+                      }`}
+                    >
+                      {t.acuity}
+                    </span>
+                    <button
+                      onClick={() => {
+                        setVitalsPatient(`${t.patient} (${t.ticket})`);
+                        setIsVitalsModalOpen(true);
+                      }}
+                      className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-teal-500 hover:bg-teal-400 text-slate-950 transition-colors cursor-pointer"
+                    >
+                      Intake Vitals
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
         )}
 
@@ -538,39 +581,33 @@ export const StaffDashboard: React.FC<StaffDashboardProps> = ({ user, onLogout }
               </div>
             </div>
 
-            {vitalsTasks.length === 0 ? (
-              <div className="p-8 text-center rounded-xl bg-slate-900/40 border border-slate-800 text-slate-400 text-xs">
-                All scheduled inpatient vitals checks are currently up to date.
-              </div>
-            ) : (
-              <div className="space-y-3">
-                {vitalsTasks.map((task) => (
-                  <div
-                    key={task.task_id}
-                    className="p-4 rounded-xl bg-slate-900/60 border border-slate-800 flex items-center justify-between gap-4"
-                  >
-                    <div>
-                      <div className="flex items-center gap-2 mb-1">
-                        <span className="text-xs font-mono text-teal-400 font-bold">{task.room}</span>
-                        <span className="text-xs font-bold text-white">{task.patient}</span>
-                        <span className="text-[11px] text-slate-400">· Due: {task.due}</span>
-                      </div>
-                      <div className="text-xs text-slate-300">{task.parameter}</div>
+            <div className="space-y-3">
+              {vitalsTasks.map((task) => (
+                <div
+                  key={task.task_id}
+                  className="p-4 rounded-xl bg-slate-900/60 border border-slate-800 flex items-center justify-between gap-4"
+                >
+                  <div>
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="text-xs font-mono text-teal-400 font-bold">{task.room}</span>
+                      <span className="text-xs font-bold text-white">{task.patient}</span>
+                      <span className="text-[11px] text-slate-400">· Due: {task.due}</span>
                     </div>
-
-                    <button
-                      onClick={() => {
-                        setVitalsPatient(`${task.patient} (${task.room})`);
-                        setIsVitalsModalOpen(true);
-                      }}
-                      className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-teal-500 hover:bg-teal-400 text-slate-950 transition-colors cursor-pointer"
-                    >
-                      Log Now
-                    </button>
+                    <div className="text-xs text-slate-300">{task.parameter}</div>
                   </div>
-                ))}
-              </div>
-            )}
+
+                  <button
+                    onClick={() => {
+                      setVitalsPatient(`${task.patient} (${task.room})`);
+                      setIsVitalsModalOpen(true);
+                    }}
+                    className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-teal-500 hover:bg-teal-400 text-slate-950 transition-colors cursor-pointer"
+                  >
+                    Log Now
+                  </button>
+                </div>
+              ))}
+            </div>
           </div>
         )}
       </main>

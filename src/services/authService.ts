@@ -106,7 +106,7 @@ class AuthService {
         return {
           success: false,
           isDemoMode: false,
-          message: result.message || 'Invalid credentials. Please check your email address or ID.',
+          message: result.message || 'Invalid credentials. Please check your Patient ID or email.',
           errors: result.errors,
         };
       }
@@ -128,9 +128,6 @@ class AuthService {
         user: result.user,
         patient: result.patient,
         patientId: result.patientId || result.user?.patient_id,
-        doctorId: result.doctorId || result.user?.doctor_id,
-        staffId: result.staffId || result.user?.staff_id,
-        role: result.role || result.user?.role,
         token: result.token,
         mustChangePassword: result.mustChangePassword,
         tempToken: result.tempToken,
@@ -314,13 +311,8 @@ class AuthService {
         message: result.message || 'Registration successful.',
         user: result.user,
         patientId: result.patientId || result.user?.patient_id,
-        doctorId: result.doctorId || result.user?.doctor_id,
-        staffId: result.staffId || result.user?.staff_id,
-        role: result.role || result.user?.role,
         token: result.token,
         requiresEmailConfirmation: result.requiresEmailConfirmation,
-        requiresApproval: Boolean(result.requiresApproval),
-        status: result.status,
       };
     } catch {
       return {

@@ -59,7 +59,7 @@ async function runTests() {
 
     assert(regRes.ok && regData.success === true, 'New user registers through common registration endpoint');
     assert(regData.role === 'patient', 'New user receives strictly "patient" role (self-selection overridden)');
-    assert(/^P\d+$/.test(regData.patientId), `User assigned authoritative Patient ID: ${regData.patientId}`);
+    assert(/^P\d{6}$/.test(regData.patientId), `User assigned authoritative Patient ID: ${regData.patientId}`);
 
     const patientId = regData.patientId;
     const patientToken = regData.token;

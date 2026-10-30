@@ -66,12 +66,12 @@ interface LabItem {
   signed: boolean;
 }
 
-export const DoctorDashboard: React.FC<DoctorDashboardProps> = ({ user, onLogout }) => {
+export const DoctorDashboard: React.FC<DoctorDashboardProps> = ({ user, onLogout, onRoleSwitch }) => {
   const [activeTab, setActiveTab] = useState<'schedule' | 'inpatients' | 'labs'>('schedule');
+  const [isRoleMenuOpen, setIsRoleMenuOpen] = useState(false);
   const [schedule, setSchedule] = useState<AppointmentItem[]>([]);
   const [inpatients, setInpatients] = useState<InpatientItem[]>([]);
   const [labs, setLabs] = useState<LabItem[]>([]);
-  const [doctorProfile, setDoctorProfile] = useState<any>(null);
   const [selectedAppointment, setSelectedAppointment] = useState<AppointmentItem | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [filterStatus, setFilterStatus] = useState<string>('all');
@@ -91,7 +91,6 @@ export const DoctorDashboard: React.FC<DoctorDashboardProps> = ({ user, onLogout
         });
         const data = await res.json();
         if (data.success) {
-          setDoctorProfile(data.doctor || null);
           setSchedule(data.schedule || []);
           setInpatients(data.inpatientRounds || []);
           setLabs(data.pendingLabs || []);
@@ -237,24 +236,72 @@ export const DoctorDashboard: React.FC<DoctorDashboardProps> = ({ user, onLogout
           </nav>
 
           {/* Zone 3: Primary Action & Profile */}
-          <div className="flex items-center gap-2 sm:gap-2.5 shrink-0">
+          <div className="flex items-center gap-3 shrink-0">
             <div className="hidden sm:block text-right">
               <div className="text-xs font-medium text-white">{user?.name || 'Dr. Marcus Vance, MD'}</div>
               <div className="text-[10px] text-slate-400 font-mono">ID: {user?.doctor_id || 'DOC-7721'}</div>
             </div>
-            {/* Institutional Verified Role Badge (Single-Role Enforced for Security) */}
-            <div
-              className="inline-flex items-center justify-center gap-1.5 h-8 px-2.5 sm:px-3 rounded-lg border border-cyan-500/30 bg-cyan-950/40 text-xs font-medium text-slate-200 shrink-0 select-none shadow-xs"
-              title="Verified Institutional Role: Attending Physician"
-            >
-              <Stethoscope size={14} className="text-cyan-400 shrink-0" />
-              <span className="text-slate-400 hidden sm:inline">Role:</span>
-              <span className="text-cyan-300 font-bold">Doctor</span>
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setIsRoleMenuOpen(!isRoleMenuOpen)}
+                className="px-2.5 py-1.5 rounded-lg border border-slate-800 bg-slate-900 text-slate-300 hover:text-white text-xs font-medium flex items-center gap-1.5 transition-colors cursor-pointer"
+                title="Switch hospital workspace"
+              >
+                <span className="text-slate-500 hidden sm:inline">Role:</span>
+                <span className="text-cyan-400 font-bold">Doctor</span>
+                <ChevronRight size={13} className={`transform transition-transform text-slate-500 ${isRoleMenuOpen ? 'rotate-90' : ''}`} />
+              </button>
+
+              {isRoleMenuOpen && (
+                <div className="absolute right-0 mt-2 w-52 rounded-xl bg-slate-900 border border-slate-800 shadow-2xl p-1.5 z-50 text-xs">
+                  <div className="px-2.5 py-1 text-[10px] font-bold text-slate-500 uppercase tracking-wider border-b border-slate-800">
+                    Switch Workspace
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsRoleMenuOpen(false);
+                      onRoleSwitch?.('patient');
+                    }}
+                    className="w-full text-left px-2.5 py-1.5 rounded-lg text-slate-300 hover:text-white hover:bg-slate-800 transition-colors flex items-center justify-between cursor-pointer"
+                  >
+                    <span>Patient Portal</span>
+                    <span className="text-[10px] text-teal-400 font-mono">Care</span>
+                  </button>
+                  <div className="w-full text-left px-2.5 py-1.5 rounded-lg bg-cyan-500/10 text-cyan-300 font-bold flex items-center justify-between">
+                    <span>Doctor Workspace</span>
+                    <CheckCircle2 size={13} className="text-cyan-400" />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsRoleMenuOpen(false);
+                      onRoleSwitch?.('staff');
+                    }}
+                    className="w-full text-left px-2.5 py-1.5 rounded-lg text-slate-300 hover:text-white hover:bg-slate-800 transition-colors flex items-center justify-between cursor-pointer"
+                  >
+                    <span>Staff / Ward 4B</span>
+                    <span className="text-[10px] text-emerald-400 font-mono">Ops</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsRoleMenuOpen(false);
+                      onRoleSwitch?.('admin');
+                    }}
+                    className="w-full text-left px-2.5 py-1.5 rounded-lg text-indigo-300 hover:text-indigo-200 hover:bg-slate-800 transition-colors flex items-center justify-between cursor-pointer border-t border-slate-800 mt-1"
+                  >
+                    <span>Admin Governance</span>
+                    <span className="text-[10px] bg-indigo-500/20 text-indigo-400 px-1 rounded font-mono">Admin</span>
+                  </button>
+                </div>
+              )}
             </div>
 
             <button
               onClick={onLogout}
-              className="inline-flex items-center justify-center gap-1.5 h-8 px-2.5 sm:px-3 rounded-lg border border-slate-800 bg-slate-900 hover:bg-slate-800 text-xs text-slate-300 hover:text-white transition-colors cursor-pointer shrink-0"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-800 bg-slate-900 hover:bg-slate-800 text-xs text-slate-300 hover:text-white transition-colors cursor-pointer"
               title="Sign Out to Common Login"
             >
               <LogOut size={14} />
@@ -465,7 +512,7 @@ export const DoctorDashboard: React.FC<DoctorDashboardProps> = ({ user, onLogout
                   {/* Action buttons */}
                   <div className="pt-2 flex items-center justify-between border-t border-slate-800">
                     <span className="text-[11px] text-slate-500">
-                      Signed as {doctorProfile?.name || user?.name || 'Dr. Physician'} ({doctorProfile?.license || doctorProfile?.doctor_id || 'Staff'})
+                      Signed as Dr. Marcus Vance, MD (CA-MED-99412)
                     </span>
                     <button
                       onClick={handleSaveEncounter}
@@ -498,53 +545,47 @@ export const DoctorDashboard: React.FC<DoctorDashboardProps> = ({ user, onLogout
               </span>
             </div>
 
-            {inpatients.length === 0 ? (
-              <div className="p-8 text-center rounded-xl bg-slate-900/40 border border-slate-800 text-slate-400 text-xs">
-                No active inpatient admissions currently assigned to your clinical service.
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {inpatients.map((patient) => (
-                  <div key={patient.bed} className="p-4 rounded-xl bg-slate-900/60 border border-slate-800 space-y-3">
-                    <div className="flex items-start justify-between">
-                      <div>
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs font-mono font-bold text-teal-400 bg-slate-950 px-2 py-0.5 rounded border border-slate-800">
-                            {patient.bed}
-                          </span>
-                          <h4 className="text-sm font-bold text-white">{patient.patient_name}</h4>
-                          <span className="text-xs text-slate-500">({patient.age}y)</span>
-                        </div>
-                        <div className="text-[11px] text-slate-400 mt-1">ID: {patient.patient_id} · Day of stay: {patient.day_of_stay}</div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {inpatients.map((patient) => (
+                <div key={patient.bed} className="p-4 rounded-xl bg-slate-900/60 border border-slate-800 space-y-3">
+                  <div className="flex items-start justify-between">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-mono font-bold text-teal-400 bg-slate-950 px-2 py-0.5 rounded border border-slate-800">
+                          {patient.bed}
+                        </span>
+                        <h4 className="text-sm font-bold text-white">{patient.patient_name}</h4>
+                        <span className="text-xs text-slate-500">({patient.age}y)</span>
                       </div>
-                      <span
-                        className={`text-[10px] px-2 py-0.5 rounded font-mono ${
-                          patient.acuity === 'Stable'
-                            ? 'bg-teal-500/10 text-teal-300 border border-teal-500/20'
-                            : 'bg-amber-500/10 text-amber-300 border border-amber-500/20'
-                        }`}
-                      >
-                        {patient.acuity}
-                      </span>
+                      <div className="text-[11px] text-slate-400 mt-1">ID: {patient.patient_id} · Day of stay: {patient.day_of_stay}</div>
                     </div>
-
-                    <div className="text-xs text-slate-300 bg-slate-950/60 p-2.5 rounded-lg border border-slate-800/80">
-                      <span className="text-[10px] text-slate-500 uppercase block mb-0.5">Primary Diagnosis</span>
-                      {patient.diagnosis}
-                    </div>
-
-                    <div className="flex items-center justify-between text-xs text-slate-400 font-mono">
-                      <span>{patient.vitals}</span>
-                    </div>
-
-                    <div className="text-xs text-slate-400 border-t border-slate-800/80 pt-2">
-                      <span className="text-[10px] text-teal-400 block font-medium mb-0.5">Care Plan</span>
-                      {patient.plan}
-                    </div>
+                    <span
+                      className={`text-[10px] px-2 py-0.5 rounded font-mono ${
+                        patient.acuity === 'Stable'
+                          ? 'bg-teal-500/10 text-teal-300 border border-teal-500/20'
+                          : 'bg-amber-500/10 text-amber-300 border border-amber-500/20'
+                      }`}
+                    >
+                      {patient.acuity}
+                    </span>
                   </div>
-                ))}
-              </div>
-            )}
+
+                  <div className="text-xs text-slate-300 bg-slate-950/60 p-2.5 rounded-lg border border-slate-800/80">
+                    <span className="text-[10px] text-slate-500 uppercase block mb-0.5">Primary Diagnosis</span>
+                    {patient.diagnosis}
+                  </div>
+
+                  <div className="flex items-center justify-between text-xs text-slate-400 font-mono">
+                    <span>{patient.vitals}</span>
+                  </div>
+
+                  <div className="text-xs text-slate-400 border-t border-slate-800/80 pt-2">
+                    <span className="text-[10px] text-teal-400 block font-medium mb-0.5">Care Plan</span>
+                    {patient.plan}
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
         )}
 
@@ -558,46 +599,40 @@ export const DoctorDashboard: React.FC<DoctorDashboardProps> = ({ user, onLogout
               </div>
             </div>
 
-            {labs.length === 0 ? (
-              <div className="p-8 text-center rounded-xl bg-slate-900/40 border border-slate-800 text-slate-400 text-xs">
-                No diagnostic laboratory results pending physician review at this time.
-              </div>
-            ) : (
-              <div className="space-y-3">
-                {labs.map((lab) => (
-                  <div
-                    key={lab.lab_id}
-                    className="p-4 rounded-xl bg-slate-900/60 border border-slate-800 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4"
-                  >
-                    <div className="space-y-1">
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs font-mono text-slate-400">{lab.lab_id}</span>
-                        <span className="text-xs font-bold text-white">{lab.patient_name}</span>
-                        <span className="text-[11px] font-mono text-teal-400">({lab.patient_id})</span>
-                      </div>
-                      <div className="text-xs text-slate-300 font-medium">{lab.test}</div>
-                      <div className="text-xs text-slate-400 font-mono">{lab.result}</div>
+            <div className="space-y-3">
+              {labs.map((lab) => (
+                <div
+                  key={lab.lab_id}
+                  className="p-4 rounded-xl bg-slate-900/60 border border-slate-800 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4"
+                >
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-mono text-slate-400">{lab.lab_id}</span>
+                      <span className="text-xs font-bold text-white">{lab.patient_name}</span>
+                      <span className="text-[11px] font-mono text-teal-400">({lab.patient_id})</span>
                     </div>
-
-                    <div className="flex items-center gap-3">
-                      <span className="text-xs text-teal-400 font-mono">{lab.status}</span>
-                      {lab.signed ? (
-                        <span className="flex items-center gap-1 text-xs text-slate-400 bg-slate-800 px-3 py-1.5 rounded-lg font-mono">
-                          <Check size={14} className="text-teal-400" /> Signed
-                        </span>
-                      ) : (
-                        <button
-                          onClick={() => handleSignLab(lab.lab_id)}
-                          className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-teal-500 hover:bg-teal-400 text-slate-950 transition-colors cursor-pointer"
-                        >
-                          Sign Off Lab
-                        </button>
-                      )}
-                    </div>
+                    <div className="text-xs text-slate-300 font-medium">{lab.test}</div>
+                    <div className="text-xs text-slate-400 font-mono">{lab.result}</div>
                   </div>
-                ))}
-              </div>
-            )}
+
+                  <div className="flex items-center gap-3">
+                    <span className="text-xs text-teal-400 font-mono">{lab.status}</span>
+                    {lab.signed ? (
+                      <span className="flex items-center gap-1 text-xs text-slate-400 bg-slate-800 px-3 py-1.5 rounded-lg font-mono">
+                        <Check size={14} className="text-teal-400" /> Signed
+                      </span>
+                    ) : (
+                      <button
+                        onClick={() => handleSignLab(lab.lab_id)}
+                        className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-teal-500 hover:bg-teal-400 text-slate-950 transition-colors cursor-pointer"
+                      >
+                        Sign Off Lab
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
         )}
       </main>

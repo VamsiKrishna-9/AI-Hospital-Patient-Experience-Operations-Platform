@@ -737,7 +737,8 @@ export const AppointmentBookingWizard: React.FC<AppointmentBookingWizardProps> =
               <div className="p-3.5 rounded-xl bg-[#F5F8FA] border border-[#DCE5EC] text-xs text-[#334155] flex items-start gap-2.5">
                 <CheckCircle2 size={16} className="text-[#047857] shrink-0 mt-0.5" />
                 <div className="leading-relaxed">
-                  Upon confirmation, this booking is registered directly into the official hospital appointment schedule.
+                  Upon confirmation, this booking is registered directly into{' '}
+                  <code className="text-[#047857] font-mono text-xs font-bold">silver_appointments</code>.
                   You can reschedule or cancel anytime up to 24 hours prior.
                 </div>
               </div>

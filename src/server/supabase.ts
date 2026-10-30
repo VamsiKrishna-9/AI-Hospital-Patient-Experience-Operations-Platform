@@ -128,16 +128,10 @@ export async function testSupabaseConnection(): Promise<{
   }
 
   try {
-    // Probe the authoritative public.app_users table with timeout protection
-    const probePromise = client
+    // Probe the authoritative public.app_users table
+    const { count, error } = await client
       .from('app_users')
       .select('id', { count: 'exact', head: true });
-
-    const timeoutPromise = new Promise<{ data: null; count: null; error: { message: string } }>((_, reject) => {
-      setTimeout(() => reject(new Error('Supabase connection probe timed out after 3500ms')), 3500);
-    });
-
-    const { error } = (await Promise.race([probePromise, timeoutPromise])) as any;
 
     if (error) {
       return {
