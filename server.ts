@@ -3560,9 +3560,22 @@ app.post('/api/doctor/encounter', authenticateToken, async (req: Request, res: R
   const client = getSupabaseAdmin();
   const appUser = (req as any).appUser;
   const encId = `ENC${Date.now().toString().slice(-6)}`;
-  const docId = appUser?.doctor_id || 'DOC-7721';
+  let docId = appUser?.doctor_id || null;
   const nowIso = new Date().toISOString();
   const today = nowIso.split('T')[0];
+
+  if (client && !docId && appUser?.email) {
+    try {
+      const { data: docData } = await client
+        .from('silver_doctors')
+        .select('doctor_id')
+        .eq('email', appUser.email)
+        .maybeSingle();
+      if (docData?.doctor_id) docId = docData.doctor_id;
+    } catch {
+      // keep docId null
+    }
+  }
 
   if (client && patientId) {
     try {
@@ -3639,11 +3652,28 @@ app.get('/api/doctor/staff-candidates', authenticateToken, async (req: Request, 
     return res.status(503).json({ success: false, message: 'Database connection unavailable.' });
   }
 
+  const { department, role, search } = req.query;
+
   try {
-    const { data, error } = await client
+    let query = client
       .from('silver_staff')
       .select('staff_id, staff_name, role, department, shift, hospital_branch, is_active')
       .order('staff_name', { ascending: true });
+
+    if (department && typeof department === 'string' && department.toLowerCase() !== 'all') {
+      query = query.ilike('department', `%${department.trim()}%`);
+    }
+
+    if (role && typeof role === 'string' && role.toLowerCase() !== 'all') {
+      query = query.ilike('role', `%${role.trim()}%`);
+    }
+
+    if (search && typeof search === 'string' && search.trim()) {
+      const term = search.trim();
+      query = query.or(`staff_name.ilike.%${term}%,staff_id.ilike.%${term}%,department.ilike.%${term}%`);
+    }
+
+    const { data, error } = await query;
 
     if (error) {
       return res.status(500).json({ success: false, message: error.message });
