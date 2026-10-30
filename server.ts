@@ -205,6 +205,22 @@ async function authenticateToken(req: Request, res: Response, next: NextFunction
             .single();
           dbUser = data;
         }
+        if (!dbUser && /^STF/i.test(userIdOrSuffix)) {
+          const { data } = await admin
+            .from('app_users')
+            .select('*')
+            .eq('staff_id', userIdOrSuffix)
+            .maybeSingle();
+          dbUser = data;
+        }
+        if (!dbUser && /^DOC/i.test(userIdOrSuffix)) {
+          const { data } = await admin
+            .from('app_users')
+            .select('*')
+            .eq('doctor_id', userIdOrSuffix)
+            .maybeSingle();
+          dbUser = data;
+        }
         if (!dbUser && userIdOrSuffix.includes('@')) {
           const { data } = await admin
             .from('app_users')
@@ -254,18 +270,21 @@ async function authenticateToken(req: Request, res: Response, next: NextFunction
     }
 
     const testPatientId = 'P1001';
+    const resolvedStaffId = role === 'staff' ? (userIdOrSuffix && /^STF/i.test(userIdOrSuffix) ? userIdOrSuffix : 'STF-4401') : null;
+    const resolvedDoctorId = role === 'doctor' ? (userIdOrSuffix && /^DOC/i.test(userIdOrSuffix) ? userIdOrSuffix : 'DOC-7721') : null;
+
     (req as any).authUser = { id: `demo-${role}-user`, email: role === 'patient' ? 'vvkrishna879@gmail.com' : `${role}@hospital.org` };
     (req as any).appUser = {
       id: `demo-${role}-user`,
       role,
       patient_id: role === 'patient' ? testPatientId : null,
-      doctor_id: role === 'doctor' ? 'DOC-7721' : null,
-      staff_id: role === 'staff' ? 'STF-4401' : null,
+      doctor_id: resolvedDoctorId,
+      staff_id: resolvedStaffId,
       full_name:
         role === 'doctor'
           ? 'Dr. Marcus Vance, MD'
           : role === 'staff'
-          ? 'Sarah Jenkins, RN'
+          ? (resolvedStaffId ? `Staff ${resolvedStaffId}` : 'Clinical Staff')
           : role === 'admin'
           ? 'Arthur Sterling, MHA'
           : 'Vamsi Krishna Vadlamudi',
@@ -3607,20 +3626,24 @@ app.post('/api/doctor/encounter', authenticateToken, async (req: Request, res: R
   });
 });
 
+// Operational Room Overrides Map (Tracks real interactive staff operations per date and room)
+const OPERATIONAL_ROOM_OVERRIDES = new Map<string, any>();
+
 // 17. Staff Ward & Clinical Operations Overview
 app.get('/api/staff/overview', authenticateToken, async (req: Request, res: Response) => {
   const client = getSupabaseAdmin();
   const appUser = (req as any).appUser;
+  const targetDate = req.query.date ? String(req.query.date) : getHospitalLocalDateTime().dateStr;
 
-  // 1. Resolve Staff Member
+  // 1. Resolve Staff Member Profile strictly from appUser and canonical silver_staff
   let staff = {
-    staff_id: appUser?.staff_id || 'STF-4401',
-    name: appUser?.full_name || 'Sarah Jenkins, RN',
-    role: 'Clinical Nurse Lead',
-    department: 'Inpatient Ward 4B & Clinical Triage',
+    staff_id: appUser?.staff_id || '',
+    name: appUser?.full_name || appUser?.name || 'Staff Member',
+    role: 'Clinical Support',
+    department: 'General Ward',
     shift: 'Day Shift (07:00 - 19:30)',
-    station: 'Station 4B Central Monitor',
-    assignedWing: 'West & North Pavilion',
+    station: 'Hospital Staff Portal',
+    assignedWing: 'Main Campus',
   };
 
   if (client) {
@@ -3630,19 +3653,17 @@ app.get('/api/staff/overview', authenticateToken, async (req: Request, res: Resp
         stfQuery = stfQuery.eq('staff_id', appUser.staff_id);
       } else if (appUser?.email) {
         stfQuery = stfQuery.eq('email', appUser.email);
-      } else {
-        stfQuery = stfQuery.eq('staff_id', 'STF-4401');
       }
-      const { data: stfData } = await stfQuery.single();
+      const { data: stfData } = await stfQuery.maybeSingle();
       if (stfData) {
         staff = {
           staff_id: stfData.staff_id,
-          name: stfData.staff_name || 'Clinical Staff',
+          name: stfData.staff_name || appUser?.full_name || 'Clinical Staff',
           role: stfData.role || 'Clinical Nurse',
           department: stfData.department || 'Inpatient Care',
           shift: stfData.shift || 'Day Shift (07:00 - 19:30)',
-          station: 'Station 4B Central Monitor',
-          assignedWing: stfData.hospital_branch || 'West & North Pavilion',
+          station: 'Station Central',
+          assignedWing: stfData.hospital_branch || 'Main Campus',
         };
       }
     } catch {
@@ -3650,131 +3671,236 @@ app.get('/api/staff/overview', authenticateToken, async (req: Request, res: Resp
     }
   }
 
-  // 2. Build Live Ward Beds from silver_encounters
-  let wardBeds: any[] = [];
+  // 2. Query Doctor-to-Staff Assignments strictly for targetDate AND authenticated staff member
+  let staffAssignments: any[] = [];
+  let patientsList: any[] = [];
+  let doctorsList: any[] = [];
+
   if (client) {
     try {
-      const { data: encData } = await client
-        .from('silver_encounters')
-        .select('encounter_id, patient_id, diagnosis, treatment_plan, silver_patients(name)')
-        .order('encounter_date', { ascending: false })
-        .limit(12);
-
-      const roomWings = [
-        'West Wing', 'West Wing', 'West Wing', 'West Wing',
-        'West Wing', 'West Wing', 'West Wing', 'West Wing',
-        'North Wing', 'North Wing', 'North Wing', 'North Wing'
-      ];
-      const defaultStatuses: ('Occupied' | 'Available' | 'Cleaning' | 'Reserved')[] = [
-        'Occupied', 'Occupied', 'Cleaning', 'Available',
-        'Occupied', 'Occupied', 'Reserved', 'Available',
-        'Occupied', 'Occupied', 'Cleaning', 'Available'
-      ];
-
-      wardBeds = Array.from({ length: 12 }).map((_, idx) => {
-        const roomNum = 401 + idx;
-        const enc: any = encData && encData[idx] ? encData[idx] : null;
-        const status = defaultStatuses[idx];
-        const isOccupied = status === 'Occupied';
-        const patientName = enc ? (Array.isArray(enc.silver_patients) ? enc.silver_patients[0]?.name : enc.silver_patients?.name) || 'Patient' : 'Patient';
-        return {
-          id: `BED-${roomNum}`,
-          room: `Room ${roomNum}`,
-          wing: roomWings[idx],
-          status,
-          patient: isOccupied && enc ? `${patientName} (${enc.patient_id})` : (status === 'Reserved' ? 'Incoming from ED' : 'None'),
-          condition: isOccupied && enc ? (enc.diagnosis || 'Post-Op Monitoring') : (status === 'Cleaning' ? 'Sanitization in progress' : 'Ready for admission'),
-          nurse: staff.name,
-          oxygen: isOccupied ? (idx % 2 === 0 ? 'Room Air' : '2L Nasal Cannula') : (status === 'Available' ? 'Central Wall Active' : 'None'),
-        };
-      });
-    } catch {
-      wardBeds = [];
-    }
-  }
-
-  // 3. Build Live Triage Queue from silver_appointments and silver_patients
-  let triageQueue: any[] = [];
-  if (client) {
-    try {
-      const { data: aptData } = await client
-        .from('silver_appointments')
-        .select('appointment_id, patient_id, reason, symptoms, status, silver_patients(name, age)')
-        .order('created_at', { ascending: false })
-        .limit(4);
-
-      if (aptData && aptData.length > 0) {
-        const acuityLevels = [
-          'Level 2 - Emergent',
-          'Level 3 - Urgent',
-          'Level 4 - Routine',
-          'Level 3 - Urgent',
-        ];
-        triageQueue = aptData.map((a: any, idx: number) => ({
-          ticket: `T-10${idx + 1}`,
-          patient: a.silver_patients?.name || `Patient ${a.patient_id}`,
-          age: Number(a.silver_patients?.age) || 45,
-          arrival: `${(idx + 1) * 8} mins ago`,
-          acuity: acuityLevels[idx % acuityLevels.length],
-          complaint: a.reason || a.symptoms || 'Clinical triage consultation',
-          status: idx === 0 ? 'Triage Room 1' : 'Vitals Pending',
-          assignedBed: idx === 0 ? 'Bed 407' : 'TBD',
-        }));
+      const staffIdFilter = staff.staff_id ? [staff.staff_id] : [];
+      // Also match normalized variants (e.g. STF-4183 vs STF004183)
+      if (staff.staff_id.includes('-')) {
+        const digits = staff.staff_id.replace(/\D/g, '');
+        if (digits) staffIdFilter.push(`STF${digits.padStart(6, '0')}`);
       }
-    } catch {
-      triageQueue = [];
+
+      const [asgRes, patRes, docRes] = await Promise.all([
+        staffIdFilter.length > 0
+          ? client
+              .from('silver_staff_assignment')
+              .select(`
+                assignment_id,
+                staff_id,
+                patient_id,
+                doctor_id,
+                assignment_type,
+                assignment_date,
+                start_time,
+                end_time,
+                priority,
+                assignment_status,
+                notes,
+                silver_patients(patient_id, name, age, gender),
+                silver_doctors(doctor_id, doctor_name, specialty),
+                silver_staff!silver_staff_assignment_staff_id_fkey(staff_id, staff_name, role, department)
+              `)
+              .eq('assignment_date', targetDate)
+              .in('staff_id', staffIdFilter)
+              .order('start_time', { ascending: true })
+          : Promise.resolve({ data: [] as any[] }),
+        client.from('silver_patients').select('patient_id, name, age, gender').limit(50),
+        client.from('silver_doctors').select('doctor_id, doctor_name, specialty').eq('is_active', true).limit(50),
+      ]);
+
+      if (patRes.data) patientsList = patRes.data;
+      if (docRes.data) doctorsList = docRes.data;
+
+      // STRICT AUTHENTICATION & RELATIONSHIP CHECK:
+      // Only include an assignment when:
+      // - Valid patient record exists in silver_patients
+      // - Valid doctor record exists in silver_doctors
+      // - Valid staff record exists in silver_staff
+      // - The assignment belongs to the authenticated staff member
+      // NEVER fall back to other staff members' assignments!
+      if (asgRes.data && asgRes.data.length > 0) {
+        staffAssignments = asgRes.data
+          .filter((a: any) => staffIdFilter.includes(a.staff_id))
+          .filter((a: any) => a.silver_patients && a.silver_doctors && a.silver_staff)
+          .map((a: any) => {
+            let roomName = 'Clinical Ward';
+            let bedName = 'Bed';
+            if (a.notes && a.notes.includes('[Ward Location:')) {
+              const match = a.notes.match(/\[Ward Location:\s*([^(\]]+)(?:\(([^)]+)\))?\]/);
+              if (match) {
+                roomName = match[1].trim();
+                bedName = match[2] ? match[2].trim() : 'Bed 1';
+              }
+            }
+
+            return {
+              assignmentId: a.assignment_id,
+              patientId: a.patient_id,
+              patientName: a.silver_patients?.name || 'Patient information unavailable',
+              doctorId: a.doctor_id,
+              doctorName: a.silver_doctors?.doctor_name || 'Attending Physician',
+              specialty: a.silver_doctors?.specialty || 'General Practice',
+              room: roomName,
+              bed: bedName,
+              task: a.assignment_type || 'Clinical Care & Monitoring',
+              instructions: a.notes && a.notes !== 'Not Provided' ? a.notes : 'Clinical instructions provided by attending physician.',
+              assignmentDate: a.assignment_date,
+              startTime: a.start_time ? String(a.start_time).slice(0, 5) : '08:00',
+              dueTime: a.end_time ? String(a.end_time).slice(0, 5) : '16:00',
+              priority: a.priority || 'Normal',
+              status: a.assignment_status || 'Scheduled',
+              staffName: a.silver_staff?.staff_name || staff.name,
+              createdAt: a.assignment_date,
+            };
+          });
+      }
+    } catch (err) {
+      console.error('Failed to query doctor-to-staff assignments', err);
     }
   }
 
-  // 4. Build Vitals Tasks
-  const vitalsTasks = wardBeds
-    .filter((b) => b.status === 'Occupied')
-    .slice(0, 3)
-    .map((b, idx) => ({
-      task_id: `VIT-0${idx + 1}`,
-      patient: b.patient.split(' (')[0] || 'Inpatient',
-      room: b.room,
-      due: `${14 + idx}:00`,
-      parameter: idx === 0 ? 'Full Vitals & Telemetry Rhythm' : idx === 1 ? 'Orthostatic BP & Weight Check' : 'SpO2 continuous & Temperature',
-      status: idx === 0 ? 'Due Now' : 'Upcoming',
-    }));
+  // 3. Room Inventory from actual operational table or overrides
+  // Note: Canonical Silver schema does NOT include silver_rooms or silver_admissions.
+  // We strictly avoid fabricating fake room definitions or sample occupancy.
+  const wardBeds: any[] = [];
+  for (const [key, override] of OPERATIONAL_ROOM_OVERRIDES.entries()) {
+    if (key.startsWith(`${targetDate}_`)) {
+      wardBeds.push({
+        id: override.roomId,
+        room: override.roomId.replace('RM-', 'Room '),
+        bed: 'Bed A',
+        floor: 'Floor 4',
+        wing: 'West Wing',
+        status: override.status,
+        patientId: override.patientId || null,
+        patientName: override.patientName || null,
+        admissionType: override.status === 'Occupied' ? 'Inpatient' : 'None',
+        patient: override.patientName || 'None',
+        doctor: override.doctorId ? `Doctor ${override.doctorId}` : 'None',
+        staff: staff.name,
+        admissionDate: override.status === 'Occupied' ? `${targetDate}` : 'N/A',
+        admissionInfo: override.admissionInfo || '',
+        condition: override.status === 'Occupied' ? 'Monitored' : 'Ready',
+        oxygen: override.status === 'Occupied' ? 'Active' : 'Standby',
+      });
+    }
+  }
 
-  const occupiedBeds = wardBeds.filter((b) => b.status === 'Occupied').length;
-  const availableBeds = wardBeds.filter((b) => b.status === 'Available').length;
-  const cleaningBeds = wardBeds.filter((b) => b.status === 'Cleaning').length;
+  // 4. Emergency Triage Queue: Canonical Silver schema does not have silver_triage.
+  // We do NOT turn outpatient appointments into fake emergency triage tickets.
+  const triageQueue: any[] = [];
 
+  // 5. Scheduled Vitals Tasks: Canonical Silver schema does not have silver_vitals.
+  // We do NOT turn general staff assignments into fake vitals tasks.
+  const vitalsTasks: any[] = [];
+
+  // 6. Calculate verified dashboard metrics strictly from actual records
   const stats = {
-    occupiedBeds,
-    totalBeds: wardBeds.length || 12,
-    availableBeds,
-    cleaningBeds,
+    totalBeds: wardBeds.length,
+    occupiedBeds: wardBeds.filter((b) => b.status === 'Occupied').length,
+    availableBeds: wardBeds.filter((b) => b.status === 'Available').length,
+    reservedBeds: wardBeds.filter((b) => b.status === 'Reserved').length,
+    cleaningBeds: wardBeds.filter((b) => b.status === 'Cleaning').length,
+    maintenanceBeds: wardBeds.filter((b) => b.status === 'Maintenance').length,
+    myAssignmentsCount: staffAssignments.filter((a) => a.status !== 'Completed' && a.status !== 'Cancelled').length,
+    pendingTasksCount: vitalsTasks.filter((t) => t.status === 'Due Now' || t.status === 'Upcoming').length,
+    completedTasksCount: vitalsTasks.filter((t) => t.status === 'Completed').length,
+    overdueTasksCount: 0,
     triageWaiting: triageQueue.length,
-    pendingVitals: vitalsTasks.length,
-    criticalAlerts: 1,
   };
 
   return res.json({
     success: true,
+    targetDate,
     staff,
     stats,
     wardBeds,
+    staffAssignments,
     triageQueue,
     vitalsTasks,
+    patientsList,
+    doctorsList,
+    schemaNotice: {
+      roomsTableExists: false,
+      admissionsTableExists: false,
+      triageTableExists: false,
+      vitalsTableExists: false,
+      message: 'Canonical Silver database contains silver_patients, silver_doctors, silver_staff, silver_appointments, silver_encounters, silver_prescriptions, silver_lab_results, silver_feedback, and silver_staff_assignment. Operational tables for room inventory (silver_rooms / silver_admissions), emergency triage (silver_triage), and scheduled vitals (silver_vitals) are not provisioned in Supabase PostgreSQL.',
+    },
   });
 });
 
-app.post('/api/staff/update-bed', authenticateToken, (req: Request, res: Response) => {
-  const { bedId, status } = req.body;
+app.post('/api/staff/rooms/update-status', authenticateToken, async (req: Request, res: Response) => {
+  const { roomId, status, patientId, doctorId, admissionInfo, targetDate } = req.body;
+  const client = getSupabaseAdmin();
+  const dateStr = targetDate || getHospitalLocalDateTime().dateStr;
+  const nowIso = new Date().toISOString();
+
+  if (!roomId || !status) {
+    return res.status(400).json({ success: false, message: 'Room ID and status are required.' });
+  }
+
+  let verifiedPatientName: string | null = null;
+  if (client && patientId && status === 'Occupied') {
+    try {
+      const { data: pRec } = await client.from('silver_patients').select('name').eq('patient_id', patientId).maybeSingle();
+      verifiedPatientName = pRec?.name || 'Patient information unavailable';
+    } catch {
+      verifiedPatientName = 'Patient information unavailable';
+    }
+  }
+
+  // Persist operational room status override for the date
+  OPERATIONAL_ROOM_OVERRIDES.set(`${dateStr}_${roomId}`, {
+    roomId,
+    status,
+    patientId: status === 'Occupied' ? patientId : null,
+    patientName: verifiedPatientName,
+    doctorId: status === 'Occupied' ? doctorId : null,
+    admissionInfo,
+    timestamp: nowIso,
+  });
+
   return res.json({
     success: true,
-    message: `Bed ${bedId || 'assigned'} status updated to ${status}.`,
-    bedId,
+    message: `Room ${roomId} status updated to ${status} successfully.`,
+    roomId,
+    status,
+    patientName: verifiedPatientName,
+    timestamp: nowIso,
+  });
+});
+
+app.post('/api/staff/assignments/update', authenticateToken, async (req: Request, res: Response) => {
+  const { assignmentId, status } = req.body;
+  const client = getSupabaseAdmin();
+
+  if (client && assignmentId && status) {
+    try {
+      await client
+        .from('silver_staff_assignment')
+        .update({ assignment_status: status, updated_at: new Date().toISOString() })
+        .eq('assignment_id', assignmentId);
+    } catch (err) {
+      console.error('Failed to update assignment status in database', err);
+    }
+  }
+
+  return res.json({
+    success: true,
+    message: `Assignment status updated to ${status}.`,
+    assignmentId,
     status,
   });
 });
 
 app.post('/api/staff/log-vitals', authenticateToken, async (req: Request, res: Response) => {
-  const { patientName, bp, hr, temp, spo2 } = req.body;
+  const { patientId, patientName, bp, hr, temp, spo2 } = req.body;
   const client = getSupabaseAdmin();
   const nowIso = new Date().toISOString();
 
@@ -3783,7 +3909,7 @@ app.post('/api/staff/log-vitals', authenticateToken, async (req: Request, res: R
       const vitId = `VIT${Date.now().toString().slice(-6)}`;
       await client.from('silver_encounters').insert({
         encounter_id: vitId,
-        patient_id: 'P1001',
+        patient_id: patientId || null,
         encounter_date: nowIso.split('T')[0],
         encounter_type: 'Nursing Vitals Triage',
         chief_complaint: 'Routine Vitals Check',
