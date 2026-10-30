@@ -63,11 +63,11 @@ export const AiHospitalAssistantLauncher: React.FC<AiHospitalAssistantLauncherPr
         <div className="fixed bottom-6 right-6 z-40 flex items-center gap-3">
           {/* Subtle Attention Prompt Pill */}
           <div
-            className={`hidden sm:flex items-center gap-2 px-3.5 py-2 rounded-2xl bg-white/95 text-slate-800 text-xs font-bold shadow-xl border border-teal-200/80 backdrop-blur-md transition-all duration-300 animate-in fade-in slide-in-from-right-4 ${
+            className={`hidden sm:flex items-center gap-2 px-3.5 py-2 rounded-2xl bg-slate-900/95 text-slate-100 text-xs font-bold shadow-xl border border-teal-500/30 backdrop-blur-md transition-all duration-300 animate-in fade-in slide-in-from-right-4 ${
               showTooltip ? 'opacity-100 scale-100' : 'opacity-90'
             }`}
           >
-            <Sparkles size={14} className="text-teal-600 animate-pulse" />
+            <Sparkles size={14} className="text-teal-400 animate-pulse" />
             <span>Need hospital help? Ask AI</span>
           </div>
 

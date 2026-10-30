@@ -3995,6 +3995,134 @@ app.post('/api/doctor/encounter', authenticateToken, async (req: Request, res: R
   });
 });
 
+// 15b. Direct Inpatient Admission Endpoint (Transfer from Checkup Clinic to Hospital Ward Bed)
+app.post('/api/doctor/admit-patient', authenticateToken, async (req: Request, res: Response) => {
+  const {
+    patientId,
+    patientName,
+    appointmentId,
+    bedId,
+    room,
+    diagnosis,
+    acuity,
+    admittingNotes,
+    treatmentPlan,
+    assignedStaffId,
+  } = req.body;
+  const client = getSupabaseAdmin();
+  const appUser = (req as any).appUser;
+  const docId = appUser?.doctor_id || 'DOC100002';
+  const nowIso = new Date().toISOString();
+  const today = nowIso.split('T')[0];
+  const encId = `ENC-ADM-${Date.now().toString().slice(-6)}`;
+
+  if (!patientId || (!bedId && !room)) {
+    return res.status(400).json({ success: false, error: 'patientId and bedId are required for hospital admission.' });
+  }
+
+  try {
+    // 1. Resolve patient name if not provided
+    let ptName = patientName;
+    if (!ptName && client) {
+      const { data: pt } = await client.from('silver_patients').select('name').eq('patient_id', patientId).maybeSingle();
+      if (pt) ptName = pt.name;
+    }
+    ptName = ptName || `Patient ${patientId}`;
+
+    // 2. Resolve assigned staff name if specified
+    let staffName = '';
+    if (assignedStaffId && client) {
+      const { data: stf } = await client.from('silver_staff').select('staff_name, role').eq('staff_id', assignedStaffId).maybeSingle();
+      if (stf) staffName = `${stf.staff_name} (${stf.role})`;
+    }
+
+    // 3. Assign hospital ward bed
+    const bedRecord = assignHospitalWardBed({
+      bedIdOrRoom: bedId || room,
+      patientId,
+      patientName: ptName,
+      staffId: assignedStaffId,
+      staffName,
+      condition: diagnosis || 'Inpatient Admission',
+    });
+
+    const targetBedLabel = bedRecord ? `${bedRecord.room} (${bedRecord.bed})` : (room || bedId);
+
+    // 4. Insert Inpatient Encounter in Supabase
+    if (client) {
+      try {
+        await client.from('silver_encounters').insert({
+          encounter_id: encId,
+          patient_id: patientId,
+          doctor_id: docId,
+          appointment_id: appointmentId || null,
+          encounter_date: today,
+          encounter_type: 'Inpatient Admission',
+          chief_complaint: diagnosis || 'Hospital Ward Admission',
+          diagnosis: diagnosis || 'Admitted for in-hospital monitoring',
+          treatment_plan: treatmentPlan || `Admitted to ${targetBedLabel}. Protocol: ${acuity || 'Observation'}. ${admittingNotes || ''}`.trim(),
+          notes: `[Inpatient Bed: ${targetBedLabel}] [Acuity: ${acuity || 'Observation'}] ${admittingNotes || 'Direct hospital admission ordered by attending physician.'}`,
+          created_at: nowIso,
+          updated_at: nowIso,
+        });
+
+        // 5. If originating from appointment, update appointment status
+        if (appointmentId) {
+          await client
+            .from('silver_appointments')
+            .update({
+              status: 'Completed',
+              notes: `Admitted to Inpatient Ward: ${targetBedLabel}.`,
+              updated_at: nowIso,
+            })
+            .eq('appointment_id', appointmentId);
+        }
+
+        // 6. If bedside staff assigned, create silver_staff_assignment record
+        if (assignedStaffId) {
+          const asnId = `ASN${Date.now()}`;
+          await client.from('silver_staff_assignment').insert({
+            assignment_id: asnId,
+            staff_id: assignedStaffId,
+            patient_id: patientId,
+            doctor_id: docId,
+            encounter_id: encId,
+            appointment_id: appointmentId || null,
+            assignment_type: 'Inpatient Bedside Care',
+            assignment_date: today,
+            start_time: '08:00:00',
+            end_time: '20:00:00',
+            priority: acuity === 'Critical' ? 'Critical' : acuity === 'Guarded' ? 'Urgent' : 'Normal',
+            assignment_status: 'Scheduled',
+            notes: `[Inpatient Bed: ${targetBedLabel}] ${admittingNotes || 'Direct bedside care order'}`,
+          });
+        }
+      } catch (dbErr) {
+        console.error('Error saving inpatient admission to database:', dbErr);
+      }
+    }
+
+    return res.json({
+      success: true,
+      message: `Patient ${ptName} successfully admitted to ${targetBedLabel}.`,
+      admission: {
+        encounterId: encId,
+        patientId,
+        patientName: ptName,
+        bed: targetBedLabel,
+        bedRecord,
+        acuity: acuity || 'Observation',
+        diagnosis,
+        date: today,
+      },
+      wardBeds: getHospitalWardBeds(),
+    });
+  } catch (err: any) {
+    console.error('Error admitting patient to ward bed:', err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // --- Doctor & Staff Connected Workflow Endpoints ---
 
 // 1. Get Available Staff Candidates for Doctor Assignment

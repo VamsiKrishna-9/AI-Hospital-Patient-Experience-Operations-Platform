@@ -192,6 +192,17 @@ export const DoctorDashboard: React.FC<DoctorDashboardProps> = ({ user, onLogout
   const [inpatientAssignSuccess, setInpatientAssignSuccess] = useState<string | null>(null);
   const [inpatientAssignError, setInpatientAssignError] = useState<string | null>(null);
 
+  // Outpatient Direct Inpatient Admission Modal State
+  const [isAdmitModalOpen, setIsAdmitModalOpen] = useState(false);
+  const [admitBedId, setAdmitBedId] = useState('');
+  const [admitAcuity, setAdmitAcuity] = useState<'Observation' | 'Stable' | 'Guarded' | 'Critical'>('Observation');
+  const [admitDiagnosis, setAdmitDiagnosis] = useState('');
+  const [admitNotes, setAdmitNotes] = useState('');
+  const [admitStaffId, setAdmitStaffId] = useState('');
+  const [isSubmittingAdmission, setIsSubmittingAdmission] = useState(false);
+  const [admissionSuccessNotice, setAdmissionSuccessNotice] = useState<string | null>(null);
+  const [admissionError, setAdmissionError] = useState<string | null>(null);
+
   const loadWardBeds = async () => {
     setIsLoadingWardBeds(true);
     try {
@@ -321,6 +332,99 @@ export const DoctorDashboard: React.FC<DoctorDashboardProps> = ({ user, onLogout
       setInpatientAssignError(err.message || 'Failed to submit staff and bed assignment.');
     } finally {
       setIsSubmittingInpatientAssignment(false);
+    }
+  };
+
+  const openAdmitModal = () => {
+    if (!selectedAppointment) return;
+    setAdmissionError(null);
+    setAdmissionSuccessNotice(null);
+    setAdmitDiagnosis(selectedAppointment.chief_complaint || selectedAppointment.type || encounterNote || 'Acute Inpatient Monitoring');
+    setAdmitNotes(
+      encounterNote
+        ? `Outpatient clinic findings: ${encounterNote.slice(0, 150)}`
+        : 'Admitted from outpatient checkup for continuous ward monitoring, telemetry, and clinical care protocol.'
+    );
+    setAdmitAcuity('Observation');
+
+    // Pick first available bed or default
+    const firstFree = wardBeds.find((b) => b.status === 'Available');
+    setAdmitBedId(firstFree?.id || (wardBeds[0]?.id || 'BED-401'));
+
+    // Pick nursing staff candidate if available
+    const nursingStaff = staffCandidates.find(
+      (s) => s.role.toLowerCase().includes('nurse') || s.department.toLowerCase().includes('ward')
+    );
+    setAdmitStaffId(nursingStaff?.staff_id || (staffCandidates[0]?.staff_id || ''));
+
+    setIsAdmitModalOpen(true);
+    loadWardBeds();
+    loadStaffCandidates();
+  };
+
+  const handleConfirmAdmission = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedAppointment || !admitBedId) {
+      setAdmissionError('Please select an available hospital ward bed.');
+      return;
+    }
+
+    setIsSubmittingAdmission(true);
+    setAdmissionError(null);
+    setAdmissionSuccessNotice(null);
+
+    try {
+      const token = sessionStorage.getItem('mediai_patient_auth_token');
+      const selectedBedObj = wardBeds.find((b) => b.id === admitBedId);
+      const res = await fetch('/api/doctor/admit-patient', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({
+          patientId: selectedAppointment.patient_id,
+          patientName: selectedAppointment.patient_name,
+          appointmentId: selectedAppointment.appointment_id,
+          bedId: admitBedId,
+          room: selectedBedObj?.room,
+          diagnosis: admitDiagnosis,
+          acuity: admitAcuity,
+          admittingNotes: admitNotes,
+          assignedStaffId: admitStaffId || undefined,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || 'Failed to complete inpatient admission.');
+      }
+
+      setAdmissionSuccessNotice(data.message || 'Patient successfully admitted to hospital ward bed.');
+
+      // Update local schedule status so checkup queue shows Completed
+      setSchedule((prev) =>
+        prev.map((a) =>
+          a.appointment_id === selectedAppointment.appointment_id
+            ? { ...a, status: 'Completed' }
+            : a
+        )
+      );
+      setSelectedAppointment((prev) => (prev ? { ...prev, status: 'Completed' } : null));
+
+      // Reload live doctor data, inpatients, and beds
+      loadDoctorData(true);
+      loadWardBeds();
+      loadAllDoctorAssignments();
+
+      setTimeout(() => {
+        setIsAdmitModalOpen(false);
+        setAdmissionSuccessNotice(null);
+      }, 1600);
+    } catch (err: any) {
+      setAdmissionError(err.message || 'Network error while processing admission.');
+    } finally {
+      setIsSubmittingAdmission(false);
     }
   };
 
@@ -684,46 +788,53 @@ export const DoctorDashboard: React.FC<DoctorDashboardProps> = ({ user, onLogout
           <nav className="hidden md:flex items-center gap-1 bg-slate-950/80 p-1 rounded-xl border border-slate-800">
             <button
               onClick={() => setActiveTab('schedule')}
-              className={`px-3.5 py-1.5 rounded-lg text-xs font-medium transition-all whitespace-nowrap cursor-pointer ${
+              className={`px-3.5 py-1.5 rounded-lg text-xs font-medium transition-all whitespace-nowrap cursor-pointer flex items-center gap-1.5 ${
                 activeTab === 'schedule'
-                  ? 'bg-teal-500/20 text-teal-300 border border-teal-500/30 shadow-xs'
+                  ? 'bg-teal-500/20 text-teal-300 border border-teal-500/30 shadow-xs font-semibold'
                   : 'text-slate-400 hover:text-white'
               }`}
             >
-              Consultations & Schedule ({schedule.length})
+              <Stethoscope size={13} className={activeTab === 'schedule' ? 'text-teal-400' : 'text-slate-400'} />
+              <span>Checkup Clinic ({schedule.length})</span>
             </button>
             <button
-              onClick={() => setActiveTab('inpatients')}
-              className={`px-3.5 py-1.5 rounded-lg text-xs font-medium transition-all whitespace-nowrap cursor-pointer ${
+              onClick={() => {
+                setActiveTab('inpatients');
+                loadWardBeds();
+              }}
+              className={`px-3.5 py-1.5 rounded-lg text-xs font-medium transition-all whitespace-nowrap cursor-pointer flex items-center gap-1.5 ${
                 activeTab === 'inpatients'
-                  ? 'bg-teal-500/20 text-teal-300 border border-teal-500/30 shadow-xs'
+                  ? 'bg-sky-500/20 text-sky-300 border border-sky-500/30 shadow-xs font-semibold'
                   : 'text-slate-400 hover:text-white'
               }`}
             >
-              Inpatient Rounds ({inpatients.length})
+              <Bed size={13} className={activeTab === 'inpatients' ? 'text-sky-400' : 'text-slate-400'} />
+              <span>Inpatient Rounds ({inpatients.length})</span>
             </button>
             <button
               onClick={() => setActiveTab('labs')}
-              className={`px-3.5 py-1.5 rounded-lg text-xs font-medium transition-all whitespace-nowrap cursor-pointer ${
+              className={`px-3.5 py-1.5 rounded-lg text-xs font-medium transition-all whitespace-nowrap cursor-pointer flex items-center gap-1.5 ${
                 activeTab === 'labs'
-                  ? 'bg-teal-500/20 text-teal-300 border border-teal-500/30 shadow-xs'
+                  ? 'bg-teal-500/20 text-teal-300 border border-teal-500/30 shadow-xs font-semibold'
                   : 'text-slate-400 hover:text-white'
               }`}
             >
-              Diagnostic Labs {stats?.pendingLabApprovals ? `(${stats.pendingLabApprovals})` : ''}
+              <Activity size={13} className={activeTab === 'labs' ? 'text-teal-400' : 'text-slate-400'} />
+              <span>Diagnostic Labs {stats?.pendingLabApprovals ? `(${stats.pendingLabApprovals})` : ''}</span>
             </button>
             <button
               onClick={() => {
                 setActiveTab('assignments');
                 loadAllDoctorAssignments();
               }}
-              className={`px-3.5 py-1.5 rounded-lg text-xs font-medium transition-all whitespace-nowrap cursor-pointer ${
+              className={`px-3.5 py-1.5 rounded-lg text-xs font-medium transition-all whitespace-nowrap cursor-pointer flex items-center gap-1.5 ${
                 activeTab === 'assignments'
-                  ? 'bg-teal-500/20 text-teal-300 border border-teal-500/30 shadow-xs'
+                  ? 'bg-teal-500/20 text-teal-300 border border-teal-500/30 shadow-xs font-semibold'
                   : 'text-slate-400 hover:text-white'
               }`}
             >
-              Staff Assignments {allDoctorAssignments.length > 0 ? `(${allDoctorAssignments.length})` : ''}
+              <Users size={13} className={activeTab === 'assignments' ? 'text-teal-400' : 'text-slate-400'} />
+              <span>Staff Care Team {allDoctorAssignments.length > 0 ? `(${allDoctorAssignments.length})` : ''}</span>
             </button>
           </nav>
 
@@ -805,12 +916,15 @@ export const DoctorDashboard: React.FC<DoctorDashboardProps> = ({ user, onLogout
           </div>
         )}
 
-        {/* Modern Power BI-Inspired KPI Metric Cards */}
+        {/* Modern Power BI-Inspired KPI Metric Cards with Clinic vs Inpatient Ward Distinctions */}
         <section className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 sm:gap-4">
-          {/* KPI 1: Today's Appointments */}
+          {/* KPI 1: Today's Appointments (Outpatient Clinic) */}
           <div className="p-3.5 sm:p-4 rounded-xl bg-slate-900/70 border border-slate-800/80 relative overflow-hidden group hover:border-slate-700 transition-all">
             <div className="flex items-center justify-between text-slate-400 mb-1">
-              <span className="text-[11px] font-semibold uppercase tracking-wider">Today's Visits</span>
+              <div className="flex items-center gap-1.5">
+                <span className="text-[9px] font-bold uppercase tracking-wider text-teal-400 bg-teal-500/10 px-1.5 py-0.5 rounded border border-teal-500/20 font-mono">Clinic</span>
+                <span className="text-[11px] font-semibold uppercase tracking-wider">Today's Visits</span>
+              </div>
               <Calendar size={14} className="text-teal-400" />
             </div>
             <div className="text-2xl font-bold text-white font-mono tabular-nums">
@@ -822,10 +936,13 @@ export const DoctorDashboard: React.FC<DoctorDashboardProps> = ({ user, onLogout
             </div>
           </div>
 
-          {/* KPI 2: Completed Consultations */}
+          {/* KPI 2: Completed Consultations (Outpatient Clinic) */}
           <div className="p-3.5 sm:p-4 rounded-xl bg-slate-900/70 border border-slate-800/80 relative overflow-hidden group hover:border-slate-700 transition-all">
             <div className="flex items-center justify-between text-slate-400 mb-1">
-              <span className="text-[11px] font-semibold uppercase tracking-wider">Completed</span>
+              <div className="flex items-center gap-1.5">
+                <span className="text-[9px] font-bold uppercase tracking-wider text-teal-400 bg-teal-500/10 px-1.5 py-0.5 rounded border border-teal-500/20 font-mono">Clinic</span>
+                <span className="text-[11px] font-semibold uppercase tracking-wider">Completed</span>
+              </div>
               <CheckCircle2 size={14} className="text-teal-400" />
             </div>
             <div className="text-2xl font-bold text-white font-mono tabular-nums">
@@ -839,10 +956,13 @@ export const DoctorDashboard: React.FC<DoctorDashboardProps> = ({ user, onLogout
             </div>
           </div>
 
-          {/* KPI 3: Avg Consultation Duration */}
+          {/* KPI 3: Avg Consultation Duration (Outpatient Clinic) */}
           <div className="p-3.5 sm:p-4 rounded-xl bg-slate-900/70 border border-slate-800/80 relative overflow-hidden group hover:border-slate-700 transition-all">
             <div className="flex items-center justify-between text-slate-400 mb-1">
-              <span className="text-[11px] font-semibold uppercase tracking-wider">Consult Duration</span>
+              <div className="flex items-center gap-1.5">
+                <span className="text-[9px] font-bold uppercase tracking-wider text-teal-400 bg-teal-500/10 px-1.5 py-0.5 rounded border border-teal-500/20 font-mono">Clinic</span>
+                <span className="text-[11px] font-semibold uppercase tracking-wider">Consult Duration</span>
+              </div>
               <Timer size={14} className="text-teal-400" />
             </div>
             <div className="text-2xl font-bold text-white font-mono tabular-nums">
@@ -850,35 +970,41 @@ export const DoctorDashboard: React.FC<DoctorDashboardProps> = ({ user, onLogout
               <span className="text-xs font-normal text-slate-400 font-sans">min</span>
             </div>
             <div className="text-[11px] text-slate-400 mt-1 truncate">
-              Electronic Chart Average
+              Checkup Visit Average
             </div>
           </div>
 
-          {/* KPI 4: Inpatient Census */}
-          <div className="p-3.5 sm:p-4 rounded-xl bg-slate-900/70 border border-slate-800/80 relative overflow-hidden group hover:border-slate-700 transition-all">
+          {/* KPI 4: Inpatient Census (Hospital Ward Service) */}
+          <div className="p-3.5 sm:p-4 rounded-xl bg-slate-900/70 border border-slate-800/80 relative overflow-hidden group hover:border-sky-700 transition-all">
             <div className="flex items-center justify-between text-slate-400 mb-1">
-              <span className="text-[11px] font-semibold uppercase tracking-wider">Inpatient Census</span>
-              <Bed size={14} className="text-teal-400" />
+              <div className="flex items-center gap-1.5">
+                <span className="text-[9px] font-bold uppercase tracking-wider text-sky-400 bg-sky-500/10 px-1.5 py-0.5 rounded border border-sky-500/20 font-mono">Ward</span>
+                <span className="text-[11px] font-semibold uppercase tracking-wider">Inpatient Census</span>
+              </div>
+              <Bed size={14} className="text-sky-400" />
             </div>
             <div className="text-2xl font-bold text-white font-mono tabular-nums">
               {stats?.inpatientCensus ?? inpatients.length}
             </div>
-            <div className="text-[11px] text-slate-400 mt-1 truncate">
-              Active Telemetry Beds
+            <div className="text-[11px] text-sky-400 mt-1 truncate font-mono">
+              <span>{wardBeds.filter((b) => b.status === 'Available').length || 3} beds available</span>
             </div>
           </div>
 
-          {/* KPI 5: Pending Lab Sign-offs */}
+          {/* KPI 5: Pending Lab Sign-offs (Diagnostics) */}
           <div className="p-3.5 sm:p-4 rounded-xl bg-slate-900/70 border border-slate-800/80 relative overflow-hidden group hover:border-slate-700 transition-all">
             <div className="flex items-center justify-between text-slate-400 mb-1">
-              <span className="text-[11px] font-semibold uppercase tracking-wider">Pending Labs</span>
+              <div className="flex items-center gap-1.5">
+                <span className="text-[9px] font-bold uppercase tracking-wider text-amber-400 bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/20 font-mono">Labs</span>
+                <span className="text-[11px] font-semibold uppercase tracking-wider">Sign-offs</span>
+              </div>
               <FileText size={14} className="text-amber-400" />
             </div>
             <div className="text-2xl font-bold text-amber-400 font-mono tabular-nums">
               {stats?.pendingLabApprovals ?? labs.filter((l) => !l.signed).length}
             </div>
             <div className="text-[11px] text-amber-400/80 mt-1 truncate">
-              {(stats?.pendingLabApprovals || 0) > 0 ? 'Requires Sign-Off' : 'All Verified'}
+              {(stats?.pendingLabApprovals || 0) > 0 ? 'Requires Review' : 'All Verified'}
             </div>
           </div>
         </section>
@@ -1257,6 +1383,10 @@ export const DoctorDashboard: React.FC<DoctorDashboardProps> = ({ user, onLogout
                     <div className="border-b border-slate-800 pb-4 flex flex-col sm:flex-row sm:items-start justify-between gap-4">
                       <div>
                         <div className="flex items-center gap-2 mb-1.5 flex-wrap">
+                          <span className="text-[10px] font-bold uppercase tracking-wider text-teal-300 bg-teal-500/15 px-2 py-0.5 rounded border border-teal-500/30 font-mono flex items-center gap-1">
+                            <Stethoscope size={11} className="text-teal-400" />
+                            <span>Outpatient Checkup</span>
+                          </span>
                           <h2 className="text-lg font-bold text-white tracking-tight">
                             {selectedAppointment.patient_name}
                           </h2>
@@ -1613,24 +1743,37 @@ export const DoctorDashboard: React.FC<DoctorDashboardProps> = ({ user, onLogout
                         Signed as {doctorProfile?.name || user?.name || 'Dr. Attending Physician'} ({doctorProfile?.license || doctorProfile?.doctor_id || 'Staff'})
                       </span>
 
-                      <button
-                        type="button"
-                        onClick={handleSaveEncounter}
-                        disabled={isSavingEncounter}
-                        className="flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl text-xs font-semibold bg-teal-500 hover:bg-teal-400 text-slate-950 transition-all cursor-pointer shadow-sm hover:shadow-teal-500/20 disabled:opacity-50"
-                      >
-                        {isSavingEncounter ? (
-                          <>
-                            <RefreshCw size={14} className="animate-spin" />
-                            <span>Signing & Syncing...</span>
-                          </>
-                        ) : (
-                          <>
-                            <Check size={14} />
-                            <span>Sign & Finalize Encounter</span>
-                          </>
-                        )}
-                      </button>
+                      <div className="flex items-center gap-2.5 flex-wrap">
+                        {/* Direct Hospital Ward Admission Action */}
+                        <button
+                          type="button"
+                          onClick={openAdmitModal}
+                          className="flex items-center justify-center gap-1.5 px-3.5 py-2.5 rounded-xl text-xs font-semibold bg-sky-500/15 hover:bg-sky-500/25 text-sky-300 border border-sky-500/30 transition-all cursor-pointer shadow-xs hover:border-sky-400"
+                          title="Patient requires overnight or multi-day inpatient hospital bed admission"
+                        >
+                          <Bed size={14} className="text-sky-400" />
+                          <span>Admit to Hospital Bed</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={handleSaveEncounter}
+                          disabled={isSavingEncounter}
+                          className="flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl text-xs font-semibold bg-teal-500 hover:bg-teal-400 text-slate-950 transition-all cursor-pointer shadow-sm hover:shadow-teal-500/20 disabled:opacity-50"
+                        >
+                          {isSavingEncounter ? (
+                            <>
+                              <RefreshCw size={14} className="animate-spin" />
+                              <span>Signing & Syncing...</span>
+                            </>
+                          ) : (
+                            <>
+                              <Check size={14} />
+                              <span>Sign & Finalize Checkup</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
                     </div>
                   </>
                 ) : (
@@ -1647,19 +1790,26 @@ export const DoctorDashboard: React.FC<DoctorDashboardProps> = ({ user, onLogout
         {/* Tab 2: Inpatient Rounds */}
         {activeTab === 'inpatients' && (
           <section className="space-y-4">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-4 rounded-2xl bg-gradient-to-r from-slate-900/90 via-slate-900/60 to-sky-950/40 border border-sky-500/20 shadow-xs">
               <div>
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-sky-300 bg-sky-500/15 px-2 py-0.5 rounded border border-sky-500/30 font-mono flex items-center gap-1">
+                    <Bed size={11} className="text-sky-400" />
+                    <span>Hospital Inpatient Ward Service</span>
+                  </span>
+                  <span className="text-xs text-slate-500 font-mono">· Level 4 Inpatient Pavilions</span>
+                </div>
                 <h3 className="text-sm font-bold text-white tracking-tight flex items-center gap-2">
-                  <Bed size={16} className="text-teal-400" />
                   <span>Cardiovascular Inpatient Unit & Bed Management</span>
                 </h3>
-                <p className="text-xs text-slate-400">
-                  Authoritative telemetry beds, physician rounds, and bedside staff assignments from <code className="text-teal-400 font-mono">silver_encounters</code> and <code className="text-teal-400 font-mono">silver_staff_assignment</code>.
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Authoritative telemetry ward beds, daily physician rounds, and bedside care assignments for admitted patients.
                 </p>
               </div>
               <div className="flex items-center gap-2 shrink-0">
-                <span className="text-xs font-mono text-teal-400 bg-teal-500/10 px-2.5 py-1 rounded-lg border border-teal-500/20 font-semibold">
-                  {inpatients.length} Inpatients
+                <span className="text-xs font-mono text-sky-400 bg-sky-500/10 px-2.5 py-1 rounded-lg border border-sky-500/20 font-semibold flex items-center gap-1">
+                  <Bed size={13} />
+                  <span>{inpatients.length} Inpatients</span>
                 </span>
                 <span className="text-xs font-mono text-emerald-400 bg-emerald-500/10 px-2.5 py-1 rounded-lg border border-emerald-500/20 font-semibold">
                   {wardBeds.filter((b) => b.status === 'Available').length} Beds Free
@@ -2295,6 +2445,240 @@ export const DoctorDashboard: React.FC<DoctorDashboardProps> = ({ user, onLogout
                     <>
                       <UserCheck size={14} />
                       <span>Confirm Bed & Staff Assignment</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Outpatient Direct Inpatient Hospital Bed Admission Modal */}
+      {isAdmitModalOpen && selectedAppointment && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-fadeIn">
+          <div className="w-full max-w-2xl bg-slate-900 border border-sky-500/30 rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
+            {/* Modal Header */}
+            <div className="p-4 sm:p-5 border-b border-slate-800 flex items-center justify-between bg-gradient-to-r from-slate-900 via-slate-900 to-sky-950/50">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-sky-500/15 border border-sky-500/30 flex items-center justify-center text-sky-400">
+                  <Bed size={20} />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-sky-400 bg-sky-500/15 px-2 py-0.5 rounded font-mono">
+                      Inpatient Ward Transfer
+                    </span>
+                    <span className="text-xs text-slate-400 font-mono">MRN: {selectedAppointment.patient_id}</span>
+                  </div>
+                  <h3 className="text-base font-bold text-white tracking-tight">
+                    Admit {selectedAppointment.patient_name} to Hospital Bed
+                  </h3>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsAdmitModalOpen(false)}
+                disabled={isSubmittingAdmission}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Modal Form */}
+            <form onSubmit={handleConfirmAdmission} className="p-5 overflow-y-auto space-y-4">
+              {/* Step 1: Bed Allocation */}
+              <div className="space-y-2">
+                <label className="text-xs font-semibold text-slate-200 flex items-center justify-between">
+                  <span className="flex items-center gap-1.5">
+                    <Bed size={14} className="text-sky-400" />
+                    <span>1. Select Hospital Ward Bed & Room *</span>
+                  </span>
+                  <span className="text-[10px] font-mono text-emerald-400">
+                    {wardBeds.filter((b) => b.status === 'Available').length} beds available
+                  </span>
+                </label>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-48 overflow-y-auto pr-1">
+                  {wardBeds.map((bed) => {
+                    const isAvailable = bed.status === 'Available';
+                    const isSelected = admitBedId === bed.id;
+                    return (
+                      <div
+                        key={bed.id}
+                        onClick={() => {
+                          if (isAvailable || isSelected) {
+                            setAdmitBedId(bed.id);
+                          }
+                        }}
+                        className={`p-3 rounded-xl border text-xs transition-all ${
+                          isSelected
+                            ? 'border-sky-400 bg-sky-500/20 ring-1 ring-sky-400 text-white shadow-xs'
+                            : isAvailable
+                            ? 'border-slate-800 bg-slate-950/80 hover:border-slate-700 text-slate-300 cursor-pointer'
+                            : 'border-slate-800/40 bg-slate-950/30 text-slate-600 cursor-not-allowed opacity-60'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="font-bold text-white flex items-center gap-1.5 font-mono">
+                            <Bed size={13} className={isSelected ? 'text-sky-300' : 'text-slate-400'} />
+                            <span>{bed.bed}</span>
+                          </span>
+                          <span
+                            className={`text-[9px] px-1.5 py-0.5 rounded font-mono ${
+                              isAvailable
+                                ? 'bg-emerald-500/10 text-emerald-300 border border-emerald-500/20'
+                                : 'bg-slate-800 text-slate-500 border border-slate-700'
+                            }`}
+                          >
+                            {bed.status}
+                          </span>
+                        </div>
+                        <div className="text-[11px] text-slate-400 flex items-center justify-between">
+                          <span>{bed.room}</span>
+                          <span className="font-mono text-slate-500">{bed.wing}</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Step 2: Acuity Level */}
+              <div className="space-y-2">
+                <label className="text-xs font-semibold text-slate-200 flex items-center gap-1.5">
+                  <Activity size={14} className="text-sky-400" />
+                  <span>2. Inpatient Acuity & Protocol</span>
+                </label>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                  {(['Observation', 'Stable', 'Guarded', 'Critical'] as const).map((lvl) => (
+                    <button
+                      key={lvl}
+                      type="button"
+                      onClick={() => setAdmitAcuity(lvl)}
+                      className={`py-2 px-2.5 rounded-lg border text-xs font-medium transition-all cursor-pointer text-center ${
+                        admitAcuity === lvl
+                          ? lvl === 'Critical'
+                            ? 'border-rose-500 bg-rose-500/20 text-rose-300 font-bold'
+                            : lvl === 'Guarded'
+                            ? 'border-amber-500 bg-amber-500/20 text-amber-300 font-bold'
+                            : 'border-sky-500 bg-sky-500/20 text-sky-300 font-bold'
+                          : 'border-slate-800 bg-slate-950 text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      {lvl}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Step 3: Admission Diagnosis & Directives */}
+              <div className="space-y-3">
+                <div>
+                  <label className="text-[11px] font-semibold text-slate-300 uppercase tracking-wider block mb-1 font-mono">
+                    Admission Indication / Primary Diagnosis *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={admitDiagnosis}
+                    onChange={(e) => setAdmitDiagnosis(e.target.value)}
+                    placeholder="e.g. Unstable Angina / Subacute Heart Failure Decompensation / Continuous ECG Telemetry"
+                    className="w-full px-3 py-2 text-xs rounded-lg border border-slate-800 bg-slate-950 text-white placeholder-slate-500 focus:outline-none focus:border-sky-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-[11px] font-semibold text-slate-300 uppercase tracking-wider block mb-1 font-mono">
+                    Admitting Orders & Nursing Instructions
+                  </label>
+                  <textarea
+                    rows={2}
+                    value={admitNotes}
+                    onChange={(e) => setAdmitNotes(e.target.value)}
+                    placeholder="Document admitting orders: vital checks Q4H, continuous telemetry rhythm monitoring, IV access, lab redraws..."
+                    className="w-full p-2.5 text-xs rounded-lg border border-slate-800 bg-slate-950 text-white placeholder-slate-500 focus:outline-none focus:border-sky-500 font-sans leading-relaxed"
+                  />
+                </div>
+              </div>
+
+              {/* Step 4: Optional Bedside Staff Assignment */}
+              <div className="space-y-2">
+                <label className="text-xs font-semibold text-slate-200 flex items-center justify-between">
+                  <span className="flex items-center gap-1.5">
+                    <UserCheck size={14} className="text-sky-400" />
+                    <span>4. Assign Bedside Nurse / Ward Staff (Optional)</span>
+                  </span>
+                  <span className="text-[10px] text-slate-500 font-mono">Delegated to silver_staff_assignment</span>
+                </label>
+                <select
+                  value={admitStaffId}
+                  onChange={(e) => setAdmitStaffId(e.target.value)}
+                  className="w-full px-3 py-2 text-xs rounded-lg border border-slate-800 bg-slate-950 text-white focus:outline-none focus:border-sky-500 cursor-pointer"
+                >
+                  <option value="">No immediate staff assignment (Ward Lead assigns)</option>
+                  {staffCandidates
+                    .filter((s) => s.role.toLowerCase().includes('nurse') || s.department.toLowerCase().includes('ward') || s.department.toLowerCase().includes('cardio'))
+                    .map((s) => (
+                      <option key={s.staff_id} value={s.staff_id}>
+                        {s.staff_name} — {s.role} ({s.department})
+                      </option>
+                    ))}
+                </select>
+              </div>
+
+              {/* Status & Feedback */}
+              {admissionError && (
+                <div className="p-3 rounded-lg bg-rose-500/10 border border-rose-500/20 text-rose-300 text-xs flex items-center gap-2">
+                  <AlertCircle size={14} className="shrink-0" />
+                  <span>{admissionError}</span>
+                </div>
+              )}
+
+              {admissionSuccessNotice && (
+                <div className="p-3 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-300 text-xs flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <CheckCircle2 size={14} className="shrink-0 text-emerald-400" />
+                    <span>{admissionSuccessNotice}</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsAdmitModalOpen(false);
+                      setActiveTab('inpatients');
+                    }}
+                    className="px-2.5 py-1 rounded bg-emerald-500/20 text-emerald-200 hover:bg-emerald-500/30 font-semibold cursor-pointer text-[11px]"
+                  >
+                    View Inpatient Rounds →
+                  </button>
+                </div>
+              )}
+
+              {/* Modal Actions */}
+              <div className="pt-3 border-t border-slate-800 flex items-center justify-end gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => setIsAdmitModalOpen(false)}
+                  disabled={isSubmittingAdmission}
+                  className="px-4 py-2 rounded-lg border border-slate-800 hover:bg-slate-800 text-slate-400 hover:text-white text-xs font-semibold transition-colors cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSubmittingAdmission || !admitBedId}
+                  className="px-5 py-2 rounded-lg bg-sky-500 hover:bg-sky-400 text-slate-950 text-xs font-bold transition-all cursor-pointer flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed shadow-md hover:shadow-sky-500/20"
+                >
+                  {isSubmittingAdmission ? (
+                    <>
+                      <RefreshCw size={13} className="animate-spin" />
+                      <span>Admitting Patient...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Bed size={14} />
+                      <span>Confirm Inpatient Bed Admission</span>
                     </>
                   )}
                 </button>
