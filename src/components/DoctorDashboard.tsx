@@ -67,6 +67,8 @@ interface AppointmentItem {
 
 interface InpatientItem {
   bed: string;
+  room?: string;
+  bed_id?: string;
   encounter_id?: string;
   patient_name: string;
   patient_id: string;
@@ -79,6 +81,16 @@ interface InpatientItem {
   acuity: string;
   vitals: string;
   plan: string;
+  assigned_staff?: {
+    assignment_id?: string;
+    staff_id?: string;
+    staff_name?: string;
+    staff_role?: string;
+    department?: string;
+    priority?: string;
+    status?: string;
+    notes?: string;
+  } | null;
 }
 
 interface LabItem {
@@ -163,6 +175,154 @@ export const DoctorDashboard: React.FC<DoctorDashboardProps> = ({ user, onLogout
   const [deptFilter, setDeptFilter] = useState('all');
   const [isSubmittingAssignment, setIsSubmittingAssignment] = useState(false);
   const [assignmentSuccessNotice, setAssignmentSuccessNotice] = useState<string | null>(null);
+
+  // Inpatient Bed & Staff Assignment State
+  const [wardBeds, setWardBeds] = useState<any[]>([]);
+  const [isLoadingWardBeds, setIsLoadingWardBeds] = useState(false);
+  const [assigningInpatient, setAssigningInpatient] = useState<InpatientItem | null>(null);
+  const [inpatientSelectedBedId, setInpatientSelectedBedId] = useState<string>('');
+  const [inpatientSelectedStaffId, setInpatientSelectedStaffId] = useState<string>('');
+  const [inpatientAssignType, setInpatientAssignType] = useState('Inpatient Bedside Care');
+  const [inpatientPriority, setInpatientPriority] = useState<'Normal' | 'Urgent' | 'Critical'>('Normal');
+  const [inpatientOrders, setInpatientOrders] = useState('');
+  const [inpatientBedFilter, setInpatientBedFilter] = useState<'all' | 'available'>('available');
+  const [inpatientStaffRoleFilter, setInpatientStaffRoleFilter] = useState('all');
+  const [inpatientStaffSearch, setInpatientStaffSearch] = useState('');
+  const [isSubmittingInpatientAssignment, setIsSubmittingInpatientAssignment] = useState(false);
+  const [inpatientAssignSuccess, setInpatientAssignSuccess] = useState<string | null>(null);
+  const [inpatientAssignError, setInpatientAssignError] = useState<string | null>(null);
+
+  const loadWardBeds = async () => {
+    setIsLoadingWardBeds(true);
+    try {
+      const token = sessionStorage.getItem('mediai_patient_auth_token');
+      const res = await fetch('/api/doctor/ward-beds', {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      const data = await res.json();
+      if (data.success) {
+        setWardBeds(data.wardBeds || []);
+      }
+    } catch (err) {
+      console.warn('Failed to load ward beds', err);
+    } finally {
+      setIsLoadingWardBeds(false);
+    }
+  };
+
+  const openInpatientAssignModal = (patient: InpatientItem) => {
+    setAssigningInpatient(patient);
+    setInpatientAssignError(null);
+    setInpatientAssignSuccess(null);
+    setInpatientOrders(patient.plan || 'Telemetry rhythm monitoring and regular vital sign checks.');
+    setInpatientPriority(patient.acuity === 'Guarded' ? 'Urgent' : 'Normal');
+    setInpatientAssignType('Inpatient Bedside Care');
+
+    // Pre-select bed
+    if (patient.bed_id) {
+      setInpatientSelectedBedId(patient.bed_id);
+    } else {
+      const matchingBed = wardBeds.find(
+        (b) => (b.room && patient.bed.includes(b.room)) || (b.bed && patient.bed.includes(b.bed))
+      );
+      if (matchingBed) {
+        setInpatientSelectedBedId(matchingBed.id);
+      } else {
+        const firstAvailable = wardBeds.find((b) => b.status === 'Available');
+        setInpatientSelectedBedId(firstAvailable?.id || 'BED-401');
+      }
+    }
+
+    // Pre-select staff member
+    if (patient.assigned_staff?.staff_id) {
+      setInpatientSelectedStaffId(patient.assigned_staff.staff_id);
+    } else if (staffCandidates.length > 0) {
+      setInpatientSelectedStaffId(staffCandidates[0].staff_id);
+    }
+
+    loadWardBeds();
+    loadStaffCandidates();
+  };
+
+  const handleConfirmInpatientAssignment = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!assigningInpatient || !inpatientSelectedStaffId || !inpatientSelectedBedId) {
+      setInpatientAssignError('Please select both a hospital ward bed and a healthcare staff member.');
+      return;
+    }
+
+    setIsSubmittingInpatientAssignment(true);
+    setInpatientAssignError(null);
+    setInpatientAssignSuccess(null);
+
+    try {
+      const token = sessionStorage.getItem('mediai_patient_auth_token');
+      const selectedBedObj = wardBeds.find((b) => b.id === inpatientSelectedBedId);
+      const res = await fetch('/api/doctor/assign-staff', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({
+          patientId: assigningInpatient.patient_id,
+          staffId: inpatientSelectedStaffId,
+          bedId: inpatientSelectedBedId,
+          room: selectedBedObj?.room || undefined,
+          assignmentType: inpatientAssignType,
+          priority: inpatientPriority,
+          notes: inpatientOrders,
+          encounterId: assigningInpatient.encounter_id,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || 'Failed to assign staff and bed to patient.');
+      }
+
+      setInpatientAssignSuccess(data.message || 'Staff member and hospital ward bed successfully assigned.');
+
+      // Update local inpatients state immediately
+      const assignedBedLabel = selectedBedObj ? `${selectedBedObj.room} · ${selectedBedObj.bed}` : assigningInpatient.bed;
+      setInpatients((prev) =>
+        prev.map((p) => {
+          if (p.patient_id === assigningInpatient.patient_id) {
+            return {
+              ...p,
+              bed: assignedBedLabel,
+              room: selectedBedObj?.room,
+              bed_id: inpatientSelectedBedId,
+              assigned_staff: {
+                staff_id: data.assignment.staff_id,
+                staff_name: data.assignment.staff_name,
+                staff_role: data.assignment.staff_role,
+                department: data.assignment.department,
+                priority: data.assignment.priority,
+                status: data.assignment.assignment_status,
+                notes: data.assignment.notes,
+              },
+            };
+          }
+          return p;
+        })
+      );
+
+      // Refresh ward beds and assignments in background
+      loadWardBeds();
+      loadAllDoctorAssignments();
+
+      // Close modal smoothly after brief success display
+      setTimeout(() => {
+        setAssigningInpatient(null);
+        setInpatientAssignSuccess(null);
+      }, 1500);
+    } catch (err: any) {
+      setInpatientAssignError(err.message || 'Failed to submit staff and bed assignment.');
+    } finally {
+      setIsSubmittingInpatientAssignment(false);
+    }
+  };
 
   const loadPatientAssignments = async (patientId: string) => {
     setIsLoadingAssignments(true);
@@ -262,6 +422,7 @@ export const DoctorDashboard: React.FC<DoctorDashboardProps> = ({ user, onLogout
     loadDoctorData();
     loadStaffCandidates();
     loadAllDoctorAssignments();
+    loadWardBeds();
   }, []);
 
   useEffect(() => {
@@ -437,6 +598,32 @@ export const DoctorDashboard: React.FC<DoctorDashboardProps> = ({ user, onLogout
     const max = Math.max(...activeTrendData.map((d) => d.total));
     return max > 0 ? max : 10;
   }, [activeTrendData]);
+
+  // Filtered ward beds for inpatient assignment modal
+  const filteredWardBeds = useMemo(() => {
+    if (inpatientBedFilter === 'available') {
+      return wardBeds.filter((b) => b.status === 'Available' || b.id === inpatientSelectedBedId);
+    }
+    return wardBeds;
+  }, [wardBeds, inpatientBedFilter, inpatientSelectedBedId]);
+
+  // Filtered staff candidates for inpatient assignment modal
+  const filteredInpatientStaff = useMemo(() => {
+    return staffCandidates.filter((s) => {
+      const matchesRole =
+        inpatientStaffRoleFilter === 'all' ||
+        s.role.toLowerCase().includes(inpatientStaffRoleFilter.toLowerCase()) ||
+        s.department.toLowerCase().includes(inpatientStaffRoleFilter.toLowerCase());
+      const term = inpatientStaffSearch.toLowerCase().trim();
+      const matchesSearch =
+        !term ||
+        s.staff_name.toLowerCase().includes(term) ||
+        s.staff_id.toLowerCase().includes(term) ||
+        s.role.toLowerCase().includes(term) ||
+        s.department.toLowerCase().includes(term);
+      return matchesRole && matchesSearch;
+    });
+  }, [staffCandidates, inpatientStaffRoleFilter, inpatientStaffSearch]);
 
   // Status color mapper
   const getStatusColor = (status: string) => {
@@ -618,8 +805,8 @@ export const DoctorDashboard: React.FC<DoctorDashboardProps> = ({ user, onLogout
           </div>
         )}
 
-        {/* 6 Modern Power BI-Inspired KPI Metric Cards */}
-        <section className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 sm:gap-4">
+        {/* Modern Power BI-Inspired KPI Metric Cards */}
+        <section className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 sm:gap-4">
           {/* KPI 1: Today's Appointments */}
           <div className="p-3.5 sm:p-4 rounded-xl bg-slate-900/70 border border-slate-800/80 relative overflow-hidden group hover:border-slate-700 transition-all">
             <div className="flex items-center justify-between text-slate-400 mb-1">
@@ -692,21 +879,6 @@ export const DoctorDashboard: React.FC<DoctorDashboardProps> = ({ user, onLogout
             </div>
             <div className="text-[11px] text-amber-400/80 mt-1 truncate">
               {(stats?.pendingLabApprovals || 0) > 0 ? 'Requires Sign-Off' : 'All Verified'}
-            </div>
-          </div>
-
-          {/* KPI 6: Average Waiting Time */}
-          <div className="p-3.5 sm:p-4 rounded-xl bg-slate-900/70 border border-slate-800/80 relative overflow-hidden group hover:border-slate-700 transition-all">
-            <div className="flex items-center justify-between text-slate-400 mb-1">
-              <span className="text-[11px] font-semibold uppercase tracking-wider">Avg Waiting Time</span>
-              <Clock size={14} className="text-teal-400" />
-            </div>
-            <div className="text-2xl font-bold text-white font-mono tabular-nums">
-              {stats?.avgWaitTimeMinutes ? `~${stats.avgWaitTimeMinutes}` : '~14'}{' '}
-              <span className="text-xs font-normal text-slate-400 font-sans">min</span>
-            </div>
-            <div className="text-[11px] text-teal-400 mt-1 truncate">
-              Clinic Flow On-Target
             </div>
           </div>
         </section>
@@ -1475,14 +1647,37 @@ export const DoctorDashboard: React.FC<DoctorDashboardProps> = ({ user, onLogout
         {/* Tab 2: Inpatient Rounds */}
         {activeTab === 'inpatients' && (
           <section className="space-y-4">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <div>
-                <h3 className="text-sm font-bold text-white tracking-tight">Cardiovascular Inpatient Unit</h3>
-                <p className="text-xs text-slate-400">Active telemetry beds and admissions assigned to your service today.</p>
+                <h3 className="text-sm font-bold text-white tracking-tight flex items-center gap-2">
+                  <Bed size={16} className="text-teal-400" />
+                  <span>Cardiovascular Inpatient Unit & Bed Management</span>
+                </h3>
+                <p className="text-xs text-slate-400">
+                  Authoritative telemetry beds, physician rounds, and bedside staff assignments from <code className="text-teal-400 font-mono">silver_encounters</code> and <code className="text-teal-400 font-mono">silver_staff_assignment</code>.
+                </p>
               </div>
-              <span className="text-xs font-mono text-teal-400 bg-teal-500/10 px-2.5 py-1 rounded-lg border border-teal-500/20 font-semibold">
-                {inpatients.length} Inpatients
-              </span>
+              <div className="flex items-center gap-2 shrink-0">
+                <span className="text-xs font-mono text-teal-400 bg-teal-500/10 px-2.5 py-1 rounded-lg border border-teal-500/20 font-semibold">
+                  {inpatients.length} Inpatients
+                </span>
+                <span className="text-xs font-mono text-emerald-400 bg-emerald-500/10 px-2.5 py-1 rounded-lg border border-emerald-500/20 font-semibold">
+                  {wardBeds.filter((b) => b.status === 'Available').length} Beds Free
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    loadDoctorData(true);
+                    loadWardBeds();
+                    loadAllDoctorAssignments();
+                  }}
+                  disabled={isLoadingWardBeds}
+                  className="p-1.5 rounded-lg border border-slate-800 bg-slate-900 hover:bg-slate-800 text-slate-400 hover:text-white transition-colors cursor-pointer"
+                  title="Reload ward and inpatient data"
+                >
+                  <RefreshCw size={13} className={isLoadingWardBeds ? 'animate-spin text-teal-400' : ''} />
+                </button>
+              </div>
             </div>
 
             {inpatients.length === 0 ? (
@@ -1491,48 +1686,118 @@ export const DoctorDashboard: React.FC<DoctorDashboardProps> = ({ user, onLogout
               </div>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {inpatients.map((patient) => (
-                  <div key={patient.bed} className="p-4 rounded-xl bg-slate-900/70 border border-slate-800 space-y-3">
-                    <div className="flex items-start justify-between">
-                      <div>
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs font-mono font-bold text-teal-400 bg-slate-950 px-2 py-0.5 rounded border border-slate-800">
-                            {patient.bed}
-                          </span>
-                          <h4 className="text-sm font-bold text-white">{patient.patient_name}</h4>
-                          <span className="text-xs text-slate-500">({patient.age}y)</span>
+                {inpatients.map((patient, idx) => {
+                  const hasAssignedStaff = !!patient.assigned_staff?.staff_name;
+                  const cardKey = patient.encounter_id || `inpatient-${patient.patient_id}-${patient.bed_id || idx}`;
+                  return (
+                    <div
+                      key={cardKey}
+                      className="p-4.5 rounded-xl bg-slate-900/80 border border-slate-800 hover:border-slate-700 transition-all space-y-3 shadow-sm"
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div>
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="text-xs font-mono font-bold text-teal-300 bg-slate-950 px-2.5 py-1 rounded border border-teal-500/30 flex items-center gap-1.5">
+                              <Bed size={13} className="text-teal-400" />
+                              <span>{patient.bed}</span>
+                            </span>
+                            <h4 className="text-sm font-bold text-white">{patient.patient_name}</h4>
+                            <span className="text-xs text-slate-500">({patient.age}y {patient.gender || ''})</span>
+                          </div>
+                          <div className="text-[11px] text-slate-400 mt-1 font-mono">
+                            MRN: {patient.patient_id} · Day of stay: {patient.day_of_stay}
+                            {patient.room && <span className="text-slate-500"> · {patient.room}</span>}
+                          </div>
                         </div>
-                        <div className="text-[11px] text-slate-400 mt-1 font-mono">
-                          ID: {patient.patient_id} · Day of stay: {patient.day_of_stay}
-                        </div>
+
+                        <span
+                          className={`text-[10px] px-2 py-0.5 rounded font-mono shrink-0 ${
+                            patient.acuity === 'Stable'
+                              ? 'bg-teal-500/10 text-teal-300 border border-teal-500/20'
+                              : 'bg-amber-500/10 text-amber-300 border border-amber-500/20'
+                          }`}
+                        >
+                          {patient.acuity}
+                        </span>
                       </div>
-                      <span
-                        className={`text-[10px] px-2 py-0.5 rounded font-mono ${
-                          patient.acuity === 'Stable'
-                            ? 'bg-teal-500/10 text-teal-300 border border-teal-500/20'
-                            : 'bg-amber-500/10 text-amber-300 border border-amber-500/20'
-                        }`}
-                      >
-                        {patient.acuity}
-                      </span>
-                    </div>
 
-                    <div className="text-xs text-slate-300 bg-slate-950/70 p-2.5 rounded-lg border border-slate-800/80">
-                      <span className="text-[10px] text-slate-500 uppercase block mb-0.5 font-semibold">Primary Diagnosis</span>
-                      {patient.diagnosis}
-                    </div>
+                      <div className="text-xs text-slate-300 bg-slate-950/70 p-2.5 rounded-lg border border-slate-800/80">
+                        <span className="text-[10px] text-slate-500 uppercase block mb-0.5 font-semibold">Primary Diagnosis</span>
+                        {patient.diagnosis}
+                      </div>
 
-                    <div className="flex items-center justify-between text-xs text-slate-400 font-mono">
-                      <span>{patient.vitals}</span>
-                      {patient.encounter_date && <span>Admitted: {patient.encounter_date}</span>}
-                    </div>
+                      <div className="flex items-center justify-between text-xs text-slate-400 font-mono">
+                        <span>{patient.vitals}</span>
+                        {patient.encounter_date && <span>Admitted: {patient.encounter_date}</span>}
+                      </div>
 
-                    <div className="text-xs text-slate-400 border-t border-slate-800/80 pt-2">
-                      <span className="text-[10px] text-teal-400 block font-semibold mb-0.5">Care Plan</span>
-                      {patient.plan}
+                      <div className="text-xs text-slate-400 border-t border-slate-800/80 pt-2">
+                        <span className="text-[10px] text-teal-400 block font-semibold mb-0.5">Care Plan</span>
+                        {patient.plan}
+                      </div>
+
+                      {/* Real Staff Assignment & Room/Bed Card */}
+                      {hasAssignedStaff && patient.assigned_staff ? (
+                        <div className="p-3 rounded-lg bg-slate-950/90 border border-teal-500/30 space-y-2">
+                          <div className="flex items-center justify-between text-xs">
+                            <span className="text-[10px] text-teal-400 font-mono uppercase font-semibold flex items-center gap-1.5">
+                              <UserCheck size={13} className="text-teal-400" />
+                              <span>Assigned Bedside Care</span>
+                            </span>
+                            <span
+                              className={`text-[10px] px-1.5 py-0.5 rounded font-mono border ${
+                                patient.assigned_staff.priority === 'Urgent' || patient.assigned_staff.priority === 'Critical'
+                                  ? 'bg-rose-500/10 text-rose-300 border-rose-500/20'
+                                  : 'bg-teal-500/10 text-teal-300 border-teal-500/20'
+                              }`}
+                            >
+                              {patient.assigned_staff.priority || 'Normal'}
+                            </span>
+                          </div>
+
+                          <div className="flex items-center justify-between gap-2">
+                            <div>
+                              <div className="text-xs font-bold text-white">{patient.assigned_staff.staff_name}</div>
+                              <div className="text-[11px] text-slate-400">
+                                {patient.assigned_staff.staff_role} · {patient.assigned_staff.department}
+                              </div>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => openInpatientAssignModal(patient)}
+                              className="px-2.5 py-1 text-[11px] font-medium rounded-lg border border-teal-500/40 bg-teal-500/10 hover:bg-teal-500/20 text-teal-300 transition-colors cursor-pointer flex items-center gap-1.5 shrink-0"
+                            >
+                              <Bed size={12} />
+                              <span>Change Bed / Staff</span>
+                            </button>
+                          </div>
+
+                          {patient.assigned_staff.notes && (
+                            <div className="text-[11px] text-slate-300 font-sans border-t border-slate-800/80 pt-1.5 line-clamp-2">
+                              <span className="text-slate-500 font-mono text-[10px]">Orders: </span>
+                              {patient.assigned_staff.notes}
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <div className="p-3 rounded-lg bg-slate-950/60 border border-dashed border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+                          <div className="text-xs text-slate-400 flex items-center gap-2">
+                            <AlertCircle size={14} className="text-slate-500 shrink-0" />
+                            <span>No dedicated bedside staff assigned to this inpatient.</span>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => openInpatientAssignModal(patient)}
+                            className="px-3 py-1.5 text-xs font-semibold rounded-lg bg-teal-500 hover:bg-teal-400 text-slate-950 transition-colors cursor-pointer flex items-center justify-center gap-1.5 shrink-0 shadow-sm"
+                          >
+                            <UserCheck size={13} />
+                            <span>Assign Staff & Bed</span>
+                          </button>
+                        </div>
+                      )}
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </section>
@@ -1711,6 +1976,333 @@ export const DoctorDashboard: React.FC<DoctorDashboardProps> = ({ user, onLogout
           </section>
         )}
       </main>
+
+      {/* Inpatient Bed & Staff Assignment Modal */}
+      {assigningInpatient && (
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-2xl max-h-[92vh] flex flex-col shadow-2xl overflow-hidden">
+            {/* Modal Header */}
+            <div className="px-6 py-4.5 border-b border-slate-800 flex items-center justify-between bg-slate-950/50 shrink-0">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-lg bg-teal-500/10 border border-teal-500/20 flex items-center justify-center text-teal-400">
+                  <Bed size={16} />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-white tracking-tight">Assign Staff to Inpatient Bed</h3>
+                  <p className="text-xs text-slate-400">Assign a hospital ward bed and dedicated clinical staff member for this patient.</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setAssigningInpatient(null)}
+                className="p-1.5 rounded-lg border border-slate-800 hover:bg-slate-800 text-slate-400 hover:text-white transition-colors cursor-pointer"
+              >
+                <X size={15} />
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <form onSubmit={handleConfirmInpatientAssignment} className="p-6 overflow-y-auto space-y-5 flex-1">
+              {/* Patient Context Banner */}
+              <div className="p-3.5 rounded-xl bg-slate-950/80 border border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="space-y-0.5">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-bold text-white">{assigningInpatient.patient_name}</span>
+                    <span className="text-xs font-mono text-teal-400 bg-teal-500/10 px-2 py-0.5 rounded border border-teal-500/20">
+                      {assigningInpatient.patient_id}
+                    </span>
+                    <span className="text-xs text-slate-400">({assigningInpatient.age}y {assigningInpatient.gender || ''})</span>
+                  </div>
+                  <div className="text-xs text-slate-400">
+                    <span className="text-slate-500">Diagnosis: </span>
+                    <span className="text-slate-300">{assigningInpatient.diagnosis}</span>
+                  </div>
+                </div>
+                <div className="text-right sm:text-right shrink-0">
+                  <div className="text-[10px] text-slate-500 uppercase font-mono">Current Location</div>
+                  <div className="text-xs font-mono text-teal-300 font-semibold">{assigningInpatient.bed}</div>
+                </div>
+              </div>
+
+              {/* Step 1: Hospital Ward Bed Selection */}
+              <div className="space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-semibold text-slate-200 flex items-center gap-1.5">
+                    <Bed size={14} className="text-teal-400" />
+                    <span>1. Select Hospital Ward Bed</span>
+                    <span className="text-rose-400">*</span>
+                  </label>
+                  <div className="flex items-center gap-1 bg-slate-950 p-0.5 rounded-lg border border-slate-800 text-[11px]">
+                    <button
+                      type="button"
+                      onClick={() => setInpatientBedFilter('available')}
+                      className={`px-2 py-0.5 rounded font-mono transition-colors cursor-pointer ${
+                        inpatientBedFilter === 'available'
+                          ? 'bg-teal-500 text-slate-950 font-bold'
+                          : 'text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      Available ({wardBeds.filter((b) => b.status === 'Available').length})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setInpatientBedFilter('all')}
+                      className={`px-2 py-0.5 rounded font-mono transition-colors cursor-pointer ${
+                        inpatientBedFilter === 'all'
+                          ? 'bg-teal-500 text-slate-950 font-bold'
+                          : 'text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      All Beds ({wardBeds.length || 12})
+                    </button>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2 max-h-44 overflow-y-auto p-1 border border-slate-800/80 rounded-xl bg-slate-950/50">
+                  {filteredWardBeds.map((bed) => {
+                    const isSelected = inpatientSelectedBedId === bed.id;
+                    const isCurrentPatientBed = bed.patient_id === assigningInpatient.patient_id || bed.id === assigningInpatient.bed_id;
+                    const isAvailable = bed.status === 'Available';
+                    const isOccupied = bed.status === 'Occupied';
+                    return (
+                      <button
+                        key={bed.id}
+                        type="button"
+                        onClick={() => setInpatientSelectedBedId(bed.id)}
+                        className={`p-2.5 rounded-lg border text-left transition-all cursor-pointer relative ${
+                          isSelected
+                            ? 'border-teal-400 bg-teal-500/15 shadow-sm'
+                            : isCurrentPatientBed
+                            ? 'border-teal-500/40 bg-slate-900/90'
+                            : isAvailable
+                            ? 'border-slate-800 bg-slate-900/60 hover:border-slate-700'
+                            : 'border-slate-800/60 bg-slate-900/30 opacity-70 hover:opacity-100'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="text-xs font-bold text-white font-mono">{bed.room}</span>
+                          {isSelected && <Check size={12} className="text-teal-400" />}
+                        </div>
+                        <div className="text-[10px] font-mono text-slate-400">{bed.bed || bed.id}</div>
+                        <div className="text-[10px] text-slate-500 mt-1">{bed.wing}</div>
+                        <div className="mt-1.5 flex items-center justify-between">
+                          <span
+                            className={`text-[9px] px-1.5 py-0.2 rounded font-mono font-semibold ${
+                              isAvailable
+                                ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
+                                : isOccupied
+                                ? 'bg-sky-500/15 text-sky-400 border border-sky-500/30'
+                                : 'bg-amber-500/15 text-amber-400 border border-amber-500/30'
+                            }`}
+                          >
+                            {isCurrentPatientBed ? 'Current' : bed.status}
+                          </span>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Step 2: Clinical Staff Selection */}
+              <div className="space-y-2.5">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                  <label className="text-xs font-semibold text-slate-200 flex items-center gap-1.5">
+                    <Users size={14} className="text-teal-400" />
+                    <span>2. Select Healthcare Staff Member</span>
+                    <span className="text-rose-400">*</span>
+                  </label>
+                  <div className="flex items-center gap-1.5">
+                    <div className="relative">
+                      <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-500" />
+                      <input
+                        type="text"
+                        value={inpatientStaffSearch}
+                        onChange={(e) => setInpatientStaffSearch(e.target.value)}
+                        placeholder="Search staff name..."
+                        className="pl-7 pr-2.5 py-1 text-xs rounded-lg border border-slate-800 bg-slate-950 text-white placeholder-slate-500 focus:outline-none focus:border-teal-500"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Role Filter Pills */}
+                <div className="flex items-center gap-1.5 overflow-x-auto pb-1 text-[11px]">
+                  {['all', 'Nurse', 'Specialist', 'Therapist', 'Tech'].map((role) => (
+                    <button
+                      key={role}
+                      type="button"
+                      onClick={() => setInpatientStaffRoleFilter(role)}
+                      className={`px-2 py-0.5 rounded-full border transition-colors cursor-pointer shrink-0 ${
+                        inpatientStaffRoleFilter === role
+                          ? 'border-teal-500 bg-teal-500/15 text-teal-300 font-semibold'
+                          : 'border-slate-800 text-slate-400 hover:text-white bg-slate-950'
+                      }`}
+                    >
+                      {role === 'all' ? 'All Roles' : role}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="max-h-40 overflow-y-auto space-y-1.5 p-1 border border-slate-800/80 rounded-xl bg-slate-950/50">
+                  {filteredInpatientStaff.length === 0 ? (
+                    <div className="text-center py-6 text-xs text-slate-500">
+                      No staff members match the selected criteria.
+                    </div>
+                  ) : (
+                    filteredInpatientStaff.map((staff) => {
+                      const isSelected = inpatientSelectedStaffId === staff.staff_id;
+                      return (
+                        <button
+                          key={staff.staff_id}
+                          type="button"
+                          onClick={() => setInpatientSelectedStaffId(staff.staff_id)}
+                          className={`w-full p-2.5 rounded-lg border text-left transition-all cursor-pointer flex items-center justify-between gap-3 ${
+                            isSelected
+                              ? 'border-teal-400 bg-teal-500/15'
+                              : 'border-slate-800/80 bg-slate-900/60 hover:border-slate-700 hover:bg-slate-900'
+                          }`}
+                        >
+                          <div className="flex items-center gap-2.5">
+                            <div className="w-7 h-7 rounded-full bg-slate-800 border border-slate-700 flex items-center justify-center text-teal-300 font-bold text-xs shrink-0">
+                              {staff.staff_name.charAt(0)}
+                            </div>
+                            <div>
+                              <div className="text-xs font-bold text-white flex items-center gap-1.5">
+                                <span>{staff.staff_name}</span>
+                                <span className="text-[10px] font-mono text-slate-400">({staff.staff_id})</span>
+                              </div>
+                              <div className="text-[11px] text-slate-400">
+                                {staff.role} · <span className="text-teal-400">{staff.department}</span>
+                                {staff.shift && <span className="text-slate-500"> · Shift: {staff.shift}</span>}
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="shrink-0 flex items-center gap-2">
+                            {isSelected ? (
+                              <div className="w-5 h-5 rounded-full bg-teal-500 text-slate-950 flex items-center justify-center">
+                                <Check size={12} strokeWidth={3} />
+                              </div>
+                            ) : (
+                              <div className="w-5 h-5 rounded-full border border-slate-700" />
+                            )}
+                          </div>
+                        </button>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+
+              {/* Step 3: Orders, Priority & Clinical Directives */}
+              <div className="space-y-3">
+                <label className="text-xs font-semibold text-slate-200 flex items-center gap-1.5">
+                  <ClipboardList size={14} className="text-teal-400" />
+                  <span>3. Assignment Protocol & Physician Directives</span>
+                </label>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-[11px] text-slate-400 block mb-1 font-mono">Assignment Type</label>
+                    <select
+                      value={inpatientAssignType}
+                      onChange={(e) => setInpatientAssignType(e.target.value)}
+                      className="w-full px-3 py-2 text-xs rounded-lg border border-slate-800 bg-slate-950 text-white focus:outline-none focus:border-teal-500 cursor-pointer"
+                    >
+                      <option value="Inpatient Bedside Care">Inpatient Bedside Care</option>
+                      <option value="Cardiac Telemetry Surveillance">Cardiac Telemetry Surveillance</option>
+                      <option value="Post-Procedure Acute Recovery">Post-Procedure Acute Recovery</option>
+                      <option value="Medication Administration & Vitals">Medication Administration & Vitals</option>
+                      <option value="Respiratory Therapy Protocol">Respiratory Therapy Protocol</option>
+                      <option value="Physical Rehabilitation Assistance">Physical Rehabilitation Assistance</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="text-[11px] text-slate-400 block mb-1 font-mono">Clinical Priority</label>
+                    <div className="grid grid-cols-3 gap-1.5">
+                      {(['Normal', 'Urgent', 'Critical'] as const).map((p) => (
+                        <button
+                          key={p}
+                          type="button"
+                          onClick={() => setInpatientPriority(p)}
+                          className={`py-1.5 px-2 rounded-lg border text-xs font-medium transition-colors cursor-pointer text-center ${
+                            inpatientPriority === p
+                              ? p === 'Critical'
+                                ? 'border-rose-500 bg-rose-500/20 text-rose-300 font-bold'
+                                : p === 'Urgent'
+                                ? 'border-amber-500 bg-amber-500/20 text-amber-300 font-bold'
+                                : 'border-teal-500 bg-teal-500/20 text-teal-300 font-bold'
+                              : 'border-slate-800 bg-slate-950 text-slate-400 hover:text-white'
+                          }`}
+                        >
+                          {p}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="text-[11px] text-slate-400 block mb-1 font-mono">Physician Orders & Instructions</label>
+                  <textarea
+                    rows={2}
+                    value={inpatientOrders}
+                    onChange={(e) => setInpatientOrders(e.target.value)}
+                    placeholder="Enter clinical instructions for this bedside assignment..."
+                    className="w-full p-2.5 text-xs rounded-lg border border-slate-800 bg-slate-950 text-white placeholder-slate-500 focus:outline-none focus:border-teal-500"
+                  />
+                </div>
+              </div>
+
+              {/* Status / Feedback */}
+              {inpatientAssignError && (
+                <div className="p-3 rounded-lg bg-rose-500/10 border border-rose-500/20 text-rose-300 text-xs flex items-center gap-2">
+                  <AlertCircle size={14} className="shrink-0" />
+                  <span>{inpatientAssignError}</span>
+                </div>
+              )}
+
+              {inpatientAssignSuccess && (
+                <div className="p-3 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-300 text-xs flex items-center gap-2">
+                  <CheckCircle2 size={14} className="shrink-0" />
+                  <span>{inpatientAssignSuccess}</span>
+                </div>
+              )}
+
+              {/* Modal Actions */}
+              <div className="pt-2 border-t border-slate-800 flex items-center justify-end gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => setAssigningInpatient(null)}
+                  disabled={isSubmittingInpatientAssignment}
+                  className="px-4 py-2 rounded-lg border border-slate-800 hover:bg-slate-800 text-slate-400 hover:text-white text-xs font-semibold transition-colors cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSubmittingInpatientAssignment || !inpatientSelectedBedId || !inpatientSelectedStaffId}
+                  className="px-5 py-2 rounded-lg bg-teal-500 hover:bg-teal-400 text-slate-950 text-xs font-bold transition-colors cursor-pointer flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed shadow-md"
+                >
+                  {isSubmittingInpatientAssignment ? (
+                    <>
+                      <RefreshCw size={13} className="animate-spin" />
+                      <span>Saving Assignment...</span>
+                    </>
+                  ) : (
+                    <>
+                      <UserCheck size={14} />
+                      <span>Confirm Bed & Staff Assignment</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       {/* Floating AI Hospital Assistant Launcher */}
       <AiHospitalAssistantLauncher user={user} />

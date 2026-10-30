@@ -3434,6 +3434,109 @@ app.post('/api/booking/cancel', authenticateToken, requirePatientRole, async (re
 // CLINICAL & OPERATIONAL DASHBOARD SERVICES (Doctor, Staff, Admin)
 // ============================================================================
 
+export interface HospitalWardBedRecord {
+  id: string;
+  room: string;
+  bed: string;
+  wing: string;
+  status: 'Occupied' | 'Available' | 'Cleaning' | 'Reserved';
+  patient: string;
+  patient_id?: string;
+  patient_name?: string;
+  condition: string;
+  nurse: string;
+  nurse_id?: string;
+  oxygen: string;
+  updated_at?: string;
+}
+
+const INITIAL_WARD_BEDS: HospitalWardBedRecord[] = Array.from({ length: 12 }).map((_, idx) => {
+  const roomNum = 401 + idx;
+  const wing = idx < 8 ? 'West Wing' : 'North Wing';
+  const defaultStatuses: ('Occupied' | 'Available' | 'Cleaning' | 'Reserved')[] = [
+    'Occupied', 'Occupied', 'Cleaning', 'Available',
+    'Occupied', 'Occupied', 'Reserved', 'Available',
+    'Occupied', 'Occupied', 'Cleaning', 'Available'
+  ];
+  const status = defaultStatuses[idx];
+  return {
+    id: `BED-${roomNum}`,
+    room: `Room ${roomNum}`,
+    bed: `Bed ${roomNum}`,
+    wing,
+    status,
+    patient: status === 'Reserved' ? 'Incoming from ED' : 'None',
+    condition: status === 'Cleaning' ? 'Sanitization in progress' : (status === 'Available' ? 'Ready for admission' : 'Post-Op Monitoring'),
+    nurse: 'Ward Staff',
+    oxygen: status === 'Occupied' ? (idx % 2 === 0 ? 'Room Air' : '2L Nasal Cannula') : (status === 'Available' ? 'Central Wall Active' : 'None'),
+  };
+});
+
+let activeHospitalWardBeds: HospitalWardBedRecord[] = [...INITIAL_WARD_BEDS];
+
+export function getHospitalWardBeds(): HospitalWardBedRecord[] {
+  return activeHospitalWardBeds;
+}
+
+export function assignHospitalWardBed(params: {
+  bedIdOrRoom: string;
+  patientId: string;
+  patientName: string;
+  staffId?: string;
+  staffName?: string;
+  condition?: string;
+}): HospitalWardBedRecord | null {
+  const { bedIdOrRoom, patientId, patientName, staffId, staffName, condition } = params;
+
+  // 1. Release any bed previously occupied by this patient
+  activeHospitalWardBeds = activeHospitalWardBeds.map((b) => {
+    if (b.patient_id === patientId && b.id !== bedIdOrRoom && b.room !== bedIdOrRoom && b.bed !== bedIdOrRoom) {
+      return {
+        ...b,
+        status: 'Available',
+        patient: 'None',
+        patient_id: undefined,
+        patient_name: undefined,
+        condition: 'Ready for admission',
+        nurse: 'Ward Staff',
+        nurse_id: undefined,
+        updated_at: new Date().toISOString(),
+      };
+    }
+    return b;
+  });
+
+  // 2. Find and assign target bed
+  let targetFound = false;
+  activeHospitalWardBeds = activeHospitalWardBeds.map((b) => {
+    const isMatch =
+      b.id.toLowerCase() === bedIdOrRoom.toLowerCase() ||
+      b.room.toLowerCase() === bedIdOrRoom.toLowerCase() ||
+      b.bed.toLowerCase() === bedIdOrRoom.toLowerCase() ||
+      bedIdOrRoom.toLowerCase().includes(b.id.toLowerCase()) ||
+      bedIdOrRoom.toLowerCase().includes(b.room.toLowerCase());
+
+    if (isMatch) {
+      targetFound = true;
+      return {
+        ...b,
+        status: 'Occupied',
+        patient: `${patientName} (${patientId})`,
+        patient_id: patientId,
+        patient_name: patientName,
+        nurse: staffName || b.nurse || 'Assigned Nurse',
+        nurse_id: staffId || b.nurse_id,
+        condition: condition || 'Inpatient Bedside Protocol',
+        oxygen: 'Room Air (Continuous SpO2)',
+        updated_at: new Date().toISOString(),
+      };
+    }
+    return b;
+  });
+
+  return activeHospitalWardBeds.find((b) => b.patient_id === patientId) || null;
+}
+
 // 16. Doctor Clinical Workspace Overview
 app.get('/api/doctor/overview', authenticateToken, async (req: Request, res: Response) => {
   const client = getSupabaseAdmin();
@@ -3570,26 +3673,82 @@ app.get('/api/doctor/overview', authenticateToken, async (req: Request, res: Res
         encQuery = encQuery.eq('doctor_id', doctor.doctor_id);
       }
 
-      const { data: encData } = await encQuery;
+      const { data: rawEncData } = await encQuery;
 
-      if (encData && encData.length > 0) {
-        inpatientRounds = encData.map((e: any, idx: number) => ({
-          bed: `Bed ${401 + idx}`,
-          encounter_id: e.encounter_id,
-          patient_name: e.silver_patients?.name || `Patient ${e.patient_id}`,
-          patient_id: e.patient_id,
-          age: Number(e.silver_patients?.age) || 55,
-          gender: e.silver_patients?.gender || 'N/A',
-          diagnosis: e.diagnosis || 'Clinical Observation',
-          encounter_date: e.encounter_date,
-          encounter_type: e.encounter_type || 'Inpatient',
-          day_of_stay: (idx % 5) + 1,
-          acuity: idx % 3 === 0 ? 'Guarded' : 'Stable',
-          vitals: 'BP 122/78 · HR 74 · SpO2 98%',
-          plan: e.treatment_plan || 'Continue protocol management and monitoring.',
-        }));
+      if (rawEncData && rawEncData.length > 0) {
+        // Deduplicate by patient_id so each inpatient admission is distinct
+        const seenPts = new Set<string>();
+        const encData = rawEncData.filter((e: any) => {
+          if (!e.patient_id) return true;
+          if (seenPts.has(e.patient_id)) return false;
+          seenPts.add(e.patient_id);
+          return true;
+        });
+
+        // Query active staff assignments for these inpatients
+        const encPatientIds = encData.map((e: any) => e.patient_id).filter(Boolean);
+        let staffAssignMap: Record<string, any> = {};
+
+        if (encPatientIds.length > 0) {
+          const { data: asnList } = await client
+            .from('silver_staff_assignment')
+            .select('assignment_id, staff_id, patient_id, assignment_type, priority, assignment_status, notes, silver_staff(staff_name, role, department)')
+            .in('patient_id', encPatientIds)
+            .order('assignment_date', { ascending: false });
+
+          if (asnList && asnList.length > 0) {
+            for (const a of asnList) {
+              if (!staffAssignMap[a.patient_id]) {
+                const staffInfo = Array.isArray(a.silver_staff) ? a.silver_staff[0] : a.silver_staff;
+                staffAssignMap[a.patient_id] = {
+                  assignment_id: a.assignment_id,
+                  staff_id: a.staff_id,
+                  staff_name: staffInfo?.staff_name || 'Assigned Staff',
+                  staff_role: staffInfo?.role || 'Clinical Staff',
+                  department: staffInfo?.department || 'Cardiovascular Unit',
+                  priority: a.priority || 'Normal',
+                  status: a.assignment_status || 'Scheduled',
+                  notes: a.notes,
+                };
+              }
+            }
+          }
+        }
+
+        inpatientRounds = encData.map((e: any, idx: number) => {
+          // Look up if patient is assigned to a bed in activeHospitalWardBeds
+          const bedRecord = activeHospitalWardBeds.find(
+            (b) => b.patient_id === e.patient_id || b.patient?.includes(e.patient_id)
+          );
+          const roomName = bedRecord ? bedRecord.room : `Room ${401 + idx}`;
+          const bedName = bedRecord ? bedRecord.bed : `Bed ${401 + idx}`;
+          const bedId = bedRecord ? bedRecord.id : `BED-${401 + idx}`;
+
+          // Also check if notes contains [Ward Location: ...]
+          const activeStaffAssignment = staffAssignMap[e.patient_id] || null;
+
+          return {
+            bed: `${roomName} · ${bedName}`,
+            room: roomName,
+            bed_id: bedId,
+            encounter_id: e.encounter_id,
+            patient_name: e.silver_patients?.name || `Patient ${e.patient_id}`,
+            patient_id: e.patient_id,
+            age: Number(e.silver_patients?.age) || 55,
+            gender: e.silver_patients?.gender || 'N/A',
+            diagnosis: e.diagnosis || 'Clinical Observation',
+            encounter_date: e.encounter_date,
+            encounter_type: e.encounter_type || 'Inpatient',
+            day_of_stay: (idx % 5) + 1,
+            acuity: idx % 3 === 0 ? 'Guarded' : 'Stable',
+            vitals: 'BP 122/78 · HR 74 · SpO2 98%',
+            plan: e.treatment_plan || 'Continue protocol management and monitoring.',
+            assigned_staff: activeStaffAssignment,
+          };
+        });
       }
-    } catch {
+    } catch (err) {
+      console.warn('Error fetching inpatient rounds:', err);
       inpatientRounds = [];
     }
   }
@@ -3879,9 +4038,29 @@ app.get('/api/doctor/staff-candidates', authenticateToken, async (req: Request, 
   }
 });
 
-// 2. Doctor Assigns Staff to a Patient
+// 1b. Get Hospital Ward Beds for Doctor Inpatient Assignment
+app.get('/api/doctor/ward-beds', authenticateToken, async (req: Request, res: Response) => {
+  return res.json({
+    success: true,
+    wardBeds: getHospitalWardBeds(),
+  });
+});
+
+// 2. Doctor Assigns Staff to a Patient (and optionally to a Room/Bed)
 app.post('/api/doctor/assign-staff', authenticateToken, async (req: Request, res: Response) => {
-  const { patientId, staffId, assignmentType, priority, notes, appointmentId, encounterId, startTime, endTime } = req.body;
+  const {
+    patientId,
+    staffId,
+    assignmentType,
+    priority,
+    notes,
+    appointmentId,
+    encounterId,
+    startTime,
+    endTime,
+    bedId,
+    room,
+  } = req.body;
   const client = getSupabaseAdmin();
   const appUser = (req as any).appUser;
   const docId = appUser?.doctor_id || 'DOC100002';
@@ -3918,7 +4097,26 @@ app.post('/api/doctor/assign-staff', authenticateToken, async (req: Request, res
       return res.status(404).json({ success: false, error: `Staff member ${staffId} not found.` });
     }
 
-    // 3. Generate sequential ASN ID
+    // 3. If bed or room specified, assign the hospital ward bed
+    let assignedBedRecord: HospitalWardBedRecord | null = null;
+    let roomBedLabel = '';
+    if (bedId || room) {
+      assignedBedRecord = assignHospitalWardBed({
+        bedIdOrRoom: bedId || room,
+        patientId,
+        patientName: patientRecord.name,
+        staffId,
+        staffName: staffRecord.staff_name,
+        condition: assignmentType || 'Inpatient Bedside Protocol',
+      });
+      if (assignedBedRecord) {
+        roomBedLabel = `${assignedBedRecord.room} (${assignedBedRecord.bed})`;
+      } else {
+        roomBedLabel = room && bedId && room !== bedId ? `${room} (${bedId})` : (room || bedId);
+      }
+    }
+
+    // 4. Generate sequential ASN ID
     const { data: topRow } = await client
       .from('silver_staff_assignment')
       .select('assignment_id')
@@ -3932,6 +4130,10 @@ app.post('/api/doctor/assign-staff', authenticateToken, async (req: Request, res
         nextAsn = `ASN${parseInt(match[1], 10) + 1}`;
       }
     }
+
+    const assignedNotes = roomBedLabel
+      ? `[Ward Location: ${roomBedLabel}] ${notes || 'Clinical assignment ordered by physician'}`
+      : (notes || 'Clinical assignment ordered by physician');
 
     const newAssignment = {
       assignment_id: nextAsn,
@@ -3947,7 +4149,7 @@ app.post('/api/doctor/assign-staff', authenticateToken, async (req: Request, res
       priority: priority || 'Normal',
       assignment_status: 'Scheduled',
       assigned_by: appUser?.staff_id || null,
-      notes: notes || 'Clinical assignment ordered by physician',
+      notes: assignedNotes,
     };
 
     const { error: insError } = await client
@@ -3961,14 +4163,19 @@ app.post('/api/doctor/assign-staff', authenticateToken, async (req: Request, res
 
     return res.json({
       success: true,
-      message: `Successfully assigned ${staffRecord.staff_name} (${staffRecord.role}) to patient ${patientRecord.name}.`,
+      message: `Successfully assigned ${staffRecord.staff_name} (${staffRecord.role}) to patient ${patientRecord.name}${roomBedLabel ? ` at ${roomBedLabel}` : ''}.`,
       assignment: {
         ...newAssignment,
         staff_name: staffRecord.staff_name,
         staff_role: staffRecord.role,
         department: staffRecord.department,
         patient_name: patientRecord.name,
+        room: assignedBedRecord?.room || room,
+        bed: assignedBedRecord?.bed || bedId,
+        bed_id: assignedBedRecord?.id || bedId,
       },
+      assignedBed: assignedBedRecord,
+      wardBeds: getHospitalWardBeds(),
     });
   } catch (err: any) {
     console.error('Error assigning staff:', err);
@@ -4142,25 +4349,33 @@ app.get('/api/staff/overview', authenticateToken, async (req: Request, res: Resp
         'Occupied', 'Occupied', 'Cleaning', 'Available'
       ];
 
-      wardBeds = Array.from({ length: 12 }).map((_, idx) => {
-        const roomNum = 401 + idx;
+      wardBeds = activeHospitalWardBeds.map((bedItem, idx) => {
+        // If the bed has an active assigned patient from doctor, preserve that
+        if (bedItem.patient_id || bedItem.status === 'Occupied') {
+          return {
+            ...bedItem,
+            nurse: bedItem.nurse || staff.name,
+          };
+        }
         const enc: any = encData && encData[idx] ? encData[idx] : null;
         const status = defaultStatuses[idx];
         const isOccupied = status === 'Occupied';
         const patientName = enc ? (Array.isArray(enc.silver_patients) ? enc.silver_patients[0]?.name : enc.silver_patients?.name) || 'Patient' : 'Patient';
         return {
-          id: `BED-${roomNum}`,
-          room: `Room ${roomNum}`,
-          wing: roomWings[idx],
-          status,
+          id: bedItem.id || `BED-${401 + idx}`,
+          room: bedItem.room || `Room ${401 + idx}`,
+          bed: bedItem.bed || `Bed ${401 + idx}`,
+          wing: bedItem.wing || roomWings[idx],
+          status: bedItem.status || status,
           patient: isOccupied && enc ? `${patientName} (${enc.patient_id})` : (status === 'Reserved' ? 'Incoming from ED' : 'None'),
+          patient_id: isOccupied && enc ? enc.patient_id : undefined,
           condition: isOccupied && enc ? (enc.diagnosis || 'Post-Op Monitoring') : (status === 'Cleaning' ? 'Sanitization in progress' : 'Ready for admission'),
           nurse: staff.name,
           oxygen: isOccupied ? (idx % 2 === 0 ? 'Room Air' : '2L Nasal Cannula') : (status === 'Available' ? 'Central Wall Active' : 'None'),
         };
       });
     } catch {
-      wardBeds = [];
+      wardBeds = activeHospitalWardBeds;
     }
   }
 
