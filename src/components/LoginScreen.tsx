@@ -40,6 +40,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
 
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [isUnlinkedProfile, setIsUnlinkedProfile] = useState<boolean>(false);
   const [verificationNotice, setVerificationNotice] = useState<string | null>(null);
 
 
@@ -90,6 +91,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
+    setIsUnlinkedProfile(false);
 
     const cleanInput = identifier.trim();
 
@@ -152,6 +154,9 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
         return;
       }
 
+      if (response.errorType === 'PROFILE_NOT_LINKED') {
+        setIsUnlinkedProfile(true);
+      }
       setError(response.message || 'Authentication failed. Please verify your credentials.');
     } catch {
       setError('An unexpected error occurred while connecting to hospital authentication.');
@@ -162,6 +167,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
 
   const handleGoogleLogin = async () => {
     setError(null);
+    setIsUnlinkedProfile(false);
     setIsLoading(true);
     try {
       const remembered = authService.getRememberedIdentity();
@@ -194,6 +200,9 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
         return;
       }
 
+      if (response.errorType === 'PROFILE_NOT_LINKED') {
+        setIsUnlinkedProfile(true);
+      }
       setError(response.message || 'Google authentication failed. Please try again.');
     } catch {
       setError('Failed to authenticate with Google identity provider.');
@@ -271,10 +280,24 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
       {error && (
         <div
           role="alert"
-          className="mb-5 p-3.5 rounded-xl bg-rose-950/60 border border-rose-500/40 text-xs text-rose-200 animate-in fade-in duration-200 flex items-start gap-2.5"
+          className="mb-5 p-3.5 rounded-xl bg-rose-950/60 border border-rose-500/40 text-xs text-rose-200 animate-in fade-in duration-200 flex flex-col gap-2.5"
         >
-          <AlertCircle size={16} className="text-rose-400 shrink-0 mt-0.5" />
-          <div className="leading-relaxed">{error}</div>
+          <div className="flex items-start gap-2.5">
+            <AlertCircle size={16} className="text-rose-400 shrink-0 mt-0.5" />
+            <div className="leading-relaxed">{error}</div>
+          </div>
+          {isUnlinkedProfile && (
+            <div className="pt-2 border-t border-rose-800/40 flex items-center justify-between">
+              <span className="text-[11px] text-rose-300">New patient, physician, or staff member?</span>
+              <button
+                type="button"
+                onClick={() => onNavigate('signup', 'patient')}
+                className="px-2.5 py-1 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 text-rose-200 font-semibold text-[11px] transition-colors border border-rose-500/30 cursor-pointer"
+              >
+                Register Account Profile
+              </button>
+            </div>
+          )}
         </div>
       )}
 
