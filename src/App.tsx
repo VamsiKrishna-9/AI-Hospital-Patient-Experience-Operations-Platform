@@ -76,16 +76,6 @@ export default function App() {
   };
 
   const handleLogout = () => {
-    const token = authService.getToken();
-    if (token) {
-      fetch('/api/auth/logout', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-      }).catch(() => {});
-    }
     authService.clearSession();
     patientService.clearSession();
     setActiveUser(null);
