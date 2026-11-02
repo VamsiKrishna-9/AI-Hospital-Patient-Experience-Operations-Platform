@@ -22,6 +22,7 @@ import {
   Bed,
   Check,
   Send,
+  Users,
 } from 'lucide-react';
 import { AuthUser, HospitalRole } from '../types/auth';
 import { AiHospitalAssistantLauncher } from './AiHospitalAssistantLauncher';
@@ -82,14 +83,27 @@ export const DoctorDashboard: React.FC<DoctorDashboardProps> = ({ user, onLogout
   const [prescriptionNote, setPrescriptionNote] = useState('');
   const [saveSuccessNotice, setSaveSuccessNotice] = useState<string | null>(null);
 
+  // Staff Assignment State
+  const [staffCandidates, setStaffCandidates] = useState<any[]>([]);
+  const [selectedStaffId, setSelectedStaffId] = useState('');
+  const [staffAssignmentNotes, setStaffAssignmentNotes] = useState('');
+  const [assignNotice, setAssignNotice] = useState<string | null>(null);
+
   useEffect(() => {
     async function loadDoctorData() {
       try {
         const token = sessionStorage.getItem('mediai_patient_auth_token');
-        const res = await fetch('/api/doctor/overview', {
-          headers: token ? { Authorization: `Bearer ${token}` } : {},
-        });
-        const data = await res.json();
+        const [overviewRes, staffRes] = await Promise.all([
+          fetch('/api/doctor/overview', {
+            headers: token ? { Authorization: `Bearer ${token}` } : {},
+          }),
+          fetch('/api/doctor/staff-candidates?activeOnly=true', {
+            headers: token ? { Authorization: `Bearer ${token}` } : {},
+          }),
+        ]);
+        const data = await overviewRes.json();
+        const staffData = await staffRes.json();
+
         if (data.success) {
           setDoctorProfile(data.doctor || null);
           setSchedule(data.schedule || []);
@@ -100,8 +114,14 @@ export const DoctorDashboard: React.FC<DoctorDashboardProps> = ({ user, onLogout
             setEncounterNote(data.schedule[0].notes || '');
           }
         }
+        if (staffData.success && staffData.candidates) {
+          setStaffCandidates(staffData.candidates);
+          if (staffData.candidates.length > 0) {
+            setSelectedStaffId(staffData.candidates[0].staff_id);
+          }
+        }
       } catch (err) {
-        console.error('Failed to load doctor overview', err);
+        console.error('Failed to load doctor data or staff candidates', err);
       } finally {
         setIsLoading(false);
       }
@@ -109,11 +129,45 @@ export const DoctorDashboard: React.FC<DoctorDashboardProps> = ({ user, onLogout
     loadDoctorData();
   }, []);
 
+  const handleAssignStaffToAppointment = async () => {
+    if (!selectedAppointment || !selectedStaffId) return;
+    try {
+      const token = sessionStorage.getItem('mediai_patient_auth_token');
+      const res = await fetch('/api/doctor/assign-staff', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({
+          staffId: selectedStaffId,
+          patientId: selectedAppointment.patient_id,
+          appointmentId: selectedAppointment.appointment_id,
+          notes: staffAssignmentNotes,
+          assignmentType: 'Appointment Clinical Support',
+        }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setAssignNotice(`Staff member successfully assigned to appointment ${selectedAppointment.appointment_id}.`);
+        setStaffAssignmentNotes('');
+        setTimeout(() => setAssignNotice(null), 4000);
+      } else {
+        setAssignNotice(`Assignment failed: ${data.message}`);
+        setTimeout(() => setAssignNotice(null), 4000);
+      }
+    } catch (err: any) {
+      setAssignNotice(`Error: ${err.message || 'Network failure'}`);
+      setTimeout(() => setAssignNotice(null), 4000);
+    }
+  };
+
   const handleSelectAppointment = (apt: AppointmentItem) => {
     setSelectedAppointment(apt);
     setEncounterNote(apt.notes || '');
     setPrescriptionNote('');
     setSaveSuccessNotice(null);
+    setAssignNotice(null);
   };
 
   const handleSaveEncounter = async () => {
@@ -460,6 +514,45 @@ export const DoctorDashboard: React.FC<DoctorDashboardProps> = ({ user, onLogout
                       placeholder="e.g. Atorvastatin 20mg PO QHS (30-day supply) / Lisinopril 10mg daily"
                       className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-teal-500"
                     />
+                  </div>
+
+                  {/* Staff Assignment Card for Appointment */}
+                  <div className="p-4 rounded-xl bg-slate-950/70 border border-slate-800 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-semibold text-slate-300 flex items-center gap-1.5">
+                        <Users size={14} className="text-teal-400" />
+                        <span>Assign Staff Member to Appointment</span>
+                      </span>
+                      {assignNotice && <span className="text-[11px] text-teal-300 font-medium">{assignNotice}</span>}
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <select
+                        value={selectedStaffId}
+                        onChange={(e) => setSelectedStaffId(e.target.value)}
+                        className="bg-slate-900 border border-slate-800 text-xs rounded-xl px-3 py-2 text-white focus:outline-none focus:border-teal-500"
+                      >
+                        {staffCandidates.map((s) => (
+                          <option key={s.staff_id} value={s.staff_id}>
+                            {s.staff_name || s.name} ({s.role} - {s.department})
+                          </option>
+                        ))}
+                        {staffCandidates.length === 0 && <option value="">No active staff candidates available</option>}
+                      </select>
+                      <input
+                        type="text"
+                        value={staffAssignmentNotes}
+                        onChange={(e) => setStaffAssignmentNotes(e.target.value)}
+                        placeholder="Assignment instructions or notes..."
+                        className="px-3 py-2 rounded-xl bg-slate-900 border border-slate-800 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-teal-500"
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleAssignStaffToAppointment}
+                      className="w-full sm:w-auto px-4 py-2 rounded-xl text-xs font-semibold bg-teal-500/20 hover:bg-teal-500/30 text-teal-300 border border-teal-500/40 transition-colors cursor-pointer"
+                    >
+                      Assign Staff to Appointment ({selectedAppointment.appointment_id})
+                    </button>
                   </div>
 
                   {/* Action buttons */}

@@ -3558,7 +3558,7 @@ app.get('/api/doctor/ward-beds', authenticateToken, async (req: Request, res: Re
   });
 });
 
-// 3. Doctor: Assign Staff Member to Patient
+// 3. Doctor: Assign Staff Member to Patient / Appointment
 app.post('/api/doctor/assign-staff', authenticateToken, async (req: Request, res: Response) => {
   const client = getSupabaseAdmin();
   const appUser = (req as any).appUser;
@@ -3574,6 +3574,8 @@ app.post('/api/doctor/assign-staff', authenticateToken, async (req: Request, res
     notes,
     roomId,
     bedId,
+    appointmentId,
+    appointment_id,
   } = req.body;
 
   if (!client) {
@@ -3584,8 +3586,10 @@ app.post('/api/doctor/assign-staff', authenticateToken, async (req: Request, res
     return res.status(400).json({ success: false, message: 'staffId is required to assign staff.' });
   }
 
+  const resolvedAppointmentId = appointmentId || appointment_id || null;
+
   try {
-    // Verify staff exists in silver_staff
+    // 1. Verify staff exists in silver_staff
     const { data: stf, error: stfErr } = await client
       .from('silver_staff')
       .select('staff_id, staff_name')
@@ -3599,31 +3603,11 @@ app.post('/api/doctor/assign-staff', authenticateToken, async (req: Request, res
       return res.status(400).json({ success: false, message: `Staff member with ID ${staffId} not found in silver_staff.` });
     }
 
-    // Verify patient if provided
-    let verifiedPatient: any = null;
-    if (patientId) {
-      const { data: pat, error: patErr } = await client
-        .from('silver_patients')
-        .select('patient_id, name')
-        .eq('patient_id', patientId)
-        .maybeSingle();
-
-      if (patErr) {
-        return res.status(500).json({ success: false, message: patErr.message });
-      }
-      if (!pat) {
-        return res.status(400).json({ success: false, message: `Patient with ID ${patientId} not found in silver_patients.` });
-      }
-      verifiedPatient = pat;
-    }
-
-    // Resolve doctor identity strictly from authenticated user and silver_doctors
-    // Never trust client-supplied doctor ID over the authenticated identity!
+    // 2. Resolve doctor identity strictly from authenticated user and silver_doctors
     let resolvedDoctorId: string | null = null;
     const userRole = (appUser?.role || '').toLowerCase();
 
     if (userRole === 'doctor') {
-      // For doctor users, always enforce their authenticated doctor identity
       if (appUser?.doctor_id) {
         resolvedDoctorId = appUser.doctor_id;
       } else if (appUser?.email) {
@@ -3635,7 +3619,6 @@ app.post('/api/doctor/assign-staff', authenticateToken, async (req: Request, res
         if (doc?.doctor_id) resolvedDoctorId = doc.doctor_id;
       }
     } else if (userRole === 'admin') {
-      // Admin can specify a doctorId or use their own profile
       if (doctorId) {
         resolvedDoctorId = doctorId;
       } else if (appUser?.doctor_id) {
@@ -3645,7 +3628,6 @@ app.post('/api/doctor/assign-staff', authenticateToken, async (req: Request, res
       resolvedDoctorId = appUser.doctor_id;
     }
 
-    // Verify resolved doctor ID exists in canonical silver_doctors
     if (resolvedDoctorId) {
       const { data: docRec } = await client
         .from('silver_doctors')
@@ -3664,9 +3646,82 @@ app.post('/api/doctor/assign-staff', authenticateToken, async (req: Request, res
       });
     }
 
+    // 3. Validate appointment if appointmentId is provided (Requirements 3 & 5)
+    let verifiedPatientId = patientId || null;
+    let resolvedDate = assignmentDate || getHospitalLocalDateTime().dateStr;
+
+    if (resolvedAppointmentId) {
+      const { data: aptRec, error: aptErr } = await client
+        .from('silver_appointments')
+        .select('appointment_id, patient_id, doctor_id, appointment_date')
+        .eq('appointment_id', resolvedAppointmentId)
+        .maybeSingle();
+
+      if (aptErr) {
+        return res.status(500).json({ success: false, message: aptErr.message });
+      }
+      if (!aptRec) {
+        return res.status(404).json({ success: false, message: `Appointment ${resolvedAppointmentId} not found in silver_appointments.` });
+      }
+
+      // Validate that the appointment belongs to the logged-in doctor (unless admin)
+      if (userRole !== 'admin' && aptRec.doctor_id && aptRec.doctor_id !== resolvedDoctorId) {
+        return res.status(403).json({
+          success: false,
+          message: 'Unauthorized: You can only assign staff to your own appointments.',
+        });
+      }
+
+      // Validate patient association
+      if (patientId && aptRec.patient_id && aptRec.patient_id !== patientId) {
+        return res.status(400).json({
+          success: false,
+          message: `Patient ID mismatch: Appointment belongs to patient ${aptRec.patient_id}, not ${patientId}.`,
+        });
+      }
+
+      verifiedPatientId = aptRec.patient_id || patientId;
+      if (aptRec.appointment_date) {
+        resolvedDate = aptRec.appointment_date;
+      }
+
+      // Prevent accidental duplicate assignments for the same appointment and staff member
+      const { data: existingDupe } = await client
+        .from('silver_staff_assignment')
+        .select('assignment_id')
+        .eq('appointment_id', resolvedAppointmentId)
+        .eq('staff_id', staffId)
+        .neq('assignment_status', 'Cancelled')
+        .maybeSingle();
+
+      if (existingDupe) {
+        return res.status(400).json({
+          success: false,
+          message: `Staff member ${stf.staff_name} is already assigned to appointment ${resolvedAppointmentId}.`,
+        });
+      }
+    }
+
+    // Verify patient if provided or resolved
+    let verifiedPatient: any = null;
+    if (verifiedPatientId) {
+      const { data: pat, error: patErr } = await client
+        .from('silver_patients')
+        .select('patient_id, name')
+        .eq('patient_id', verifiedPatientId)
+        .maybeSingle();
+
+      if (patErr) {
+        return res.status(500).json({ success: false, message: patErr.message });
+      }
+      if (!pat) {
+        return res.status(400).json({ success: false, message: `Patient with ID ${verifiedPatientId} not found in silver_patients.` });
+      }
+      verifiedPatient = pat;
+    }
+
     const validPriorities = ['Low', 'Normal', 'High', 'Urgent', 'Critical'];
     const resolvedPriority = validPriorities.includes(priority) ? priority : 'Normal';
-    const resolvedDate = assignmentDate || getHospitalLocalDateTime().dateStr;
 
     // Combine room/bed location into notes if provided
     let combinedNotes = notes || '';
@@ -3678,21 +3733,28 @@ app.post('/api/doctor/assign-staff', authenticateToken, async (req: Request, res
     }
 
     const asgId = `ASG${Date.now().toString().slice(-6)}`;
+    const insertPayload: any = {
+      assignment_id: asgId,
+      staff_id: staffId,
+      patient_id: verifiedPatient?.patient_id || verifiedPatientId || null,
+      doctor_id: resolvedDoctorId || null,
+      assignment_type: assignmentType || 'Clinical Patient Care',
+      assignment_date: resolvedDate,
+      start_time: startTime || '08:00:00',
+      end_time: endTime || '16:00:00',
+      priority: resolvedPriority,
+      assignment_status: 'Scheduled',
+      notes: combinedNotes || null,
+      assigned_by: resolvedDoctorId,
+    };
+
+    if (resolvedAppointmentId) {
+      insertPayload.appointment_id = resolvedAppointmentId;
+    }
+
     const { data: newAsg, error: insertErr } = await client
       .from('silver_staff_assignment')
-      .insert({
-        assignment_id: asgId,
-        staff_id: staffId,
-        patient_id: verifiedPatient?.patient_id || patientId || null,
-        doctor_id: resolvedDoctorId || null,
-        assignment_type: assignmentType || 'Clinical Patient Care',
-        assignment_date: resolvedDate,
-        start_time: startTime || '08:00:00',
-        end_time: endTime || '16:00:00',
-        priority: resolvedPriority,
-        assignment_status: 'Scheduled',
-        notes: combinedNotes || null,
-      })
+      .insert(insertPayload)
       .select()
       .single();
 
@@ -3702,7 +3764,7 @@ app.post('/api/doctor/assign-staff', authenticateToken, async (req: Request, res
 
     return res.status(201).json({
       success: true,
-      message: `Staff member ${stf.staff_name} (${staffId}) assigned successfully to patient ${verifiedPatient?.name || patientId || 'chart'}.`,
+      message: `Staff member ${stf.staff_name} (${staffId}) assigned successfully to appointment ${resolvedAppointmentId || 'chart'}.`,
       assignment: newAsg,
     });
   } catch (err: any) {
@@ -3745,6 +3807,7 @@ app.get('/api/doctor/patient-assignments/:patientId', authenticateToken, async (
         staff_id,
         patient_id,
         doctor_id,
+        appointment_id,
         assignment_type,
         assignment_date,
         start_time,
@@ -3772,6 +3835,7 @@ app.get('/api/doctor/patient-assignments/:patientId', authenticateToken, async (
       staffRole: a.silver_staff?.role || 'Clinical Staff',
       doctorId: a.doctor_id,
       doctorName: a.silver_doctors?.doctor_name || 'Attending Physician',
+      appointmentId: a.appointment_id || null,
       assignmentType: a.assignment_type,
       assignmentDate: a.assignment_date,
       startTime: a.start_time ? String(a.start_time).slice(0, 5) : '08:00',
