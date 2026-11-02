@@ -107,7 +107,7 @@ export const DoctorDashboard: React.FC<DoctorDashboardProps> = ({ user, onLogout
       }
     }
     loadDoctorData();
-  }, [user?.id, user?.doctor_id]);
+  }, []);
 
   const handleSelectAppointment = (apt: AppointmentItem) => {
     setSelectedAppointment(apt);
@@ -239,8 +239,8 @@ export const DoctorDashboard: React.FC<DoctorDashboardProps> = ({ user, onLogout
           {/* Zone 3: Primary Action & Profile */}
           <div className="flex items-center gap-2 sm:gap-2.5 shrink-0">
             <div className="hidden sm:block text-right">
-              <div className="text-xs font-medium text-white">{doctorProfile?.name || user?.name || 'Attending Physician'}</div>
-              <div className="text-[10px] text-slate-400 font-mono">ID: {doctorProfile?.doctor_id || user?.doctor_id || 'Physician Workspace'}</div>
+              <div className="text-xs font-medium text-white">{user?.name || 'Dr. Marcus Vance, MD'}</div>
+              <div className="text-[10px] text-slate-400 font-mono">ID: {user?.doctor_id || 'DOC-7721'}</div>
             </div>
             {/* Institutional Verified Role Badge (Single-Role Enforced for Security) */}
             <div

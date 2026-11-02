@@ -231,7 +231,7 @@ export const StaffDashboard: React.FC<StaffDashboardProps> = ({ user, onLogout }
 
   useEffect(() => {
     loadStaffData(selectedDate);
-  }, [selectedDate, user?.id, user?.staff_id]);
+  }, [selectedDate]);
 
   const handleOpenRoomOpModal = (type: 'Occupied' | 'Available' | 'Cleaning' | 'Reserved' | 'Maintenance') => {
     if (!selectedBed) return;

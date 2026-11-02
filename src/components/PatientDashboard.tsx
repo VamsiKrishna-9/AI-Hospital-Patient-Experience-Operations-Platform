@@ -137,9 +137,8 @@ export const PatientDashboard: React.FC<PatientDashboardProps> = ({ user, onLogo
   };
 
   useEffect(() => {
-    setDashboardData(null);
     fetchDashboard();
-  }, [user?.id, user?.patient_id]);
+  }, []);
 
   const handleBookingSuccess = (newApt: AppointmentRecord) => {
     setSuccessToast(`Appointment with ${newApt.doctor_name} on ${newApt.appointment_date} confirmed!`);
@@ -428,13 +427,13 @@ export const PatientDashboard: React.FC<PatientDashboardProps> = ({ user, onLogo
                   </div>
 
                   <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-white">
-                    Good day, {dashboardData.patient.name || `${dashboardData.patient.first_name || ''} ${dashboardData.patient.last_name || ''}`.trim() || user?.name || 'Patient'}
+                    Good day, {dashboardData.patient.name || `${dashboardData.patient.first_name} ${dashboardData.patient.last_name}`}
                   </h1>
 
                   <p className="text-xs sm:text-sm text-emerald-50 max-w-xl leading-relaxed font-normal">
                     Primary Physician:{' '}
                     <strong className="text-white font-bold">
-                      {dashboardData.patient.primary_doctor_name || 'Assigned Care Team'}
+                      {dashboardData.patient.primary_doctor_name || 'Dr. Marcus Chen, MD'}
                     </strong>
                     . Your care timeline, hospital encounters, diagnostics, and patient experience reviews are synchronized with the hospital database.
                   </p>

@@ -555,7 +555,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }
     }
     loadAdminData();
     loadUsersAndAuditLogs();
-  }, [user?.id]);
+  }, []);
 
   const handleApplyRoleChange = async (targetUser: AdminUserRecord) => {
     const userKey = targetUser.id || targetUser.email;
@@ -741,7 +741,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }
               <span>Broadcast</span>
             </button>
             <div className="hidden xl:block text-right">
-              <div className="text-xs font-medium text-white">{user?.name || user?.email || 'Hospital Administrator'}</div>
+              <div className="text-xs font-medium text-white">{user?.name || 'Arthur Sterling, MHA'}</div>
               <div className="text-[10px] text-slate-400 font-mono">COO & Governance</div>
             </div>
             {/* Institutional Verified Role Badge (Single-Role Enforced for Security) */}
