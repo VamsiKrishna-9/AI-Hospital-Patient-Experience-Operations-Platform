@@ -134,6 +134,7 @@ export interface AuthResponse {
   status?: 'active' | 'pending_approval' | 'rejected';
   token?: string;
   errors?: Record<string, string>;
+  errorType?: string;
   targetEndpoint?: string;
 }
 

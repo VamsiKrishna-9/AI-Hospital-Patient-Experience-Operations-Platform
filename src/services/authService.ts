@@ -106,6 +106,7 @@ class AuthService {
         return {
           success: false,
           isDemoMode: false,
+          errorType: result.errorType,
           message: result.message || 'Invalid credentials. Please check your email address or ID.',
           errors: result.errors,
         };
@@ -209,6 +210,7 @@ class AuthService {
       if (!response.ok || !result.success) {
         return {
           success: false,
+          errorType: result.errorType,
           message: result.message || 'Google authentication failed.',
         };
       }

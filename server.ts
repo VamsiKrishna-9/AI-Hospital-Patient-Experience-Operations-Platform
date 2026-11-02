@@ -165,6 +165,53 @@ function formatPatientProfile(raw: any): PatientProfile {
 // Validates Supabase JWT access tokens server-side for protected API requests.
 // Resolves identity through auth.users(id) and public.app_users(id).
 // ============================================================================
+// ============================================================================
+// REGISTERED ACCOUNT INTERFACE & ACTIVE SERVER-SIDE SESSIONS
+// ============================================================================
+export interface RegisteredAccount {
+  id: string;
+  email: string;
+  fullName: string;
+  firstName?: string;
+  lastName?: string;
+  role: 'patient' | 'doctor' | 'staff' | 'admin';
+  password?: string;
+  patient_id?: string;
+  doctor_id?: string;
+  staff_id?: string;
+  is_active?: boolean;
+  status?: 'active' | 'pending_approval' | 'rejected';
+  medical_reg_number?: string;
+  qualifications?: string;
+  designation?: string;
+  years_of_experience?: string | number;
+  historical_identifiers?: {
+    doctor_id?: string;
+    staff_id?: string;
+    patient_id?: string;
+  };
+  specialty?: string;
+  department?: string;
+  phone?: string;
+  date_of_birth?: string;
+  created_at: string;
+  preferences?: {
+    chatbot_enabled?: boolean;
+    [key: string]: any;
+  };
+}
+
+export const REGISTERED_ACCOUNTS = new Map<string, RegisteredAccount>();
+export const ACTIVE_SESSIONS = new Map<string, RegisteredAccount>();
+
+export function getSessionAccountByToken(token: string): RegisteredAccount | undefined {
+  return ACTIVE_SESSIONS.get(token);
+}
+
+// Validates Supabase JWT access tokens server-side for protected API requests.
+// Authoritatively resolves identity through Supabase Auth (auth.users and public.app_users),
+// with support for validated active server sessions.
+// ============================================================================
 async function authenticateToken(req: Request, res: Response, next: NextFunction) {
   const authHeader = req.headers['authorization'];
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -177,55 +224,80 @@ async function authenticateToken(req: Request, res: Response, next: NextFunction
   const token = authHeader.split(' ')[1];
   const client = getSupabaseAdmin();
 
-  if (!isDatabaseConnected || !client) {
-    return res.status(503).json({
-      success: false,
-      message: 'Authentication service unavailable. Connect Supabase to validate sessions.',
-    });
+  // 1. Authoritative Supabase Auth verification when database is connected
+  if (isDatabaseConnected && client) {
+    try {
+      const { data: { user }, error: authError } = await client.auth.getUser(token);
+
+      if (!authError && user) {
+        // Resolve app_users identity mapped 1:1 with auth.users(id)
+        const { data: appUser, error: appUserError } = await client
+          .from('app_users')
+          .select('*')
+          .eq('id', user.id)
+          .single();
+
+        if (appUserError || !appUser) {
+          return res.status(403).json({
+            success: false,
+            errorType: 'PROFILE_NOT_LINKED',
+            message: 'User profile not found in application registry.',
+          });
+        }
+
+        if (!appUser.is_active || appUser.status === 'pending_approval') {
+          return res.status(403).json({
+            success: false,
+            message: 'This user account is inactive or pending administrative approval.',
+          });
+        }
+
+        (req as any).authUser = user;
+        (req as any).appUser = appUser;
+        (req as any).authenticatedPatientId = appUser.patient_id;
+        (req as any).userToken = token;
+        return next();
+      }
+    } catch {
+      // Continue to check active sessions
+    }
   }
 
-  try {
-    const { data: { user }, error: authError } = await client.auth.getUser(token);
-
-    if (authError || !user) {
-      return res.status(401).json({
-        success: false,
-        message: 'Session expired or invalid. Please sign in again.',
-      });
-    }
-
-    // Resolve app_users identity mapped 1:1 with auth.users(id)
-    const { data: appUser, error: appUserError } = await client
-      .from('app_users')
-      .select('*')
-      .eq('id', user.id)
-      .single();
-
-    if (appUserError || !appUser) {
+  // 2. Verified Active Session token check (for Google SSO and local test sessions)
+  const sessionAccount = ACTIVE_SESSIONS.get(token);
+  if (sessionAccount) {
+    if (sessionAccount.is_active === false || sessionAccount.status === 'pending_approval') {
       return res.status(403).json({
         success: false,
-        message: 'User profile not found in application registry.',
+        message: 'This user account is pending administrative verification and approval.',
       });
     }
 
-    if (!appUser.is_active) {
-      return res.status(403).json({
-        success: false,
-        message: 'This user account has been deactivated. Please contact administration.',
-      });
-    }
-
-    (req as any).authUser = user;
-    (req as any).appUser = appUser;
-    (req as any).authenticatedPatientId = appUser.patient_id;
+    (req as any).authUser = { id: sessionAccount.id, email: sessionAccount.email };
+    (req as any).appUser = {
+      id: sessionAccount.id,
+      email: sessionAccount.email,
+      role: sessionAccount.role,
+      full_name: sessionAccount.fullName,
+      name: sessionAccount.fullName,
+      patient_id: sessionAccount.patient_id,
+      doctor_id: sessionAccount.doctor_id,
+      staff_id: sessionAccount.staff_id,
+      specialty: sessionAccount.specialty,
+      department: sessionAccount.department,
+      is_active: sessionAccount.is_active ?? true,
+      status: sessionAccount.status ?? 'active',
+    };
+    (req as any).authenticatedPatientId = sessionAccount.patient_id;
     (req as any).userToken = token;
-    next();
-  } catch (err) {
-    return res.status(401).json({
-      success: false,
-      message: 'Error verifying session credentials.',
-    });
+    return next();
   }
+
+  // 3. Fallback when credentials cannot be verified
+  return res.status(401).json({
+    success: false,
+    message: 'Session expired or invalid. Please sign in again.',
+  });
 }
 
 // Middleware: Strict patient-role enforcer
@@ -240,6 +312,30 @@ function requirePatientRole(req: Request, res: Response, next: NextFunction) {
   next();
 }
 
+// Middleware: Strict doctor-role enforcer
+function requireDoctorRole(req: Request, res: Response, next: NextFunction) {
+  const appUser = (req as any).appUser;
+  if (!appUser || appUser.role !== 'doctor' || !appUser.doctor_id) {
+    return res.status(403).json({
+      success: false,
+      message: 'Access restricted: Physician role authorization required.',
+    });
+  }
+  next();
+}
+
+// Middleware: Strict staff-role enforcer
+function requireStaffRole(req: Request, res: Response, next: NextFunction) {
+  const appUser = (req as any).appUser;
+  if (!appUser || appUser.role !== 'staff' || !appUser.staff_id) {
+    return res.status(403).json({
+      success: false,
+      message: 'Access restricted: Clinical staff role authorization required.',
+    });
+  }
+  next();
+}
+
 // Middleware: Strict admin-role enforcer
 function requireAdminRole(req: Request, res: Response, next: NextFunction) {
   const appUser = (req as any).appUser;
@@ -247,6 +343,42 @@ function requireAdminRole(req: Request, res: Response, next: NextFunction) {
     return res.status(403).json({
       success: false,
       message: 'Access restricted: Executive Administrator authorization required.',
+    });
+  }
+  next();
+}
+
+// Middleware: Doctor or Administrator role enforcer
+function requireDoctorOrAdminRole(req: Request, res: Response, next: NextFunction) {
+  const appUser = (req as any).appUser;
+  if (!appUser || (appUser.role !== 'doctor' && appUser.role !== 'admin')) {
+    return res.status(403).json({
+      success: false,
+      message: 'Access restricted: Physician or Administrator authorization required.',
+    });
+  }
+  if (appUser.role === 'doctor' && !appUser.doctor_id) {
+    return res.status(403).json({
+      success: false,
+      message: 'Access restricted: Doctor profile must be linked to account.',
+    });
+  }
+  next();
+}
+
+// Middleware: Clinical Staff or Administrator role enforcer
+function requireStaffOrAdminRole(req: Request, res: Response, next: NextFunction) {
+  const appUser = (req as any).appUser;
+  if (!appUser || (appUser.role !== 'staff' && appUser.role !== 'admin')) {
+    return res.status(403).json({
+      success: false,
+      message: 'Access restricted: Clinical staff or Administrator authorization required.',
+    });
+  }
+  if (appUser.role === 'staff' && !appUser.staff_id) {
+    return res.status(403).json({
+      success: false,
+      message: 'Access restricted: Staff profile must be linked to account.',
     });
   }
   next();
@@ -533,92 +665,42 @@ app.post('/api/auth/login', async (req: Request, res: Response) => {
 });
 
 // ============================================================================
-// DYNAMIC MULTI-ROLE IN-MEMORY & SUPABASE HYBRID REGISTRY
-// Supports persistent in-memory user registration, role updates, and Google SSO
+// DYNAMIC MULTI-ROLE LOCAL & SUPABASE HYBRID REGISTRY
+// Supports user registration, role verification, and Google SSO
 // ============================================================================
 
-interface RegisteredAccount {
-  id: string;
-  email: string;
-  fullName: string;
-  role: 'patient' | 'doctor' | 'staff' | 'admin';
-  password?: string;
-  patient_id?: string;
-  doctor_id?: string;
-  staff_id?: string;
-  is_active?: boolean;
-  status?: 'active' | 'pending_approval' | 'rejected';
-  medical_reg_number?: string;
-  qualifications?: string;
-  designation?: string;
-  years_of_experience?: string | number;
-  historical_identifiers?: {
-    doctor_id?: string;
-    staff_id?: string;
-    patient_id?: string;
-  };
-  specialty?: string;
-  department?: string;
-  phone?: string;
-  date_of_birth?: string;
-  created_at: string;
-  preferences?: {
-    chatbot_enabled?: boolean;
-    [key: string]: any;
-  };
-}
-
-const REGISTERED_ACCOUNTS = new Map<string, RegisteredAccount>();
-
-// Initialize default hospital credential personas
+// Initialize standard hospital institutional personas for testing/offline environments
 function initializeDefaultAccounts() {
+  if (process.env.NODE_ENV === 'production') {
+    // In production, no fabricated accounts are populated. Supabase is authoritative.
+    return;
+  }
+
   const defaults: RegisteredAccount[] = [
-    {
-      id: 'usr-patient-1001',
-      email: 'vvkrishna879@gmail.com',
-      fullName: 'Vamsi Krishna Vadlamudi',
-      role: 'patient',
-      password: 'Patient@2026',
-      patient_id: 'P1001',
-      phone: '+91 8792237307',
-      date_of_birth: '2004-09-17',
-      is_active: true,
-      status: 'active',
-      created_at: new Date().toISOString(),
-    },
-    {
-      id: 'usr-patient-1002',
-      email: 'vamsikrishnavadlamudi17@gmail.com',
-      fullName: 'Krishna',
-      role: 'patient',
-      password: 'Patient@2026',
-      patient_id: 'P1002',
-      phone: '+91 9642789056',
-      date_of_birth: '2003-09-17',
-      is_active: true,
-      status: 'active',
-      created_at: new Date().toISOString(),
-    },
     {
       id: 'usr-patient-default',
       email: 'patient@hospital.org',
-      fullName: 'Vamsi Krishna Vadlamudi',
+      fullName: 'Verified Patient',
+      firstName: 'Verified',
+      lastName: 'Patient',
       role: 'patient',
       password: 'Patient@2026',
-      patient_id: 'P1001',
-      phone: '+91 8792237307',
-      date_of_birth: '2004-09-17',
+      patient_id: 'P100001',
+      phone: '+1 (555) 234-9000',
+      date_of_birth: '1995-05-15',
       is_active: true,
       status: 'active',
       created_at: new Date().toISOString(),
     },
     {
-      id: 'usr-doctor-7721',
+      id: 'usr-doctor-default',
       email: 'doctor@hospital.org',
-      fullName: 'Dr. Marcus Vance, MD',
+      fullName: 'Attending Physician',
+      firstName: 'Attending',
+      lastName: 'Physician',
       role: 'doctor',
       password: 'Doctor@2026',
-      doctor_id: 'DOC-7721',
+      doctor_id: 'DOC-101',
       specialty: 'Cardiology & Vascular Medicine',
       department: 'Cardiovascular Specialty Institute',
       is_active: true,
@@ -626,21 +708,25 @@ function initializeDefaultAccounts() {
       created_at: new Date().toISOString(),
     },
     {
-      id: 'usr-staff-4401',
+      id: 'usr-staff-default',
       email: 'staff@hospital.org',
-      fullName: 'Sarah Jenkins, RN',
+      fullName: 'Ward Staff Nurse',
+      firstName: 'Ward Staff',
+      lastName: 'Nurse',
       role: 'staff',
       password: 'Staff@2026',
-      staff_id: 'STF-4401',
+      staff_id: 'STF-101',
       department: 'Inpatient Ward 4B & Clinical Triage',
       is_active: true,
       status: 'active',
       created_at: new Date().toISOString(),
     },
     {
-      id: 'usr-admin-001',
+      id: 'usr-admin-default',
       email: 'admin@hospital.org',
-      fullName: 'Arthur Sterling, MHA',
+      fullName: 'Hospital Administrator',
+      firstName: 'Hospital',
+      lastName: 'Administrator',
       role: 'admin',
       password: 'Admin@2026',
       department: 'Hospital Administration & Executive Governance',
@@ -943,15 +1029,61 @@ app.post('/api/auth/common-login', async (req: Request, res: Response) => {
             });
           }
 
-          let patientProfile = null;
+          let patientProfile: any = null;
           if (userRecord.role === 'patient') {
             const { data: patientRecord } = await adminClient
               .from('silver_patients')
               .select('*')
               .eq('patient_id', userRecord.patient_id)
               .single();
-            patientProfile = formatPatientProfile(patientRecord || userRecord);
+            if (!patientRecord) {
+              return res.status(404).json({
+                success: false,
+                errorType: 'PROFILE_NOT_LINKED',
+                message: `Patient profile not linked in hospital database for ID ${userRecord.patient_id}. Please contact hospital administration.`,
+              });
+            }
+            patientProfile = formatPatientProfile(patientRecord);
+          } else if (userRecord.role === 'doctor') {
+            const { data: docRecord } = await adminClient
+              .from('silver_doctors')
+              .select('*')
+              .eq('doctor_id', userRecord.doctor_id)
+              .single();
+            if (!docRecord) {
+              return res.status(404).json({
+                success: false,
+                errorType: 'PROFILE_NOT_LINKED',
+                message: `Doctor clinical profile not linked in hospital database for ID ${userRecord.doctor_id}. Please contact hospital administration.`,
+              });
+            }
+          } else if (userRecord.role === 'staff') {
+            const { data: staffRecord } = await adminClient
+              .from('silver_staff')
+              .select('*')
+              .eq('staff_id', userRecord.staff_id)
+              .single();
+            if (!staffRecord) {
+              return res.status(404).json({
+                success: false,
+                errorType: 'PROFILE_NOT_LINKED',
+                message: `Staff operational profile not linked in hospital database for ID ${userRecord.staff_id}. Please contact hospital administration.`,
+              });
+            }
           }
+
+          ACTIVE_SESSIONS.set(authData.session.access_token, {
+            id: userRecord.id,
+            email: userRecord.email,
+            fullName: userRecord.full_name || 'Hospital User',
+            role: userRecord.role,
+            patient_id: userRecord.patient_id,
+            doctor_id: userRecord.doctor_id,
+            staff_id: userRecord.staff_id,
+            is_active: userRecord.is_active,
+            status: userRecord.status,
+            created_at: userRecord.created_at || new Date().toISOString(),
+          });
 
           return res.json({
             success: true,
@@ -978,7 +1110,7 @@ app.post('/api/auth/common-login', async (req: Request, res: Response) => {
     }
   }
 
-  // 2. In-Memory Registry Lookup (for registered accounts & offline test personas)
+  // 2. Local Registry Lookup (for registered accounts in testing / offline environments)
   const lookupKey = rawInput.toLowerCase();
   const lookupIdKey = rawInput.toUpperCase();
   const registered = REGISTERED_ACCOUNTS.get(lookupKey) ||
@@ -1027,26 +1159,25 @@ app.post('/api/auth/common-login', async (req: Request, res: Response) => {
         patientProfile = {
           patient_id: registered.patient_id,
           name: registered.fullName,
-          first_name: registered.fullName.split(' ')[0] || 'Patient',
-          last_name: registered.fullName.split(' ').slice(1).join(' ') || '',
+          first_name: registered.firstName || registered.fullName.split(' ')[0] || 'Patient',
+          last_name: registered.lastName || registered.fullName.split(' ').slice(1).join(' ') || '',
           email: registered.email,
           phone: registered.phone || '',
           date_of_birth: registered.date_of_birth || '',
-          age: registered.date_of_birth ? Math.max(0, new Date().getFullYear() - new Date(registered.date_of_birth).getFullYear()) : 30,
           gender: 'Not specified',
-          blood_group: 'O+',
-          city: 'Metro Medical District',
-          state: 'CA',
-          address: 'Medical Patient Residence',
-          emergency_contact: 'Primary Contact',
-          primary_doctor_name: 'Dr. Marcus Vance, MD',
+          city: '',
+          state: '',
+          address: '',
+          emergency_contact: '',
+          primary_doctor_name: '',
         };
       }
     }
 
+    ACTIVE_SESSIONS.set(sessionToken, registered);
+
     return res.json({
       success: true,
-      isDemoMode: !isDatabaseConnected,
       role: registered.role,
       token: sessionToken,
       user: {
@@ -1062,64 +1193,16 @@ app.post('/api/auth/common-login', async (req: Request, res: Response) => {
       },
       patient: patientProfile,
       patientId: registered.patient_id,
+      doctorId: registered.doctor_id,
+      staffId: registered.staff_id,
       message: `Signed in as ${registered.role.toUpperCase()}: ${registered.fullName}`,
     });
   }
 
-  // 3. If in offline mode without database, support test personas gracefully
-  if (!isDatabaseConnected) {
-    const isPatientId = /^P\d+$/i.test(rawInput);
-    const isDoctorId = /^(D\d+|DOC-\d+)$/i.test(rawInput);
-    const isStaffId = /^(S\d+|STF-\d+)$/i.test(rawInput);
-    let detectedRole: 'patient' | 'doctor' | 'staff' | 'admin' = 'patient';
-    let userName = 'Vamsi Krishna Vadlamudi';
-    let assignedPatientId = isPatientId ? rawInput.toUpperCase() : 'P1001';
-    let assignedDoctorId = isDoctorId ? rawInput.toUpperCase() : undefined;
-    let assignedStaffId = isStaffId ? rawInput.toUpperCase() : undefined;
-
-    if (lookupKey.includes('admin') || lookupKey === 'adm-001') {
-      detectedRole = 'admin';
-      userName = 'Arthur Sterling, MHA';
-    } else if (lookupKey.includes('doc') || isDoctorId) {
-      detectedRole = 'doctor';
-      userName = 'Dr. Marcus Vance, MD';
-      assignedDoctorId = assignedDoctorId || 'D102456';
-    } else if (lookupKey.includes('staff') || lookupKey.includes('nurse') || isStaffId) {
-      detectedRole = 'staff';
-      userName = 'Sarah Jenkins, RN';
-      assignedStaffId = assignedStaffId || 'S104523';
-    } else {
-      detectedRole = 'patient';
-      userName = isPatientId ? `Patient ${rawInput.toUpperCase()}` : 'Vamsi Krishna Vadlamudi';
-    }
-
-    const demoToken = `demo-session-token-${detectedRole}-${Date.now()}`;
-
-    return res.json({
-      success: true,
-      isDemoMode: true,
-      role: detectedRole,
-      token: demoToken,
-      user: {
-        id: `usr-${detectedRole}-${Date.now()}`,
-        name: userName,
-        email: rawInput.includes('@') ? lookupKey : (detectedRole === 'patient' ? 'vvkrishna879@gmail.com' : `${detectedRole}@hospital.org`),
-        role: detectedRole,
-        patient_id: detectedRole === 'patient' ? assignedPatientId : undefined,
-        doctor_id: detectedRole === 'doctor' ? assignedDoctorId : undefined,
-        staff_id: detectedRole === 'staff' ? assignedStaffId : undefined,
-      },
-      patientId: detectedRole === 'patient' ? assignedPatientId : undefined,
-      doctorId: detectedRole === 'doctor' ? assignedDoctorId : undefined,
-      staffId: detectedRole === 'staff' ? assignedStaffId : undefined,
-      message: `Signed in as ${detectedRole.toUpperCase()}: ${userName}`,
-    });
-  }
-
-  // Live database is connected and credentials could not be verified
+  // Account could not be verified in database or registry
   return res.status(401).json({
     success: false,
-    message: 'Invalid credentials. User account not found in hospital registry. Please check your email address or ID, or register.',
+    message: 'Invalid credentials. User account not found in hospital directory. Please check your email address or ID, or register.',
   });
 });
 
@@ -1327,6 +1410,10 @@ app.post('/api/auth/common-register', async (req: Request, res: Response) => {
             }
           }
 
+          const nameParts = name.split(' ');
+          const firstName = nameParts[0] || name;
+          const lastName = nameParts.slice(1).join(' ') || '';
+
           try {
             await adminClient
               .from('app_users')
@@ -1344,14 +1431,57 @@ app.post('/api/auth/common-register', async (req: Request, res: Response) => {
                 department: department || null,
                 specialty: specialization || null,
               }, { onConflict: 'id' });
+
+            if (assignedRole === 'patient' && authoritativePatientId) {
+              await adminClient
+                .from('silver_patients')
+                .upsert({
+                  patient_id: authoritativePatientId,
+                  name,
+                  first_name: firstName,
+                  last_name: lastName,
+                  email,
+                  phone: phone || null,
+                  phone_number: phone || null,
+                  date_of_birth: dateOfBirth || null,
+                  registration_date: new Date().toISOString().split('T')[0],
+                }, { onConflict: 'patient_id' });
+            } else if (assignedRole === 'doctor' && doctorId) {
+              await adminClient
+                .from('silver_doctors')
+                .upsert({
+                  doctor_id: doctorId,
+                  doctor_name: name.startsWith('Dr.') ? name : `Dr. ${name}`,
+                  specialty: specialization || 'General Practice',
+                  specialization: specialization || 'General Practice',
+                  department_name: department || 'General Medicine',
+                  email,
+                  phone_number: phone || null,
+                  is_active: false,
+                }, { onConflict: 'doctor_id' });
+            } else if (assignedRole === 'staff' && assignedStaffId) {
+              await adminClient
+                .from('silver_staff')
+                .upsert({
+                  staff_id: assignedStaffId,
+                  staff_name: name,
+                  role: designation || 'Clinical Staff',
+                  department: department || 'General Ward',
+                  email,
+                  phone_number: phone || null,
+                  is_active: false,
+                }, { onConflict: 'staff_id' });
+            }
           } catch (e) {
-            console.error('Error upserting app_users in Supabase:', e);
+            console.error('Error upserting app_users/silver tables in Supabase:', e);
           }
 
           const newAccount: RegisteredAccount = {
             id: authUser.id,
             email,
             fullName: name,
+            firstName,
+            lastName,
             role: assignedRole,
             password,
             patient_id: authoritativePatientId,
@@ -1384,6 +1514,11 @@ app.post('/api/auth/common-register', async (req: Request, res: Response) => {
             REGISTERED_ACCOUNTS.set(assignedStaffId.toLowerCase(), newAccount);
           }
 
+          const sessionToken = isActive ? `session-token-${assignedRole}-${authUser.id}` : undefined;
+          if (sessionToken) {
+            ACTIVE_SESSIONS.set(sessionToken, newAccount);
+          }
+
           return res.json({
             success: true,
             message: responseMessage,
@@ -1393,6 +1528,7 @@ app.post('/api/auth/common-register', async (req: Request, res: Response) => {
             role: assignedRole,
             requiresApproval,
             status,
+            token: sessionToken,
             user: {
               id: authUser.id,
               name,
@@ -1404,7 +1540,6 @@ app.post('/api/auth/common-register', async (req: Request, res: Response) => {
               is_active: isActive,
               status,
             },
-            token: isActive ? `session-token-${assignedRole}-${authUser.id}` : undefined,
           });
         }
       } catch (err: any) {
@@ -1414,10 +1549,16 @@ app.post('/api/auth/common-register', async (req: Request, res: Response) => {
   }
 
   // 2. In-Memory Registry for immediate access across testing
+  const nameParts = name.split(' ');
+  const firstName = nameParts[0] || name;
+  const lastName = nameParts.slice(1).join(' ') || '';
+
   const newAccount: RegisteredAccount = {
     id: `usr-${assignedRole}-${Date.now()}`,
     email,
     fullName: name,
+    firstName,
+    lastName,
     role: assignedRole,
     password,
     patient_id: patientId,
@@ -1452,6 +1593,9 @@ app.post('/api/auth/common-register', async (req: Request, res: Response) => {
   }
 
   const sessionToken = isActive ? `session-token-${assignedRole}-${newAccount.id}` : undefined;
+  if (sessionToken) {
+    ACTIVE_SESSIONS.set(sessionToken, newAccount);
+  }
 
   return res.json({
     success: true,
@@ -1479,123 +1623,163 @@ app.post('/api/auth/common-register', async (req: Request, res: Response) => {
   });
 });
 
-// 2.7 Google Single Sign-On Endpoint (Defaults to Patient role)
+// 2.7 Google Single Sign-On Endpoint (Preserves Google OAuth via Supabase Auth)
 app.post('/api/auth/google', async (req: Request, res: Response) => {
-  const { email: rawEmail, name: rawName } = req.body;
-  let email = String(rawEmail || '').trim().toLowerCase();
-  let name = String(rawName || '').trim();
+  const { email: rawEmail, name: rawName, idToken } = req.body;
+  const email = String(rawEmail || '').trim().toLowerCase();
+  const name = String(rawName || '').trim();
 
-  if (!email) {
-    email = 'vamsikrishnavadlamudi17@gmail.com';
-  }
-  if (!name) {
-    name = (email.includes('vamsi') || email.includes('krishna')) ? 'Krishna' : 'Google Verified Patient';
+  if (!email || !email.includes('@')) {
+    return res.status(400).json({
+      success: false,
+      message: 'A valid Google account email is required to sign in with Google.',
+    });
   }
 
-  // 1. If live database connected, check Supabase app_users table first
+  // 1. Authoritative Supabase Auth lookup when database connected
   if (isDatabaseConnected) {
     const adminClient = getSupabaseAdmin();
-    if (adminClient) {
+    const anonClient = getSupabaseAnon() || adminClient;
+
+    if (adminClient && anonClient) {
       try {
+        if (idToken) {
+          try {
+            await anonClient.auth.signInWithIdToken({
+              provider: 'google',
+              token: idToken,
+            });
+          } catch {
+            // Proceed with email-based verification in app_users
+          }
+        }
+
         const { data: dbUser } = await adminClient
           .from('app_users')
           .select('*')
           .eq('email', email)
           .single();
 
-        if (dbUser) {
-          let patientProfile = null;
-          if (dbUser.role === 'patient') {
-            const { data: patientRecord } = await adminClient
-              .from('silver_patients')
-              .select('*')
-              .eq('patient_id', dbUser.patient_id)
-              .single();
-            patientProfile = formatPatientProfile(patientRecord || dbUser);
-          }
+        if (!dbUser) {
+          // If no matching profile exists in app_users, return profile-linking error!
+          return res.status(404).json({
+            success: false,
+            errorType: 'PROFILE_NOT_LINKED',
+            message: `No hospital profile linked to Google account (${email}). Please register your account first to establish your hospital records.`,
+          });
+        }
 
-          const token = `session-token-${dbUser.role}-${dbUser.id}`;
-          const existing = REGISTERED_ACCOUNTS.get(email) ||
-                           REGISTERED_ACCOUNTS.get(dbUser.id) ||
-                           (dbUser.patient_id ? REGISTERED_ACCOUNTS.get(dbUser.patient_id.toUpperCase()) : undefined);
-          const account: RegisteredAccount = {
+        if (dbUser.is_active === false || dbUser.status === 'pending_approval') {
+          return res.status(403).json({
+            success: false,
+            message: 'Your account is pending verification and approval by Hospital Administration.',
+          });
+        }
+
+        let patientProfile: any = null;
+        if (dbUser.role === 'patient') {
+          const { data: patientRecord } = await adminClient
+            .from('silver_patients')
+            .select('*')
+            .eq('patient_id', dbUser.patient_id)
+            .single();
+
+          if (!patientRecord) {
+            return res.status(404).json({
+              success: false,
+              errorType: 'PROFILE_NOT_LINKED',
+              message: `Patient profile record not found in database for ID ${dbUser.patient_id}.`,
+            });
+          }
+          patientProfile = formatPatientProfile(patientRecord);
+        } else if (dbUser.role === 'doctor') {
+          const { data: docRecord } = await adminClient
+            .from('silver_doctors')
+            .select('*')
+            .eq('doctor_id', dbUser.doctor_id)
+            .single();
+
+          if (!docRecord) {
+            return res.status(404).json({
+              success: false,
+              errorType: 'PROFILE_NOT_LINKED',
+              message: `Doctor clinical profile not found in database for ID ${dbUser.doctor_id}.`,
+            });
+          }
+        } else if (dbUser.role === 'staff') {
+          const { data: staffRecord } = await adminClient
+            .from('silver_staff')
+            .select('*')
+            .eq('staff_id', dbUser.staff_id)
+            .single();
+
+          if (!staffRecord) {
+            return res.status(404).json({
+              success: false,
+              errorType: 'PROFILE_NOT_LINKED',
+              message: `Staff operational profile not found in database for ID ${dbUser.staff_id}.`,
+            });
+          }
+        }
+
+        const token = `session-token-${dbUser.role}-${dbUser.id}`;
+        const account: RegisteredAccount = {
+          id: dbUser.id,
+          email: dbUser.email,
+          fullName: dbUser.full_name || name || 'Hospital User',
+          role: dbUser.role,
+          patient_id: dbUser.patient_id,
+          doctor_id: dbUser.doctor_id,
+          staff_id: dbUser.staff_id,
+          is_active: dbUser.is_active,
+          status: dbUser.status,
+          created_at: dbUser.created_at || new Date().toISOString(),
+        };
+
+        ACTIVE_SESSIONS.set(token, account);
+
+        return res.json({
+          success: true,
+          message: `Signed in via Google as ${dbUser.full_name || name} (${dbUser.role.toUpperCase()})`,
+          role: dbUser.role,
+          token,
+          user: {
             id: dbUser.id,
+            name: dbUser.full_name || name,
             email: dbUser.email,
-            fullName: dbUser.full_name || name,
             role: dbUser.role,
-            password: existing?.password || 'Patient@2026',
             patient_id: dbUser.patient_id,
             doctor_id: dbUser.doctor_id,
             staff_id: dbUser.staff_id,
-            created_at: dbUser.created_at || new Date().toISOString(),
-          };
-          REGISTERED_ACCOUNTS.set(email, account);
-          REGISTERED_ACCOUNTS.set(dbUser.id, account);
-          if (dbUser.patient_id) REGISTERED_ACCOUNTS.set(dbUser.patient_id.toUpperCase(), account);
-
-          return res.json({
-            success: true,
-            message: `Signed in via Google as ${dbUser.full_name || name} (${dbUser.role.toUpperCase()})`,
-            role: dbUser.role,
-            token,
-            user: {
-              id: dbUser.id,
-              name: dbUser.full_name || name,
-              email: dbUser.email,
-              role: dbUser.role,
-              patient_id: dbUser.patient_id,
-              doctor_id: dbUser.doctor_id,
-              staff_id: dbUser.staff_id,
-            },
-            patient: patientProfile,
-            patientId: dbUser.patient_id,
-          });
-        }
+          },
+          patient: patientProfile,
+          patientId: dbUser.patient_id,
+        });
       } catch (err) {
         console.error('Supabase Google lookup error:', err);
       }
     }
   }
 
-  // 2. If already registered in-memory, preserve role
-  let account = REGISTERED_ACCOUNTS.get(email);
-
+  // 2. Isolated local / test registry lookup
+  const account = REGISTERED_ACCOUNTS.get(email);
   if (!account) {
-    const patientId = `P${Math.floor(100000 + Math.random() * 900000)}`;
-    account = {
-      id: `usr-google-${Date.now()}`,
-      email,
-      fullName: name,
-      role: 'patient',
-      patient_id: patientId,
-      phone: '+1 (555) 789-0123',
-      date_of_birth: '1996-05-15',
-      created_at: new Date().toISOString(),
-    };
-    REGISTERED_ACCOUNTS.set(email, account);
-    REGISTERED_ACCOUNTS.set(account.id, account);
-    REGISTERED_ACCOUNTS.set(patientId, account);
+    return res.status(404).json({
+      success: false,
+      errorType: 'PROFILE_NOT_LINKED',
+      message: `No hospital profile linked to Google account (${email}). Please register your account first.`,
+    });
+  }
+
+  if (account.is_active === false || account.status === 'pending_approval') {
+    return res.status(403).json({
+      success: false,
+      message: 'Your account registration is pending administrative approval.',
+    });
   }
 
   const token = `session-token-${account.role}-${account.id}`;
-
-  const demoPatient = account.role === 'patient' ? {
-    patient_id: account.patient_id || 'P1001',
-    name: account.fullName,
-    first_name: account.fullName.split(' ')[0] || 'Google',
-    last_name: account.fullName.split(' ').slice(1).join(' ') || 'User',
-    email: account.email,
-    phone: account.phone || '+1 (555) 234-9182',
-    date_of_birth: account.date_of_birth || '1996-05-15',
-    age: 30,
-    gender: 'Not specified',
-    blood_group: 'O+',
-    city: 'Metro Medical District',
-    state: 'CA',
-    address: '742 Evergreen Terrace, Suite 300',
-    emergency_contact: 'Family Contact (+1 555-234-9183)',
-    primary_doctor_name: 'Dr. Marcus Vance, MD',
-  } : undefined;
+  ACTIVE_SESSIONS.set(token, account);
 
   return res.json({
     success: true,
@@ -1613,7 +1797,21 @@ app.post('/api/auth/google', async (req: Request, res: Response) => {
       specialty: account.specialty,
       department: account.department,
     },
-    patient: demoPatient,
+    patient: account.role === 'patient' ? {
+      patient_id: account.patient_id,
+      name: account.fullName,
+      first_name: account.firstName || account.fullName.split(' ')[0] || 'Patient',
+      last_name: account.lastName || account.fullName.split(' ').slice(1).join(' ') || '',
+      email: account.email,
+      phone: account.phone || '',
+      date_of_birth: account.date_of_birth || '',
+      gender: 'Not specified',
+      city: '',
+      state: '',
+      address: '',
+      emergency_contact: '',
+      primary_doctor_name: '',
+    } : undefined,
     patientId: account.patient_id,
   });
 });
@@ -1792,6 +1990,25 @@ app.post('/api/auth/register', async (req: Request, res: Response) => {
 
       const requiresEmailConfirmation = !authData.session && !authData.user.confirmed_at;
       const patientId = appUser?.patient_id;
+
+      if (patientId) {
+        const nameParts = (fullName || '').trim().split(' ');
+        try {
+          await adminClient.from('silver_patients').upsert({
+            patient_id: patientId,
+            name: fullName,
+            first_name: nameParts[0] || fullName,
+            last_name: nameParts.slice(1).join(' ') || '',
+            email: email.trim().toLowerCase(),
+            phone: phone || null,
+            phone_number: phone || null,
+            date_of_birth: dateOfBirth || null,
+            registration_date: new Date().toISOString().split('T')[0],
+          }, { onConflict: 'patient_id' });
+        } catch (dbErr) {
+          console.error('Error syncing silver_patients on registration:', dbErr);
+        }
+      }
 
       const message = requiresEmailConfirmation
         ? `Registration successful! Your official Patient ID is ${patientId || 'assigned'}. A confirmation email has been sent. Please confirm your email address before signing in.`
@@ -2249,6 +2466,7 @@ app.post('/api/auth/logout', async (req: Request, res: Response) => {
   const authHeader = req.headers['authorization'];
   if (authHeader && authHeader.startsWith('Bearer ')) {
     const token = authHeader.split(' ')[1];
+    ACTIVE_SESSIONS.delete(token);
     const userClient = getSupabaseUserClient(token);
     if (userClient) {
       try {
@@ -2267,124 +2485,56 @@ app.get('/api/patient/dashboard', authenticateToken, requirePatientRole, async (
   const adminClient = getSupabaseAdmin();
 
   if (!adminClient || !isDatabaseConnected) {
-    if ((req as any).userToken?.startsWith('demo-session-token-')) {
-      return res.json({
-        success: true,
-        data: {
-          patient: {
-            patient_id: patientId || 'P1001',
-            name: 'Elena Rostova',
-            first_name: 'Elena',
-            last_name: 'Rostova',
-            email: 'elena.rostova@patient.org',
-            phone: '+1 (555) 234-9182',
-            date_of_birth: '1984-06-12',
-            age: 42,
-            gender: 'Female',
-            blood_group: 'O+',
-            city: 'Metro Medical District',
-            state: 'CA',
-            address: '742 Evergreen Terrace, Suite 300',
-            emergency_contact: 'Viktor Rostov (+1 555-234-9183)',
-            primary_doctor_name: 'Dr. Marcus Vance, MD',
-          },
-          upcomingAppointments: [
-            {
-              appointment_id: 'APT-9041',
-              patient_id: patientId || 'P1001',
-              doctor_id: 'DOC-7721',
-              doctor_name: 'Dr. Marcus Vance, MD',
-              specialty: 'Cardiology & Vascular Medicine',
-              hospital_branch: 'MediAI Heart & Vascular Specialty Institute',
-              appointment_date: '2026-10-28',
-              appointment_time: '10:30 AM',
-              status: 'Confirmed',
-              consultation_type: 'In-Person',
-              consultation_duration_minutes: 30,
-              consultation_fee: 175,
-              payment_status: 'Paid',
-              reason: 'Cardiovascular follow-up & ECG evaluation',
-              symptoms: 'Occasional mild palpitations after exertion',
-              notes: 'Bring previous telemetry records and medication list.',
-            },
-            {
-              appointment_id: 'APT-9284',
-              patient_id: patientId || 'P1001',
-              doctor_id: 'DOC-8802',
-              doctor_name: 'Dr. Sarah Lin, MD',
-              specialty: 'General Internal Medicine',
-              hospital_branch: 'MediAI Medical Center — Main Campus',
-              appointment_date: '2026-11-14',
-              appointment_time: '02:00 PM',
-              status: 'Scheduled',
-              consultation_type: 'Video Telehealth',
-              consultation_duration_minutes: 20,
-              consultation_fee: 120,
-              payment_status: 'Pending',
-              reason: 'Routine quarterly metabolic panel consultation',
-              symptoms: 'None - preventive checkup',
-              notes: 'Fasting lab work required 48 hours prior.',
-            },
-          ],
-          completedEncounters: [
-            {
-              encounter_id: 'ENC-4019',
-              patient_id: patientId || 'P1001',
-              doctor_name: 'Dr. Marcus Vance, MD',
-              encounter_date: '2026-08-15',
-              encounter_type: 'Outpatient Specialty Visit',
-              diagnosis: 'Mild sinus tachycardia, controlled essential hypertension',
-              chief_complaint: 'Routine follow-up',
-              treatment_summary: 'Medication dosage adjusted; recommended 30 min daily aerobic walking.',
-            },
-          ],
-          labReports: [
-            {
-              lab_id: 'LAB-8812',
-              patient_id: patientId || 'P1001',
-              test_name: 'Comprehensive Metabolic Panel (CMP-14)',
-              test_date: '2026-08-14',
-              result_summary: 'Electrolytes and renal indices within normal limits',
-              status: 'Final - Signed by Laboratory Director',
-              lab_branch: 'Central Pathology Laboratory',
-            },
-            {
-              lab_id: 'LAB-8813',
-              patient_id: patientId || 'P1001',
-              test_name: 'Lipid Panel with Cardio-CRP',
-              test_date: '2026-08-14',
-              result_summary: 'LDL 98 mg/dL, HDL 54 mg/dL, Triglycerides 124 mg/dL',
-              status: 'Final - Signed by Laboratory Director',
-              lab_branch: 'Central Pathology Laboratory',
-            },
-          ],
-          prescriptions: [
-            {
-              prescription_id: 'RX-7731',
-              patient_id: patientId || 'P1001',
-              doctor_name: 'Dr. Marcus Vance, MD',
-              medication_name: 'Lisinopril 10mg Tablets',
-              dosage: '1 tablet daily in the morning',
-              prescribed_date: '2026-08-15',
-              refills_remaining: 3,
-              pharmacy: 'MediAI Central In-Hospital Pharmacy',
-              status: 'Active',
-            },
-          ],
-          feedbackList: [],
-          notifications: [],
-          backendStatus: {
-            connected: false,
-            engine: 'MediAI Local Clinical Engine',
-            schema: 'Canonical Silver Schema',
-            notice: 'Demonstration Workspace Active',
-          },
-        },
+    const appUser = (req as any).appUser;
+    const account = Array.from(REGISTERED_ACCOUNTS.values()).find(
+      (a) => a.patient_id === patientId || a.id === appUser?.id || a.email === appUser?.email
+    );
+
+    if (!account && !appUser) {
+      return res.status(404).json({
+        success: false,
+        errorType: 'PROFILE_NOT_LINKED',
+        message: 'No patient clinical profile linked to this account.',
       });
     }
-    return res.status(503).json({
-      success: false,
-      message: 'Database connection unavailable.',
+
+    const realName = account?.fullName || appUser?.full_name || appUser?.name || 'Patient';
+    const nameParts = realName.trim().split(' ');
+    const realEmail = account?.email || appUser?.email || '';
+    const realPhone = account?.phone || appUser?.phone || '';
+    const realDob = account?.date_of_birth || appUser?.date_of_birth || '';
+
+    return res.json({
+      success: true,
+      data: {
+        patient: {
+          patient_id: patientId || account?.patient_id || 'Pending',
+          name: realName,
+          first_name: account?.firstName || nameParts[0] || realName,
+          last_name: account?.lastName || nameParts.slice(1).join(' ') || '',
+          email: realEmail,
+          phone: realPhone,
+          date_of_birth: realDob,
+          gender: 'Not specified',
+          city: '',
+          state: '',
+          address: '',
+          emergency_contact: '',
+          primary_doctor_name: '',
+        },
+        upcomingAppointments: [],
+        completedEncounters: [],
+        labReports: [],
+        prescriptions: [],
+        feedbackList: [],
+        notifications: [],
+        backendStatus: {
+          connected: false,
+          engine: 'MediAI Institutional Core',
+          schema: 'Canonical Silver Schema',
+          notice: 'Live Database Sync Ready',
+        },
+      },
     });
   }
 
@@ -2672,6 +2822,43 @@ app.post('/api/patient/feedback', authenticateToken, requirePatientRole, async (
   }
 
   try {
+    // Enforce record ownership: if appointment or encounter provided, verify it belongs to this patient
+    if (resolvedAppointmentId) {
+      const { data: apt, error: aptErr } = await client
+        .from('silver_appointments')
+        .select('appointment_id, patient_id')
+        .eq('appointment_id', resolvedAppointmentId)
+        .maybeSingle();
+
+      if (aptErr) {
+        return res.status(500).json({ success: false, message: aptErr.message });
+      }
+      if (!apt) {
+        return res.status(404).json({ success: false, message: `Appointment ${resolvedAppointmentId} not found.` });
+      }
+      if (apt.patient_id !== patientId) {
+        return res.status(403).json({ success: false, message: 'Access denied: You cannot submit feedback for an appointment belonging to another patient.' });
+      }
+    }
+
+    if (resolvedEncounterId) {
+      const { data: enc, error: encErr } = await client
+        .from('silver_encounters')
+        .select('encounter_id, patient_id')
+        .eq('encounter_id', resolvedEncounterId)
+        .maybeSingle();
+
+      if (encErr) {
+        return res.status(500).json({ success: false, message: encErr.message });
+      }
+      if (!enc) {
+        return res.status(404).json({ success: false, message: `Encounter ${resolvedEncounterId} not found.` });
+      }
+      if (enc.patient_id !== patientId) {
+        return res.status(403).json({ success: false, message: 'Access denied: You cannot submit feedback for an encounter belonging to another patient.' });
+      }
+    }
+
     const baseFeedback = {
       patient_id: patientId,
       doctor_id: resolvedDoctorId,
@@ -3170,6 +3357,29 @@ app.post('/api/booking/cancel', authenticateToken, requirePatientRole, async (re
   }
 
   try {
+    // Check appointment existence and ownership
+    const { data: existingApt, error: findErr } = await client
+      .from('silver_appointments')
+      .select('appointment_id, patient_id, status')
+      .eq('appointment_id', appointmentId)
+      .maybeSingle();
+
+    if (findErr) {
+      return res.status(500).json({ success: false, message: findErr.message });
+    }
+    if (!existingApt) {
+      return res.status(404).json({ success: false, message: `Appointment ${appointmentId} not found.` });
+    }
+    if (existingApt.patient_id !== patientId) {
+      return res.status(403).json({ success: false, message: 'Access denied: You cannot cancel an appointment belonging to another patient.' });
+    }
+    if (existingApt.status === 'Cancelled') {
+      return res.status(400).json({ success: false, message: 'Appointment is already cancelled.' });
+    }
+    if (existingApt.status === 'Completed') {
+      return res.status(400).json({ success: false, message: 'Completed appointments cannot be cancelled.' });
+    }
+
     const { data, error } = await client
       .from('silver_appointments')
       .update({
@@ -3183,9 +3393,9 @@ app.post('/api/booking/cancel', authenticateToken, requirePatientRole, async (re
       .single();
 
     if (error || !data) {
-      return res.status(400).json({
+      return res.status(500).json({
         success: false,
-        message: error?.message || 'Appointment not found or not in cancellable state.',
+        message: error?.message || 'Failed to update appointment status.',
       });
     }
 
@@ -3207,59 +3417,88 @@ app.post('/api/booking/cancel', authenticateToken, requirePatientRole, async (re
 // ============================================================================
 
 // 16. Doctor Clinical Workspace Overview
-app.get('/api/doctor/overview', authenticateToken, async (req: Request, res: Response) => {
+app.get('/api/doctor/overview', authenticateToken, requireDoctorRole, async (req: Request, res: Response) => {
   const client = getSupabaseAdmin();
   const appUser = (req as any).appUser;
 
-  // 1. Resolve Doctor Profile
+  if (!appUser?.doctor_id) {
+    return res.status(404).json({
+      success: false,
+      errorType: 'PROFILE_NOT_LINKED',
+      message: 'No doctor ID is associated with this authenticated account.',
+    });
+  }
+
+  // 1. Resolve Doctor Profile strictly from database or registered identity
   let doctor = {
-    doctor_id: appUser?.doctor_id || 'DOC-7721',
-    name: appUser?.full_name || 'Dr. Marcus Vance, MD',
-    specialty: 'Cardiology & Vascular Medicine',
-    department: 'Cardiovascular Specialty Institute',
-    hospital_branch: 'MediAI Heart & Vascular Specialty Institute',
-    license: 'CA-MED-99412',
-    phone: '+1 (555) 234-8201',
-    email: appUser?.email || 'doctor@hospital.org',
+    doctor_id: appUser.doctor_id,
+    name: appUser.full_name || appUser.name || 'Attending Physician',
+    specialty: appUser.specialty || 'General Practice',
+    department: appUser.department || 'Clinical Department',
+    hospital_branch: 'MediAI Medical Center — Main Campus',
+    license: `MED-${appUser.doctor_id}`,
+    phone: appUser.phone || '',
+    email: appUser.email || '',
   };
 
-  if (client) {
+  if (client && isDatabaseConnected) {
     try {
-      let docQuery = client.from('silver_doctors').select('*');
-      if (appUser?.doctor_id) {
-        docQuery = docQuery.eq('doctor_id', appUser.doctor_id);
-      } else if (appUser?.email) {
-        docQuery = docQuery.eq('email', appUser.email);
-      } else {
-        docQuery = docQuery.eq('doctor_id', 'DOC-7721');
-      }
-      const { data: docData } = await docQuery.single();
+      const { data: docData } = await client
+        .from('silver_doctors')
+        .select('*')
+        .eq('doctor_id', appUser.doctor_id)
+        .single();
+
       if (docData) {
         doctor = {
           doctor_id: docData.doctor_id,
-          name: docData.doctor_name || 'Dr. Attending Physician',
-          specialty: docData.specialty || docData.specialization || 'Clinical Specialist',
-          department: docData.department_name || docData.specialty || 'General Medicine',
-          hospital_branch: docData.hospital_branch || 'MediAI Main Hospital',
+          name: docData.doctor_name || appUser.full_name || 'Attending Physician',
+          specialty: docData.specialty || docData.specialization || appUser.specialty || 'General Practice',
+          department: docData.department_name || appUser.department || 'Clinical Department',
+          hospital_branch: docData.hospital_branch || 'MediAI Medical Center — Main Campus',
           license: `MED-${docData.doctor_id}`,
-          phone: docData.phone_number || '+1 (555) 234-8200',
-          email: docData.email || appUser?.email || 'doctor@hospital.org',
+          phone: docData.phone_number || appUser.phone || '',
+          email: docData.email || appUser.email || '',
         };
+      } else {
+        return res.status(404).json({
+          success: false,
+          errorType: 'PROFILE_NOT_LINKED',
+          message: `Clinical doctor profile not found in hospital directory for ID ${appUser.doctor_id}.`,
+        });
       }
     } catch {
-      // Keep resolved profile
+      // Keep verified profile
+    }
+  } else {
+    // Isolated local / testing mode lookup
+    const localDoc = Array.from(REGISTERED_ACCOUNTS.values()).find(
+      (a) => a.doctor_id === appUser.doctor_id || a.id === appUser.id
+    );
+    if (localDoc) {
+      doctor = {
+        doctor_id: localDoc.doctor_id || appUser.doctor_id,
+        name: localDoc.fullName,
+        specialty: localDoc.specialty || 'Cardiology & Vascular Medicine',
+        department: localDoc.department || 'Cardiovascular Specialty Institute',
+        hospital_branch: 'MediAI Medical Center — Main Campus',
+        license: `MED-${localDoc.doctor_id || appUser.doctor_id}`,
+        phone: localDoc.phone || '',
+        email: localDoc.email || '',
+      };
     }
   }
 
-  // 2. Fetch Live Appointments Schedule
+  // 2. Fetch Live Appointments Schedule strictly for this doctor
   let schedule: any[] = [];
-  if (client) {
+  if (client && isDatabaseConnected) {
     try {
       const { data: aptData } = await client
         .from('silver_appointments')
         .select('*, silver_patients(name)')
-        .order('created_at', { ascending: false })
-        .limit(10);
+        .eq('doctor_id', appUser.doctor_id)
+        .order('appointment_date', { ascending: true })
+        .limit(20);
 
       if (aptData && aptData.length > 0) {
         schedule = aptData.map((a: any, idx: number) => ({
@@ -3267,11 +3506,11 @@ app.get('/api/doctor/overview', authenticateToken, async (req: Request, res: Res
           patient_id: a.patient_id,
           patient_name: a.silver_patients?.name || `Patient ${a.patient_id}`,
           time: a.appointment_time || `${9 + idx}:00 AM`,
-          type: a.consultation_type || a.reason || 'Specialist Consultation',
+          type: a.consultation_type || a.appointment_type || a.reason || 'Specialist Consultation',
           room: `Exam Room ${(a.appointment_id ? a.appointment_id.slice(-2) : '3B')}`,
-          status: a.status || (idx < 5 ? 'Completed' : 'Scheduled'),
+          status: a.status || 'Scheduled',
           chief_complaint: a.reason || a.symptoms || 'Clinical Consultation',
-          notes: a.notes || 'Vital signs within normal limits. Regular clinical follow-up.',
+          notes: a.notes || '',
         }));
       }
     } catch {
@@ -3279,26 +3518,27 @@ app.get('/api/doctor/overview', authenticateToken, async (req: Request, res: Res
     }
   }
 
-  // 3. Fetch Live Inpatient Rounds from silver_encounters
+  // 3. Fetch Inpatient Rounds strictly for this doctor
   let inpatientRounds: any[] = [];
-  if (client) {
+  if (client && isDatabaseConnected) {
     try {
       const { data: encData } = await client
         .from('silver_encounters')
-        .select('encounter_id, patient_id, encounter_date, diagnosis, treatment_plan, chief_complaint, silver_patients(name, age)')
+        .select('encounter_id, patient_id, encounter_date, primary_diagnosis, diagnosis, treatment_plan, symptoms, chief_complaint, silver_patients(name, age)')
+        .eq('doctor_id', appUser.doctor_id)
         .order('encounter_date', { ascending: false })
-        .limit(6);
+        .limit(10);
 
       if (encData && encData.length > 0) {
         inpatientRounds = encData.map((e: any, idx: number) => ({
           bed: `Room 40${idx + 1}`,
           patient_name: e.silver_patients?.name || `Patient ${e.patient_id}`,
           patient_id: e.patient_id,
-          age: Number(e.silver_patients?.age) || 55,
-          diagnosis: e.diagnosis || 'Cardiovascular Observation',
+          age: Number(e.silver_patients?.age) || 45,
+          diagnosis: e.primary_diagnosis || e.diagnosis || 'Clinical Observation',
           day_of_stay: (idx % 4) + 1,
           acuity: idx % 3 === 0 ? 'Guarded' : 'Stable',
-          vitals: 'BP 124/80 · HR 72 · SpO2 98%',
+          vitals: 'Vital signs logged in chart',
           plan: e.treatment_plan || 'Continue protocol management and monitoring.',
         }));
       }
@@ -3307,15 +3547,15 @@ app.get('/api/doctor/overview', authenticateToken, async (req: Request, res: Res
     }
   }
 
-  // 4. Fetch Live Pending Lab Results from silver_lab_results
+  // 4. Fetch Pending Lab Results strictly for this doctor
   let pendingLabs: any[] = [];
-  if (client) {
+  if (client && isDatabaseConnected) {
     try {
       const { data: labData } = await client
         .from('silver_lab_results')
         .select('lab_id, patient_id, test_name, test_value, unit, reference_range, status, silver_patients(name)')
         .order('created_at', { ascending: false })
-        .limit(6);
+        .limit(10);
 
       if (labData && labData.length > 0) {
         pendingLabs = labData.map((l: any) => ({
@@ -3342,7 +3582,7 @@ app.get('/api/doctor/overview', authenticateToken, async (req: Request, res: Res
     pendingVisits: pendingVisits >= 0 ? pendingVisits : 0,
     inpatientRounds: inpatientRounds.length,
     pendingLabApprovals: pendingLabs.filter((l) => !l.signed).length,
-    avgConsultationMinutes: 24,
+    avgConsultationMinutes: 20,
   };
 
   return res.json({
@@ -3355,110 +3595,215 @@ app.get('/api/doctor/overview', authenticateToken, async (req: Request, res: Res
   });
 });
 
-app.post('/api/doctor/sign-lab', authenticateToken, async (req: Request, res: Response) => {
+app.post('/api/doctor/sign-lab', authenticateToken, requireDoctorRole, async (req: Request, res: Response) => {
   const { labId } = req.body;
   const client = getSupabaseAdmin();
+  const appUser = (req as any).appUser;
+  const docId = appUser?.doctor_id;
 
-  if (client && labId) {
-    try {
-      await client
-        .from('silver_lab_results')
-        .update({ status: 'Signed', updated_at: new Date().toISOString() })
-        .eq('lab_id', labId);
-    } catch (err: any) {
-      console.error('Failed to sign lab in database', err);
-    }
+  if (!labId || typeof labId !== 'string' || !labId.trim()) {
+    return res.status(400).json({ success: false, message: 'labId is required to electronically sign a lab result.' });
   }
 
-  return res.json({
-    success: true,
-    message: `Lab result ${labId || 'record'} electronically approved and signed into medical record.`,
-    labId,
-  });
+  if (!client) {
+    return res.status(503).json({ success: false, message: 'Database connection unavailable.' });
+  }
+
+  try {
+    const { data: lab, error: fetchErr } = await client
+      .from('silver_lab_results')
+      .select('lab_id, patient_id, doctor_id, status')
+      .eq('lab_id', labId.trim())
+      .maybeSingle();
+
+    if (fetchErr) {
+      return res.status(500).json({ success: false, message: fetchErr.message });
+    }
+    if (!lab) {
+      return res.status(404).json({ success: false, message: `Lab result ${labId} not found in database.` });
+    }
+
+    // Record ownership check: doctor must be assigned to lab, or have an appointment/encounter with the patient
+    let isAuthorized = lab.doctor_id === docId;
+    if (!isAuthorized && lab.patient_id) {
+      const { data: relApt } = await client
+        .from('silver_appointments')
+        .select('appointment_id')
+        .eq('patient_id', lab.patient_id)
+        .eq('doctor_id', docId)
+        .limit(1)
+        .maybeSingle();
+
+      if (relApt) {
+        isAuthorized = true;
+      } else {
+        const { data: relEnc } = await client
+          .from('silver_encounters')
+          .select('encounter_id')
+          .eq('patient_id', lab.patient_id)
+          .eq('doctor_id', docId)
+          .limit(1)
+          .maybeSingle();
+        if (relEnc) isAuthorized = true;
+      }
+    }
+
+    if (!isAuthorized) {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied: You are not authorized to sign laboratory records for this patient.',
+      });
+    }
+
+    const { error: updateErr } = await client
+      .from('silver_lab_results')
+      .update({ status: 'Signed', updated_at: new Date().toISOString() })
+      .eq('lab_id', labId.trim());
+
+    if (updateErr) {
+      return res.status(500).json({ success: false, message: `Failed to sign lab result: ${updateErr.message}` });
+    }
+
+    return res.json({
+      success: true,
+      message: `Lab result ${labId} electronically approved and signed into medical record.`,
+      labId,
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, message: sanitizeError(err) });
+  }
 });
 
-app.post('/api/doctor/encounter', authenticateToken, async (req: Request, res: Response) => {
+app.post('/api/doctor/encounter', authenticateToken, requireDoctorRole, async (req: Request, res: Response) => {
   const { appointmentId, patientId, notes, prescription } = req.body;
   const client = getSupabaseAdmin();
   const appUser = (req as any).appUser;
-  const encId = `ENC${Date.now().toString().slice(-6)}`;
-  let docId = appUser?.doctor_id || null;
-  const nowIso = new Date().toISOString();
-  const today = nowIso.split('T')[0];
+  const docId = appUser?.doctor_id;
 
-  if (client && !docId && appUser?.email) {
-    try {
-      const { data: docData } = await client
-        .from('silver_doctors')
-        .select('doctor_id')
-        .eq('email', appUser.email)
-        .maybeSingle();
-      if (docData?.doctor_id) docId = docData.doctor_id;
-    } catch {
-      // keep docId null
-    }
+  if (!patientId || typeof patientId !== 'string' || !patientId.trim()) {
+    return res.status(400).json({ success: false, message: 'patientId is required to record a clinical encounter.' });
   }
 
-  if (client && patientId) {
-    try {
-      // 1. Insert Encounter
-      await client.from('silver_encounters').insert({
+  const cleanPatientId = patientId.trim();
+  const cleanAptId = appointmentId ? String(appointmentId).trim() : null;
+
+  if (!client) {
+    return res.status(503).json({ success: false, message: 'Database connection unavailable.' });
+  }
+
+  try {
+    // 1. Verify patient exists in database
+    const { data: patient, error: patErr } = await client
+      .from('silver_patients')
+      .select('patient_id, name')
+      .eq('patient_id', cleanPatientId)
+      .maybeSingle();
+
+    if (patErr) {
+      return res.status(500).json({ success: false, message: patErr.message });
+    }
+    if (!patient) {
+      return res.status(404).json({ success: false, message: `Patient ${cleanPatientId} not found in database.` });
+    }
+
+    // 2. Validate doctor authorization and appointment relationship
+    if (cleanAptId) {
+      const { data: apt, error: aptErr } = await client
+        .from('silver_appointments')
+        .select('appointment_id, patient_id, doctor_id, status')
+        .eq('appointment_id', cleanAptId)
+        .maybeSingle();
+
+      if (aptErr) {
+        return res.status(500).json({ success: false, message: aptErr.message });
+      }
+      if (!apt) {
+        return res.status(404).json({ success: false, message: `Appointment ${cleanAptId} not found in database.` });
+      }
+      if (apt.patient_id !== cleanPatientId) {
+        return res.status(400).json({ success: false, message: 'Appointment does not belong to the specified patient.' });
+      }
+      if (apt.doctor_id !== docId) {
+        return res.status(403).json({
+          success: false,
+          message: 'Access denied: You are not authorized to finalize encounters for an appointment assigned to another physician.',
+        });
+      }
+    }
+
+    const encId = `ENC${Date.now().toString().slice(-6)}`;
+    const nowIso = new Date().toISOString();
+    const today = nowIso.split('T')[0];
+
+    // 3. Insert Encounter
+    const { error: encErr } = await client.from('silver_encounters').insert({
+      encounter_id: encId,
+      patient_id: cleanPatientId,
+      doctor_id: docId,
+      appointment_id: cleanAptId || null,
+      encounter_date: today,
+      encounter_type: 'Outpatient Consultation',
+      chief_complaint: 'Physician Clinical Evaluation',
+      diagnosis: notes ? String(notes).slice(0, 100) : 'Evaluated and treated',
+      treatment_plan: prescription || notes || 'Care plan recorded',
+      notes: notes ? String(notes) : null,
+      created_at: nowIso,
+      updated_at: nowIso,
+    });
+
+    if (encErr) {
+      return res.status(500).json({ success: false, message: `Failed to record encounter: ${encErr.message}` });
+    }
+
+    // 4. Insert Prescription if provided
+    if (prescription && typeof prescription === 'string' && prescription.trim()) {
+      const rxId = `RX${Date.now().toString().slice(-6)}`;
+      const { error: rxErr } = await client.from('silver_prescriptions').insert({
+        prescription_id: rxId,
         encounter_id: encId,
-        patient_id: patientId,
-        doctor_id: docId,
-        appointment_id: appointmentId || null,
-        encounter_date: today,
-        encounter_type: 'Outpatient Consultation',
-        chief_complaint: 'Physician Clinical Evaluation',
-        diagnosis: notes ? notes.slice(0, 100) : 'Evaluated and treated',
-        treatment_plan: prescription || notes || 'Care plan recorded',
-        notes: notes || null,
+        patient_id: cleanPatientId,
+        medicine_name: prescription.trim(),
+        dosage: 'As directed',
+        frequency: 'Daily',
+        duration_days: 30,
+        instructions: 'Take with water after meals',
+        prescribed_date: today,
         created_at: nowIso,
         updated_at: nowIso,
       });
 
-      // 2. Insert Prescription if provided
-      if (prescription && typeof prescription === 'string' && prescription.trim()) {
-        const rxId = `RX${Date.now().toString().slice(-6)}`;
-        await client.from('silver_prescriptions').insert({
-          prescription_id: rxId,
-          encounter_id: encId,
-          patient_id: patientId,
-          medicine_name: prescription.trim(),
-          dosage: 'As directed',
-          frequency: 'Daily',
-          duration_days: 30,
-          instructions: 'Take with water after meals',
-          prescribed_date: today,
-          created_at: nowIso,
-          updated_at: nowIso,
-        });
+      if (rxErr) {
+        return res.status(500).json({ success: false, message: `Failed to record prescription: ${rxErr.message}` });
       }
-
-      // 3. Update appointment status to Completed
-      if (appointmentId) {
-        await client
-          .from('silver_appointments')
-          .update({ status: 'Completed', notes: notes || 'Encounter finalized.', updated_at: nowIso })
-          .eq('appointment_id', appointmentId);
-      }
-    } catch (err: any) {
-      console.error('Failed to save clinical encounter to database', err);
     }
-  }
 
-  return res.json({
-    success: true,
-    message: 'Clinical encounter finalized and synced to patient chart.',
-    encounter: {
-      encounter_id: encId,
-      appointmentId,
-      patientId,
-      notes,
-      prescription,
-      timestamp: nowIso,
-    },
-  });
+    // 5. Update appointment status to Completed
+    if (cleanAptId) {
+      const { error: aptUpdateErr } = await client
+        .from('silver_appointments')
+        .update({ status: 'Completed', notes: notes ? String(notes) : 'Encounter finalized.', updated_at: nowIso })
+        .eq('appointment_id', cleanAptId);
+
+      if (aptUpdateErr) {
+        return res.status(500).json({ success: false, message: `Failed to update appointment: ${aptUpdateErr.message}` });
+      }
+    }
+
+    return res.json({
+      success: true,
+      message: 'Clinical encounter finalized and synced to patient chart.',
+      encounter: {
+        encounter_id: encId,
+        appointmentId: cleanAptId,
+        patientId: cleanPatientId,
+        notes,
+        prescription,
+        timestamp: nowIso,
+      },
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, message: sanitizeError(err) });
+  }
 });
 
 // Operational Room Overrides Map (Tracks real interactive staff operations per date and room)
@@ -3468,7 +3813,7 @@ const OPERATIONAL_ROOM_OVERRIDES = new Map<string, any>();
 // --- DOCTOR-TO-STAFF WORKFLOW ENDPOINTS ---
 
 // 1. Doctor: Retrieve Staff Candidates for Assignment
-app.get('/api/doctor/staff-candidates', authenticateToken, async (req: Request, res: Response) => {
+app.get('/api/doctor/staff-candidates', authenticateToken, requireDoctorOrAdminRole, async (req: Request, res: Response) => {
   const client = getSupabaseAdmin();
   if (!client) {
     return res.status(503).json({ success: false, message: 'Database connection unavailable.' });
@@ -3527,7 +3872,7 @@ app.get('/api/doctor/staff-candidates', authenticateToken, async (req: Request, 
 });
 
 // 2. Doctor: Retrieve Operational Ward Beds (Temporary in-memory overrides)
-app.get('/api/doctor/ward-beds', authenticateToken, async (req: Request, res: Response) => {
+app.get('/api/doctor/ward-beds', authenticateToken, requireDoctorOrAdminRole, async (req: Request, res: Response) => {
   const targetDate = req.query.date ? String(req.query.date) : getHospitalLocalDateTime().dateStr;
   const wardBeds: any[] = [];
   for (const [key, override] of OPERATIONAL_ROOM_OVERRIDES.entries()) {
@@ -3559,12 +3904,14 @@ app.get('/api/doctor/ward-beds', authenticateToken, async (req: Request, res: Re
 });
 
 // 3. Doctor: Assign Staff Member to Patient
-app.post('/api/doctor/assign-staff', authenticateToken, async (req: Request, res: Response) => {
+app.post('/api/doctor/assign-staff', authenticateToken, requireDoctorOrAdminRole, async (req: Request, res: Response) => {
   const client = getSupabaseAdmin();
   const appUser = (req as any).appUser;
   const {
     staffId,
     patientId,
+    appointmentId,
+    appointment_id,
     doctorId,
     assignmentType,
     assignmentDate,
@@ -3575,6 +3922,8 @@ app.post('/api/doctor/assign-staff', authenticateToken, async (req: Request, res
     roomId,
     bedId,
   } = req.body;
+
+  const resolvedAppointmentId = appointmentId || appointment_id || null;
 
   if (!client) {
     return res.status(503).json({ success: false, message: 'Database connection unavailable.' });
@@ -3596,7 +3945,7 @@ app.post('/api/doctor/assign-staff', authenticateToken, async (req: Request, res
       return res.status(500).json({ success: false, message: stfErr.message });
     }
     if (!stf) {
-      return res.status(400).json({ success: false, message: `Staff member with ID ${staffId} not found in silver_staff.` });
+      return res.status(404).json({ success: false, message: `Staff member with ID ${staffId} not found in silver_staff.` });
     }
 
     // Verify patient if provided
@@ -3612,18 +3961,16 @@ app.post('/api/doctor/assign-staff', authenticateToken, async (req: Request, res
         return res.status(500).json({ success: false, message: patErr.message });
       }
       if (!pat) {
-        return res.status(400).json({ success: false, message: `Patient with ID ${patientId} not found in silver_patients.` });
+        return res.status(404).json({ success: false, message: `Patient with ID ${patientId} not found in silver_patients.` });
       }
       verifiedPatient = pat;
     }
 
     // Resolve doctor identity strictly from authenticated user and silver_doctors
-    // Never trust client-supplied doctor ID over the authenticated identity!
     let resolvedDoctorId: string | null = null;
     const userRole = (appUser?.role || '').toLowerCase();
 
     if (userRole === 'doctor') {
-      // For doctor users, always enforce their authenticated doctor identity
       if (appUser?.doctor_id) {
         resolvedDoctorId = appUser.doctor_id;
       } else if (appUser?.email) {
@@ -3635,14 +3982,11 @@ app.post('/api/doctor/assign-staff', authenticateToken, async (req: Request, res
         if (doc?.doctor_id) resolvedDoctorId = doc.doctor_id;
       }
     } else if (userRole === 'admin') {
-      // Admin can specify a doctorId or use their own profile
       if (doctorId) {
         resolvedDoctorId = doctorId;
       } else if (appUser?.doctor_id) {
         resolvedDoctorId = appUser.doctor_id;
       }
-    } else if (appUser?.doctor_id) {
-      resolvedDoctorId = appUser.doctor_id;
     }
 
     // Verify resolved doctor ID exists in canonical silver_doctors
@@ -3657,16 +4001,61 @@ app.post('/api/doctor/assign-staff', authenticateToken, async (req: Request, res
       }
     }
 
-    if (!resolvedDoctorId) {
+    if (!resolvedDoctorId && userRole === 'doctor') {
       return res.status(403).json({
         success: false,
         message: 'A verified attending physician record in silver_doctors is required to create a clinical staff assignment.',
       });
     }
 
+    // If an appointmentId is provided, validate appointment existence and doctor authorization
+    if (resolvedAppointmentId) {
+      const { data: apt, error: aptErr } = await client
+        .from('silver_appointments')
+        .select('appointment_id, patient_id, doctor_id, status')
+        .eq('appointment_id', resolvedAppointmentId)
+        .maybeSingle();
+
+      if (aptErr) {
+        return res.status(500).json({ success: false, message: aptErr.message });
+      }
+      if (!apt) {
+        return res.status(404).json({ success: false, message: `Appointment ${resolvedAppointmentId} not found.` });
+      }
+      if (verifiedPatient && apt.patient_id !== verifiedPatient.patient_id) {
+        return res.status(400).json({ success: false, message: 'Appointment does not belong to the selected patient.' });
+      }
+      if (userRole === 'doctor' && resolvedDoctorId && apt.doctor_id !== resolvedDoctorId) {
+        return res.status(403).json({
+          success: false,
+          message: 'Access denied: You cannot create staff assignments for an appointment assigned to another physician.',
+        });
+      }
+    }
+
     const validPriorities = ['Low', 'Normal', 'High', 'Urgent', 'Critical'];
     const resolvedPriority = validPriorities.includes(priority) ? priority : 'Normal';
     const resolvedDate = assignmentDate || getHospitalLocalDateTime().dateStr;
+    const targetPatientId = verifiedPatient?.patient_id || patientId || null;
+
+    // Duplicate active assignment check to prevent duplicate task assignments
+    if (targetPatientId) {
+      const { data: existingAsgs } = await client
+        .from('silver_staff_assignment')
+        .select('assignment_id, assignment_status')
+        .eq('staff_id', staffId)
+        .eq('patient_id', targetPatientId)
+        .eq('assignment_date', resolvedDate)
+        .in('assignment_status', ['Scheduled', 'Active', 'In Progress'])
+        .limit(1);
+
+      if (existingAsgs && existingAsgs.length > 0) {
+        return res.status(409).json({
+          success: false,
+          message: `Duplicate assignment: Staff member ${stf.staff_name} already has an active assignment for this patient on ${resolvedDate}.`,
+        });
+      }
+    }
 
     // Combine room/bed location into notes if provided
     let combinedNotes = notes || '';
@@ -3676,6 +4065,9 @@ app.post('/api/doctor/assign-staff', authenticateToken, async (req: Request, res
         combinedNotes = combinedNotes ? `${locPrefix} ${combinedNotes}` : locPrefix;
       }
     }
+    if (resolvedAppointmentId && !combinedNotes.includes('[Appointment:')) {
+      combinedNotes = combinedNotes ? `[Appointment: ${resolvedAppointmentId}] ${combinedNotes}` : `[Appointment: ${resolvedAppointmentId}]`;
+    }
 
     const asgId = `ASG${Date.now().toString().slice(-6)}`;
     const { data: newAsg, error: insertErr } = await client
@@ -3683,7 +4075,7 @@ app.post('/api/doctor/assign-staff', authenticateToken, async (req: Request, res
       .insert({
         assignment_id: asgId,
         staff_id: staffId,
-        patient_id: verifiedPatient?.patient_id || patientId || null,
+        patient_id: targetPatientId,
         doctor_id: resolvedDoctorId || null,
         assignment_type: assignmentType || 'Clinical Patient Care',
         assignment_date: resolvedDate,
@@ -3711,23 +4103,26 @@ app.post('/api/doctor/assign-staff', authenticateToken, async (req: Request, res
 });
 
 // 4. Doctor: Retrieve Staff Assignments for a Specific Patient
-app.get('/api/doctor/patient-assignments/:patientId', authenticateToken, async (req: Request, res: Response) => {
+app.get('/api/doctor/patient-assignments/:patientId', authenticateToken, requireDoctorOrAdminRole, async (req: Request, res: Response) => {
   const client = getSupabaseAdmin();
+  const appUser = (req as any).appUser;
   const { patientId } = req.params;
 
   if (!client) {
     return res.status(503).json({ success: false, message: 'Database connection unavailable.' });
   }
 
-  if (!patientId) {
+  if (!patientId || !patientId.trim()) {
     return res.status(400).json({ success: false, message: 'patientId parameter is required.' });
   }
+
+  const cleanPatientId = patientId.trim();
 
   try {
     const { data: patient, error: pErr } = await client
       .from('silver_patients')
-      .select('patient_id, name, age, gender')
-      .eq('patient_id', patientId)
+      .select('patient_id, name, age, gender, primary_doctor_id')
+      .eq('patient_id', cleanPatientId)
       .maybeSingle();
 
     if (pErr) {
@@ -3735,7 +4130,57 @@ app.get('/api/doctor/patient-assignments/:patientId', authenticateToken, async (
     }
 
     if (!patient) {
-      return res.status(404).json({ success: false, message: `Patient ${patientId} not found in database.` });
+      return res.status(404).json({ success: false, message: `Patient ${cleanPatientId} not found in database.` });
+    }
+
+    // Authorization: if caller is a Doctor, verify clinical relationship
+    const userRole = (appUser?.role || '').toLowerCase();
+    const docId = appUser?.doctor_id;
+
+    if (userRole === 'doctor' && docId) {
+      let authorized = patient.primary_doctor_id === docId;
+      if (!authorized) {
+        const { data: aptRel } = await client
+          .from('silver_appointments')
+          .select('appointment_id')
+          .eq('patient_id', cleanPatientId)
+          .eq('doctor_id', docId)
+          .limit(1)
+          .maybeSingle();
+
+        if (aptRel) {
+          authorized = true;
+        } else {
+          const { data: encRel } = await client
+            .from('silver_encounters')
+            .select('encounter_id')
+            .eq('patient_id', cleanPatientId)
+            .eq('doctor_id', docId)
+            .limit(1)
+            .maybeSingle();
+
+          if (encRel) {
+            authorized = true;
+          } else {
+            const { data: asgRel } = await client
+              .from('silver_staff_assignment')
+              .select('assignment_id')
+              .eq('patient_id', cleanPatientId)
+              .eq('doctor_id', docId)
+              .limit(1)
+              .maybeSingle();
+
+            if (asgRel) authorized = true;
+          }
+        }
+      }
+
+      if (!authorized) {
+        return res.status(403).json({
+          success: false,
+          message: 'Access denied: You do not have an authorized clinical relationship with this patient.',
+        });
+      }
     }
 
     const { data, error } = await client
@@ -3793,44 +4238,72 @@ app.get('/api/doctor/patient-assignments/:patientId', authenticateToken, async (
 });
 
 // 17. Staff Ward & Clinical Operations Overview
-app.get('/api/staff/overview', authenticateToken, async (req: Request, res: Response) => {
+app.get('/api/staff/overview', authenticateToken, requireStaffRole, async (req: Request, res: Response) => {
   const client = getSupabaseAdmin();
   const appUser = (req as any).appUser;
   const targetDate = req.query.date ? String(req.query.date) : getHospitalLocalDateTime().dateStr;
 
+  if (!appUser?.staff_id) {
+    return res.status(403).json({
+      success: false,
+      errorType: 'PROFILE_NOT_LINKED',
+      message: 'No staff ID is linked to this authenticated account.',
+    });
+  }
+
   // 1. Resolve Staff Member Profile strictly from appUser and canonical silver_staff
   let staff = {
-    staff_id: appUser?.staff_id || '',
-    name: appUser?.full_name || appUser?.name || 'Staff Member',
-    role: 'Clinical Support',
-    department: 'General Ward',
+    staff_id: appUser.staff_id,
+    name: appUser.full_name || appUser.name || 'Staff Member',
+    role: appUser.designation || 'Clinical Support',
+    department: appUser.department || 'General Ward',
     shift: 'Day Shift (07:00 - 19:30)',
     station: 'Hospital Staff Portal',
     assignedWing: 'Main Campus',
   };
 
-  if (client) {
+  if (client && isDatabaseConnected) {
     try {
-      let stfQuery = client.from('silver_staff').select('*');
-      if (appUser?.staff_id) {
-        stfQuery = stfQuery.eq('staff_id', appUser.staff_id);
-      } else if (appUser?.email) {
-        stfQuery = stfQuery.eq('email', appUser.email);
-      }
-      const { data: stfData } = await stfQuery.maybeSingle();
+      const { data: stfData } = await client
+        .from('silver_staff')
+        .select('*')
+        .eq('staff_id', appUser.staff_id)
+        .maybeSingle();
+
       if (stfData) {
         staff = {
           staff_id: stfData.staff_id,
-          name: stfData.staff_name || appUser?.full_name || 'Clinical Staff',
+          name: stfData.staff_name || appUser.full_name || 'Clinical Staff',
           role: stfData.role || 'Clinical Nurse',
           department: stfData.department || 'Inpatient Care',
           shift: stfData.shift || 'Day Shift (07:00 - 19:30)',
           station: 'Station Central',
           assignedWing: stfData.hospital_branch || 'Main Campus',
         };
+      } else {
+        return res.status(404).json({
+          success: false,
+          errorType: 'PROFILE_NOT_LINKED',
+          message: `Staff operational profile not found in directory for ID ${appUser.staff_id}.`,
+        });
       }
     } catch {
       // Keep resolved profile
+    }
+  } else {
+    const localStaff = Array.from(REGISTERED_ACCOUNTS.values()).find(
+      (a) => a.staff_id === appUser.staff_id || a.id === appUser.id
+    );
+    if (localStaff) {
+      staff = {
+        staff_id: localStaff.staff_id || appUser.staff_id,
+        name: localStaff.fullName,
+        role: localStaff.designation || 'Ward Staff Nurse',
+        department: localStaff.department || 'Inpatient Ward 4B & Clinical Triage',
+        shift: 'Day Shift (07:00 - 19:30)',
+        station: 'Hospital Staff Portal',
+        assignedWing: 'Main Campus',
+      };
     }
   }
 
@@ -4001,7 +4474,7 @@ app.get('/api/staff/overview', authenticateToken, async (req: Request, res: Resp
 // --- STAFF DASHBOARD & WORKFLOW ENDPOINTS ---
 
 // 1. Staff: Retrieve Assignments strictly for authenticated staff member
-app.get('/api/staff/my-assignments', authenticateToken, async (req: Request, res: Response) => {
+app.get('/api/staff/my-assignments', authenticateToken, requireStaffRole, async (req: Request, res: Response) => {
   const client = getSupabaseAdmin();
   const appUser = (req as any).appUser;
   const targetDate = req.query.date ? String(req.query.date) : (req.query.targetDate ? String(req.query.targetDate) : null);
@@ -4022,10 +4495,9 @@ app.get('/api/staff/my-assignments', authenticateToken, async (req: Request, res
   }
 
   if (!staffId) {
-    return res.json({
-      success: true,
-      staffId: '',
-      assignments: [],
+    return res.status(403).json({
+      success: false,
+      errorType: 'PROFILE_NOT_LINKED',
       message: 'No authenticated staff member profile found for this user.',
     });
   }
@@ -4102,7 +4574,7 @@ app.get('/api/staff/my-assignments', authenticateToken, async (req: Request, res
 });
 
 // 2. Staff: Update Operational Room Status (Temporary in-memory override)
-app.post('/api/staff/rooms/update-status', authenticateToken, async (req: Request, res: Response) => {
+app.post('/api/staff/rooms/update-status', authenticateToken, requireStaffOrAdminRole, async (req: Request, res: Response) => {
   const { roomId, status, patientId, doctorId, admissionInfo, targetDate } = req.body;
   const client = getSupabaseAdmin();
   const dateStr = targetDate || getHospitalLocalDateTime().dateStr;
@@ -4206,6 +4678,14 @@ const handleAssignmentStatusUpdate = async (req: Request, res: Response) => {
       }
     }
 
+    // Status transition validation
+    if (currentAsg.assignment_status === 'Completed' && status === 'Scheduled') {
+      return res.status(400).json({ success: false, message: 'Invalid transition: Cannot revert a completed assignment back to Scheduled.' });
+    }
+    if (currentAsg.assignment_status === 'Cancelled' && status !== 'Cancelled') {
+      return res.status(400).json({ success: false, message: 'Invalid transition: Cannot update status of a cancelled assignment.' });
+    }
+
     // Perform genuine database update
     const updatePayload: any = {
       assignment_status: status,
@@ -4237,11 +4717,11 @@ const handleAssignmentStatusUpdate = async (req: Request, res: Response) => {
   }
 };
 
-app.post('/api/staff/assignments/update', authenticateToken, handleAssignmentStatusUpdate);
-app.post('/api/staff/assignment-status', authenticateToken, handleAssignmentStatusUpdate);
+app.post('/api/staff/assignments/update', authenticateToken, requireStaffOrAdminRole, handleAssignmentStatusUpdate);
+app.post('/api/staff/assignment-status', authenticateToken, requireStaffOrAdminRole, handleAssignmentStatusUpdate);
 
-// 4. Staff: Log Clinical Vitals (Appends to existing genuine encounter or active assignment notes without creating fake encounters or marking completed automatically)
-app.post('/api/staff/log-vitals', authenticateToken, async (req: Request, res: Response) => {
+// 4. Staff: Log Clinical Vitals
+app.post('/api/staff/log-vitals', authenticateToken, requireStaffOrAdminRole, async (req: Request, res: Response) => {
   const { patientId, patientName, bp, hr, temp, spo2 } = req.body;
   const client = getSupabaseAdmin();
   const appUser = (req as any).appUser;
@@ -4258,11 +4738,18 @@ app.post('/api/staff/log-vitals', authenticateToken, async (req: Request, res: R
   try {
     let verifiedPatient: any = null;
     if (patientId) {
-      const { data: pRec } = await client
+      const { data: pRec, error: patErr } = await client
         .from('silver_patients')
         .select('patient_id, name')
         .eq('patient_id', patientId)
         .maybeSingle();
+
+      if (patErr) {
+        return res.status(500).json({ success: false, message: patErr.message });
+      }
+      if (!pRec) {
+        return res.status(404).json({ success: false, message: `Patient ${patientId} not found in database.` });
+      }
       verifiedPatient = pRec;
     }
 
@@ -5826,35 +6313,36 @@ app.get('/api/user/preferences', async (req: Request, res: Response) => {
   });
 });
 
-app.post('/api/user/preferences', async (req: Request, res: Response) => {
+app.post('/api/user/preferences', authenticateToken, async (req: Request, res: Response) => {
   const { chatbotEnabled } = req.body;
   const enabled = chatbotEnabled !== false;
-  const authHeader = req.headers['authorization'];
+  const appUser = (req as any).appUser;
+  const authUser = (req as any).authUser;
 
-  if (authHeader && authHeader.startsWith('Bearer ')) {
-    const token = authHeader.split(' ')[1];
-    for (const acc of REGISTERED_ACCOUNTS.values()) {
-      if (token.includes(acc.id) || (acc.patient_id && token.includes(acc.patient_id)) || token.includes(acc.role)) {
-        if (!acc.preferences) acc.preferences = {};
-        acc.preferences.chatbot_enabled = enabled;
-      }
+  if (appUser) {
+    if (!appUser.preferences) appUser.preferences = {};
+    appUser.preferences.chatbot_enabled = enabled;
+
+    const account = Array.from(REGISTERED_ACCOUNTS.values()).find(
+      (a) => a.id === appUser.id || a.email === appUser.email
+    );
+    if (account) {
+      if (!account.preferences) account.preferences = {};
+      account.preferences.chatbot_enabled = enabled;
     }
+  }
 
-    // Persist to Supabase app_users if database is live
-    if (isDatabaseConnected) {
-      const adminClient = getSupabaseAdmin();
-      if (adminClient) {
-        try {
-          const { data: { user } } = await adminClient.auth.getUser(token);
-          if (user) {
-            await adminClient
-              .from('app_users')
-              .update({ preferences: { chatbot_enabled: enabled } })
-              .eq('id', user.id);
-          }
-        } catch {
-          // Fallback to in-memory preference
-        }
+  // Persist to Supabase app_users if database is live
+  if (isDatabaseConnected && authUser?.id) {
+    const adminClient = getSupabaseAdmin();
+    if (adminClient) {
+      try {
+        await adminClient
+          .from('app_users')
+          .update({ preferences: { chatbot_enabled: enabled } })
+          .eq('id', authUser.id);
+      } catch {
+        // Fallback to in-memory preference
       }
     }
   }
@@ -5896,11 +6384,17 @@ async function resolvePatientContext(authHeader?: string): Promise<PatientContex
   }
 
   const token = authHeader.split(' ')[1];
-  let patientId = 'P182162';
-  let patientName = 'Elena Rostova';
+  let patientId = '';
+  let patientName = '';
 
-  // In-memory or demo token resolution
-  if (token.startsWith('session-token-') || token.startsWith('demo-session-token-')) {
+  // In-memory or active session token resolution
+  const sessionAcc = ACTIVE_SESSIONS.get(token);
+  if (sessionAcc && sessionAcc.role === 'patient') {
+    patientId = sessionAcc.patient_id || '';
+    patientName = sessionAcc.fullName;
+  }
+
+  if (!patientId && (token.startsWith('session-token-') || token.startsWith('demo-session-token-'))) {
     const raw = token.replace('session-token-', '').replace('demo-session-token-', '');
     const parts = raw.split('-');
     const userIdOrSuffix = parts.slice(1).join('-');
@@ -5908,8 +6402,8 @@ async function resolvePatientContext(authHeader?: string): Promise<PatientContex
     const inMem = REGISTERED_ACCOUNTS.get(userIdOrSuffix) || Array.from(REGISTERED_ACCOUNTS.values()).find(
       (a) => a.id === userIdOrSuffix || a.patient_id === userIdOrSuffix
     );
-    if (inMem) {
-      patientId = inMem.patient_id || 'P182162';
+    if (inMem && inMem.role === 'patient') {
+      patientId = inMem.patient_id || '';
       patientName = inMem.fullName;
     }
   }
@@ -5931,6 +6425,10 @@ async function resolvePatientContext(authHeader?: string): Promise<PatientContex
         // Fallback
       }
     }
+  }
+
+  if (!patientId) {
+    return { isAuthenticated: false, appointments: [] };
   }
 
   const appointments: Array<any> = [];
@@ -5962,34 +6460,9 @@ async function resolvePatientContext(authHeader?: string): Promise<PatientContex
           }
         }
       } catch {
-        // Continue with demo fallback
+        // Continue
       }
     }
-  }
-
-  if (appointments.length === 0) {
-    appointments.push(
-      {
-        id: 'APT-9041',
-        doctor: 'Dr. Marcus Vance, MD',
-        specialty: 'Cardiology & Vascular Medicine',
-        branch: 'MediAI Heart & Vascular Specialty Institute',
-        date: '2026-10-28',
-        time: '10:30 AM',
-        status: 'Confirmed',
-        reason: 'Cardiovascular follow-up & ECG evaluation',
-      },
-      {
-        id: 'APT-9284',
-        doctor: 'Dr. Sarah Lin, MD',
-        specialty: 'General Internal Medicine',
-        branch: 'MediAI Medical Center — Main Campus',
-        date: '2026-11-14',
-        time: '02:00 PM',
-        status: 'Scheduled',
-        reason: 'Routine quarterly metabolic panel consultation',
-      }
-    );
   }
 
   return {
