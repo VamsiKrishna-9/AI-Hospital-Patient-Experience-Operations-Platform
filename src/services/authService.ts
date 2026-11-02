@@ -11,9 +11,14 @@ import {
 } from '../types/auth';
 
 class AuthService {
+  private static readonly ACCESS_TOKEN_KEY = 'mediai_access_token';
+  private static readonly REFRESH_TOKEN_KEY = 'mediai_refresh_token';
+  private static readonly EXPIRES_AT_KEY = 'mediai_token_expires_at';
   private static readonly SESSION_USER_KEY = 'mediai_session_user';
-  private static readonly TOKEN_KEY = 'mediai_patient_auth_token';
+  private static readonly LEGACY_TOKEN_KEY = 'mediai_patient_auth_token';
   private static readonly CURRENT_PATIENT_KEY = 'mediai_current_patient_id';
+
+  private refreshPromise: Promise<boolean> | null = null;
 
   /**
    * Safe storage helper - stores only remembered user identifier, NEVER plaintext passwords
@@ -43,10 +48,23 @@ class AuthService {
     }
   }
 
-  public saveSession(token: string, user: any): void {
+  /**
+   * Centralized token and session storage across all roles
+   */
+  public saveSession(token: string, user: any, refreshToken?: string, expiresAt?: number): void {
     try {
-      sessionStorage.setItem(AuthService.TOKEN_KEY, token);
-      sessionStorage.setItem(AuthService.SESSION_USER_KEY, JSON.stringify(user));
+      sessionStorage.setItem(AuthService.ACCESS_TOKEN_KEY, token);
+      // Backward compatibility with legacy key
+      sessionStorage.setItem(AuthService.LEGACY_TOKEN_KEY, token);
+      if (user) {
+        sessionStorage.setItem(AuthService.SESSION_USER_KEY, JSON.stringify(user));
+      }
+      if (refreshToken) {
+        sessionStorage.setItem(AuthService.REFRESH_TOKEN_KEY, refreshToken);
+      }
+      if (expiresAt) {
+        sessionStorage.setItem(AuthService.EXPIRES_AT_KEY, String(expiresAt));
+      }
       if (user?.patient_id) {
         sessionStorage.setItem(AuthService.CURRENT_PATIENT_KEY, user.patient_id);
       }
@@ -64,19 +82,95 @@ class AuthService {
     }
   }
 
-  public getToken(): string | null {
+  public getAuthToken(): string | null {
     try {
-      return sessionStorage.getItem(AuthService.TOKEN_KEY);
+      return (
+        sessionStorage.getItem(AuthService.ACCESS_TOKEN_KEY) ||
+        sessionStorage.getItem(AuthService.LEGACY_TOKEN_KEY) ||
+        localStorage.getItem('mediai_remembered_token') ||
+        null
+      );
     } catch {
       return null;
     }
   }
 
+  public getToken(): string | null {
+    return this.getAuthToken();
+  }
+
+  public getRefreshToken(): string | null {
+    try {
+      return sessionStorage.getItem(AuthService.REFRESH_TOKEN_KEY) || null;
+    } catch {
+      return null;
+    }
+  }
+
+  public isTokenExpired(): boolean {
+    try {
+      const expiresAtStr = sessionStorage.getItem(AuthService.EXPIRES_AT_KEY);
+      if (!expiresAtStr) return false;
+      const expiresAtSec = parseInt(expiresAtStr, 10);
+      if (isNaN(expiresAtSec)) return false;
+      // Consider expired if within 60 seconds of expiration
+      const nowSec = Math.floor(Date.now() / 1000);
+      return nowSec >= (expiresAtSec - 60);
+    } catch {
+      return false;
+    }
+  }
+
+  public async refreshToken(): Promise<boolean> {
+    if (this.refreshPromise) {
+      return this.refreshPromise;
+    }
+
+    this.refreshPromise = (async () => {
+      const refreshToken = this.getRefreshToken();
+      if (!refreshToken) return false;
+
+      try {
+        const response = await fetch('/api/auth/refresh', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ refreshToken }),
+        });
+
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || !data.success || !data.token) {
+          return false;
+        }
+
+        const activeUser = this.getActiveUser() || data.user;
+        this.saveSession(data.token, activeUser, data.refreshToken, data.expiresAt);
+        return true;
+      } catch {
+        return false;
+      } finally {
+        this.refreshPromise = null;
+      }
+    })();
+
+    return this.refreshPromise;
+  }
+
+  public handleSessionExpired(): void {
+    this.clearSession();
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('mediai:session-expired'));
+    }
+  }
+
   public clearSession(): void {
     try {
-      sessionStorage.removeItem(AuthService.TOKEN_KEY);
+      sessionStorage.removeItem(AuthService.ACCESS_TOKEN_KEY);
+      sessionStorage.removeItem(AuthService.LEGACY_TOKEN_KEY);
+      sessionStorage.removeItem(AuthService.REFRESH_TOKEN_KEY);
+      sessionStorage.removeItem(AuthService.EXPIRES_AT_KEY);
       sessionStorage.removeItem(AuthService.SESSION_USER_KEY);
       sessionStorage.removeItem(AuthService.CURRENT_PATIENT_KEY);
+      localStorage.removeItem('mediai_remembered_token');
     } catch {
       // storage unavailable
     }
@@ -112,7 +206,7 @@ class AuthService {
       }
 
       if (result.token && result.user) {
-        this.saveSession(result.token, result.user);
+        this.saveSession(result.token, result.user, result.refreshToken, result.expiresAt);
       }
 
       if (params.rememberMe && result.role) {
@@ -132,6 +226,8 @@ class AuthService {
         staffId: result.staffId || result.user?.staff_id,
         role: result.role || result.user?.role,
         token: result.token,
+        refreshToken: result.refreshToken,
+        expiresAt: result.expiresAt,
         mustChangePassword: result.mustChangePassword,
         tempToken: result.tempToken,
       };
@@ -214,7 +310,7 @@ class AuthService {
       }
 
       if (result.token && result.user) {
-        this.saveSession(result.token, result.user);
+        this.saveSession(result.token, result.user, result.refreshToken, result.expiresAt);
       }
 
       return {
@@ -225,6 +321,8 @@ class AuthService {
         patient: result.patient,
         patientId: result.patientId || result.user?.patient_id,
         token: result.token,
+        refreshToken: result.refreshToken,
+        expiresAt: result.expiresAt,
       };
     } catch {
       return {
@@ -265,7 +363,7 @@ class AuthService {
       }
 
       if (result.token && result.user) {
-        this.saveSession(result.token, result.user);
+        this.saveSession(result.token, result.user, result.refreshToken, result.expiresAt);
       }
 
       return {
@@ -273,6 +371,8 @@ class AuthService {
         message: result.message || `Role updated to ${newRole.toUpperCase()}.`,
         user: result.user,
         token: result.token,
+        refreshToken: result.refreshToken,
+        expiresAt: result.expiresAt,
       };
     } catch {
       return {
@@ -305,7 +405,7 @@ class AuthService {
       }
 
       if (result.token && result.user) {
-        this.saveSession(result.token, result.user);
+        this.saveSession(result.token, result.user, result.refreshToken, result.expiresAt);
       }
 
       return {
@@ -318,6 +418,8 @@ class AuthService {
         staffId: result.staffId || result.user?.staff_id,
         role: result.role || result.user?.role,
         token: result.token,
+        refreshToken: result.refreshToken,
+        expiresAt: result.expiresAt,
         requiresEmailConfirmation: result.requiresEmailConfirmation,
         requiresApproval: Boolean(result.requiresApproval),
         status: result.status,

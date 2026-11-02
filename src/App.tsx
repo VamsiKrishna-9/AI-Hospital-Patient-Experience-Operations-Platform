@@ -85,6 +85,22 @@ export default function App() {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
+  // Listen for session expiration events across components
+  useEffect(() => {
+    const onSessionExpired = () => {
+      handleLogout();
+    };
+    window.addEventListener('mediai:session-expired', onSessionExpired);
+    return () => window.removeEventListener('mediai:session-expired', onSessionExpired);
+  }, []);
+
+  // Background refresh near token expiry on initial mount
+  useEffect(() => {
+    if (authService.getAuthToken() && authService.isTokenExpired()) {
+      authService.refreshToken().catch(() => {});
+    }
+  }, []);
+
   // Enforce single-role confinement across the session lifecycle
   useEffect(() => {
     if (activeUser?.role && screen.endsWith('-dashboard')) {

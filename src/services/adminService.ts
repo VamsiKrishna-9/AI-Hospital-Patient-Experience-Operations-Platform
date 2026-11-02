@@ -4,6 +4,7 @@
  */
 
 import { HospitalRole } from '../types/auth';
+import { authService } from './authService';
 
 export type EmployeeMappingStatus = 'Linked' | 'Unlinked' | 'Needs Review' | 'Administrator' | 'Patient';
 
@@ -108,14 +109,46 @@ export interface AdminDashboardDateStats {
 
 class AdminService {
   private getAuthHeaders(): HeadersInit {
-    const token =
-      sessionStorage.getItem('mediai_patient_auth_token') ||
-      localStorage.getItem('mediai_remembered_token') ||
-      '';
+    const token = authService.getAuthToken() || '';
     return {
       'Content-Type': 'application/json',
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     };
+  }
+
+  /**
+   * Centralized authenticated fetch with pre-expiry refresh and 401 auto-retry
+   */
+  private async authenticatedFetch(url: string, init?: RequestInit): Promise<Response> {
+    // If token is expiring within 60s, refresh in advance
+    if (authService.isTokenExpired()) {
+      await authService.refreshToken();
+    }
+
+    const headers = {
+      ...this.getAuthHeaders(),
+      ...(init?.headers || {}),
+    };
+
+    let res = await fetch(url, { ...init, headers });
+
+    // On 401: Attempt refresh once and retry
+    if (res.status === 401) {
+      const refreshed = await authService.refreshToken();
+      if (refreshed) {
+        const retryHeaders = {
+          ...this.getAuthHeaders(),
+          ...(init?.headers || {}),
+        };
+        res = await fetch(url, { ...init, headers: retryHeaders });
+      }
+
+      if (res.status === 401) {
+        authService.handleSessionExpired();
+      }
+    }
+
+    return res;
   }
 
   async fetchUsers(params?: {
@@ -155,10 +188,39 @@ class AdminService {
 
       const qs = q.toString();
       const url = qs ? `/api/admin/users?${qs}` : '/api/admin/users';
-      const res = await fetch(url, {
-        headers: this.getAuthHeaders(),
-      });
-      const data = await res.json();
+      const res = await this.authenticatedFetch(url);
+      const data = await res.json().catch(() => ({}));
+
+      if (res.status === 401) {
+        return {
+          success: false,
+          users: [],
+          availableDepartments: [],
+          availableShifts: [],
+          message: data.message || 'Session expired or invalid. Please sign in again.',
+        };
+      }
+
+      if (res.status === 403) {
+        return {
+          success: false,
+          users: [],
+          availableDepartments: [],
+          availableShifts: [],
+          message: data.message || 'Access Denied: Administrative privileges required.',
+        };
+      }
+
+      if (res.status === 503) {
+        return {
+          success: false,
+          users: [],
+          availableDepartments: [],
+          availableShifts: [],
+          message: data.message || 'Hospital database unreachable. Please verify database connection.',
+        };
+      }
+
       if (!res.ok || !data.success) {
         return {
           success: false,
@@ -193,12 +255,25 @@ class AdminService {
     reason?: string;
   }): Promise<{ success: boolean; message: string; user?: any; auditEntry?: AdminAuditLog }> {
     try {
-      const res = await fetch('/api/admin/users/update-role', {
+      const res = await this.authenticatedFetch('/api/admin/users/update-role', {
         method: 'POST',
-        headers: this.getAuthHeaders(),
         body: JSON.stringify(params),
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
+
+      if (res.status === 401) {
+        return {
+          success: false,
+          message: data.message || 'Session expired or invalid. Please sign in again.',
+        };
+      }
+      if (res.status === 403) {
+        return {
+          success: false,
+          message: data.message || 'Access Denied: Administrative privileges required.',
+        };
+      }
+
       return {
         success: data.success ?? false,
         message: data.message || (data.success ? 'Role updated successfully' : 'Failed to update role'),
@@ -215,10 +290,24 @@ class AdminService {
 
   async fetchAuditLogs(): Promise<{ success: boolean; auditLogs: AdminAuditLog[]; message?: string }> {
     try {
-      const res = await fetch('/api/admin/audit-logs', {
-        headers: this.getAuthHeaders(),
-      });
-      const data = await res.json();
+      const res = await this.authenticatedFetch('/api/admin/audit-logs');
+      const data = await res.json().catch(() => ({}));
+
+      if (res.status === 401) {
+        return {
+          success: false,
+          auditLogs: [],
+          message: data.message || 'Session expired or invalid. Please sign in again.',
+        };
+      }
+      if (res.status === 403) {
+        return {
+          success: false,
+          auditLogs: [],
+          message: data.message || 'Access Denied: Administrative privileges required.',
+        };
+      }
+
       if (!res.ok || !data.success) {
         return {
           success: false,
@@ -246,10 +335,22 @@ class AdminService {
   }> {
     try {
       const url = date ? `/api/admin/dashboard-stats?date=${encodeURIComponent(date)}` : '/api/admin/dashboard-stats';
-      const res = await fetch(url, {
-        headers: this.getAuthHeaders(),
-      });
-      const data = await res.json();
+      const res = await this.authenticatedFetch(url);
+      const data = await res.json().catch(() => ({}));
+
+      if (res.status === 401) {
+        return {
+          success: false,
+          message: data.message || 'Session expired or invalid. Please sign in again.',
+        };
+      }
+      if (res.status === 403) {
+        return {
+          success: false,
+          message: data.message || 'Access Denied: Administrative privileges required.',
+        };
+      }
+
       if (!res.ok || !data.success) {
         return {
           success: false,
@@ -285,10 +386,22 @@ class AdminService {
 
       const qs = params.toString();
       const url = qs ? `/api/admin/roster?${qs}` : '/api/admin/roster';
-      const res = await fetch(url, {
-        headers: this.getAuthHeaders(),
-      });
-      const data = await res.json();
+      const res = await this.authenticatedFetch(url);
+      const data = await res.json().catch(() => ({}));
+
+      if (res.status === 401) {
+        return {
+          success: false,
+          message: data.message || 'Session expired or invalid. Please sign in again.',
+        };
+      }
+      if (res.status === 403) {
+        return {
+          success: false,
+          message: data.message || 'Access Denied: Administrative privileges required.',
+        };
+      }
+
       if (!res.ok || !data.success) {
         return {
           success: false,
@@ -328,10 +441,22 @@ class AdminService {
 
       const qs = q.toString();
       const url = qs ? `/api/admin/feedback-analytics?${qs}` : '/api/admin/feedback-analytics';
-      const res = await fetch(url, {
-        headers: this.getAuthHeaders(),
-      });
-      const data = await res.json();
+      const res = await this.authenticatedFetch(url);
+      const data = await res.json().catch(() => ({}));
+
+      if (res.status === 401) {
+        return {
+          success: false,
+          message: data.message || 'Session expired or invalid. Please sign in again.',
+        };
+      }
+      if (res.status === 403) {
+        return {
+          success: false,
+          message: data.message || 'Access Denied: Administrative privileges required.',
+        };
+      }
+
       if (!res.ok || !data.success) {
         return {
           success: false,

@@ -133,6 +133,9 @@ export interface AuthResponse {
   requiresApproval?: boolean;
   status?: 'active' | 'pending_approval' | 'rejected';
   token?: string;
+  refreshToken?: string;
+  expiresAt?: number;
+  expiresIn?: number;
   errors?: Record<string, string>;
   targetEndpoint?: string;
 }

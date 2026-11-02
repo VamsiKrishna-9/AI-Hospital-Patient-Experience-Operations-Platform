@@ -10,23 +10,21 @@ import {
   AppointmentRecord,
   FeedbackRecord,
 } from '../types/patient';
+import { authService } from './authService';
 
 const TOKEN_KEY = 'mediai_patient_auth_token';
 const CURRENT_PATIENT_KEY = 'mediai_current_patient_id';
 
 class PatientService {
   private getToken(): string | null {
-    try {
-      return sessionStorage.getItem(TOKEN_KEY);
-    } catch {
-      return null;
-    }
+    return authService.getAuthToken();
   }
 
   public setSession(token: string, patientId: string): void {
     try {
       sessionStorage.setItem(TOKEN_KEY, token);
       sessionStorage.setItem(CURRENT_PATIENT_KEY, patientId);
+      authService.saveSession(token, { patient_id: patientId });
     } catch (e) {
       console.error('Session storage failed', e);
     }
@@ -36,6 +34,7 @@ class PatientService {
     try {
       sessionStorage.removeItem(TOKEN_KEY);
       sessionStorage.removeItem(CURRENT_PATIENT_KEY);
+      authService.clearSession();
     } catch (e) {
       console.error('Session clearance failed', e);
     }

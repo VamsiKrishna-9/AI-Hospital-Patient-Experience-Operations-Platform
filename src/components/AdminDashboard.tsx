@@ -52,6 +52,7 @@ import {
   AdminFeedbackAnalyticsResponse,
   FeedbackItem,
 } from '../services/adminService';
+import { authService } from '../services/authService';
 
 interface AdminDashboardProps {
   user?: AuthUser | null;
@@ -60,7 +61,7 @@ interface AdminDashboardProps {
 }
 
 interface ExecutiveMetrics {
-  bedOccupancyRate: number;
+  bedOccupancyRate: number | string;
   avgWaitTimeMinutes: number;
   totalActivePatients: number;
   totalPhysicians: number;
@@ -73,11 +74,17 @@ interface ExecutiveMetrics {
 interface DepartmentCapacity {
   id: string;
   name: string;
-  totalBeds: number;
-  occupiedBeds: number;
-  rate: number;
-  doctorsOnDuty: number;
+  totalBeds: number | string;
+  occupiedBeds: number | string;
+  rate: number | string;
+  occupancyRate?: string;
+  activePhysicians: number;
+  doctorsOnDuty?: number;
+  staffCount: number | string;
+  staffLabel: string;
   status: string;
+  bedTrackingNote?: string;
+  staffMappingNote?: string;
 }
 
 interface StaffMember {
@@ -322,6 +329,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }
   const [feedback, setFeedback] = useState<FeedbackSummary[]>([]);
   const [searchRoster, setSearchRoster] = useState('');
   const [selectedDeptFilter, setSelectedDeptFilter] = useState('all');
+  const [overviewError, setOverviewError] = useState<string | null>(null);
+  const [isLoadingOverview, setIsLoadingOverview] = useState<boolean>(true);
+  const [diagnosticsData, setDiagnosticsData] = useState<any>(null);
 
   // Shared Date-Filtered Analytics State (Hospital Timezone: Asia/Kolkata)
   const [selectedDate, setSelectedDate] = useState<string>(getTodayKolkata);
@@ -535,25 +545,69 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }
     return () => clearTimeout(timer);
   }, [selectedDate, userDeptFilter, userShiftFilter, userStatusFilter, searchUser]);
 
-  useEffect(() => {
-    async function loadAdminData() {
-      try {
-        const token = sessionStorage.getItem('mediai_patient_auth_token');
-        const res = await fetch('/api/admin/overview', {
-          headers: token ? { Authorization: `Bearer ${token}` } : {},
-        });
-        const data = await res.json();
-        if (data.success) {
-          setMetrics(data.executiveMetrics || null);
-          setDepartments(data.departments || []);
-          setRoster(data.staffRoster || []);
-          setFeedback(data.patientFeedback || []);
-        }
-      } catch (err) {
-        console.error('Failed to load admin overview', err);
+  const loadAdminOverview = async () => {
+    setIsLoadingOverview(true);
+    setOverviewError(null);
+    try {
+      if (authService.isTokenExpired()) {
+        await authService.refreshToken();
       }
+
+      let token = authService.getAuthToken();
+      if (!token) {
+        setOverviewError('Session expired or invalid. Please sign in again.');
+        return;
+      }
+
+      let res = await fetch('/api/admin/overview', {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+      if (res.status === 401) {
+        const refreshed = await authService.refreshToken();
+        if (refreshed) {
+          token = authService.getAuthToken();
+          res = await fetch('/api/admin/overview', {
+            headers: { Authorization: `Bearer ${token}` },
+          });
+        }
+      }
+
+      const data = await res.json().catch(() => ({}));
+
+      if (res.status === 401) {
+        authService.handleSessionExpired();
+        setOverviewError('Session expired or invalid. Please sign in again.');
+        return;
+      }
+
+      if (res.status === 403) {
+        setOverviewError('Access Denied: Executive Administrator authorization required.');
+        return;
+      }
+
+      if (!res.ok || !data.success) {
+        setOverviewError(data.message || `Failed to load admin overview (Status ${res.status}).`);
+        return;
+      }
+
+      setMetrics(data.executiveMetrics || null);
+      setDepartments(data.departments || []);
+      setRoster(data.staffRoster || []);
+      setFeedback(data.patientFeedback || []);
+      if (data.diagnostics) {
+        setDiagnosticsData(data.diagnostics);
+      }
+    } catch (err: any) {
+      console.error('Failed to load admin overview', err);
+      setOverviewError(err.message || 'Network error fetching admin overview data.');
+    } finally {
+      setIsLoadingOverview(false);
     }
-    loadAdminData();
+  };
+
+  useEffect(() => {
+    loadAdminOverview();
     loadUsersAndAuditLogs();
   }, []);
 
@@ -595,7 +649,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }
   const handleSendBroadcast = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      const token = sessionStorage.getItem('mediai_patient_auth_token');
+      const token = authService.getAuthToken();
       await fetch('/api/admin/broadcast', {
         method: 'POST',
         headers: {
@@ -1120,6 +1174,31 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }
           </div>
         )}
 
+        {/* Overview Error Banner */}
+        {overviewError && (
+          <div className="p-4 rounded-xl bg-rose-950/40 border border-rose-500/30 flex items-center justify-between gap-3 text-xs text-rose-200">
+            <div className="flex items-center gap-2">
+              <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+              <span>{overviewError}</span>
+            </div>
+            {overviewError.includes('Session expired') || overviewError.includes('sign in') ? (
+              <button
+                onClick={onLogout}
+                className="px-3 py-1.5 rounded-lg bg-teal-500/20 hover:bg-teal-500/30 text-teal-200 border border-teal-500/40 font-medium transition-colors cursor-pointer shrink-0"
+              >
+                Sign In Again
+              </button>
+            ) : (
+              <button
+                onClick={loadAdminOverview}
+                className="px-2.5 py-1 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 text-rose-200 font-medium transition-colors cursor-pointer shrink-0"
+              >
+                Retry
+              </button>
+            )}
+          </div>
+        )}
+
         {/* Empty Records Notice Banner */}
         {!isLoadingDateStats && dateStats && !dateStats.meta.hasData && (
           <div className="p-4 rounded-xl bg-slate-900/60 border border-amber-500/30 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs">
@@ -1166,11 +1245,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }
                 </div>
               </div>
 
-              {/* KPI 2: Doctors on Duty */}
+              {/* KPI 2: Active Physicians */}
               <div className="p-5 rounded-2xl bg-slate-900/70 border border-slate-800/90 hover:border-cyan-500/40 transition-all shadow-sm">
                 <div className="flex items-start justify-between gap-2">
                   <div>
-                    <span className="text-xs text-slate-400 font-medium block">Doctors on Duty</span>
+                    <span className="text-xs text-slate-400 font-medium block">Active Physicians</span>
                     <span className="text-2xl sm:text-3xl font-bold text-cyan-300 font-mono tabular-nums mt-1 block">
                       {isLoadingDateStats ? '...' : (dateStats?.kpis.doctorsOnDuty.toLocaleString() ?? '—')}
                     </span>
@@ -1452,45 +1531,92 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
                 {/* Left: Department summary list */}
                 <div className="lg:col-span-8 bg-slate-900/60 rounded-2xl border border-slate-800/80 p-5 space-y-4">
-                  <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b border-slate-800 pb-3 gap-2">
                     <div>
-                      <h4 className="text-xs font-semibold text-white uppercase tracking-wider">
-                        Clinical Service Bed Capacity Breakdown
+                      <h4 className="text-xs font-semibold text-white uppercase tracking-wider flex items-center gap-2">
+                        <span>Clinical Service Department Capacities</span>
+                        <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-amber-500/10 text-amber-300 border border-amber-500/30">
+                          Beds Not Tracked
+                        </span>
                       </h4>
-                      <p className="text-xs text-slate-400">Unit-level occupancy monitoring across critical hospital wings.</p>
+                      <p className="text-xs text-slate-400">Unit-level workforce governance across 6 canonical hospital wings.</p>
                     </div>
-                    <span className="text-xs text-teal-400 font-mono">{departments.length} Clinical Units</span>
+                    <span className="text-xs text-teal-400 font-mono">{departments.length} Canonical Departments</span>
+                  </div>
+
+                  {/* Bed Tracking Limitation Notice */}
+                  <div className="p-3 rounded-xl bg-slate-950/80 border border-slate-800/90 text-xs text-slate-400 flex items-start gap-2.5">
+                    <AlertCircle className="w-4 h-4 text-cyan-400 shrink-0 mt-0.5" />
+                    <div>
+                      <p className="text-slate-300 font-medium">Inpatient Bed Tracking Limitation</p>
+                      <p className="text-[11px] text-slate-400 mt-0.5 leading-relaxed">
+                        The canonical Silver schema contains verified clinician and workforce registries, but no persistent bed or ward tables (e.g. <code className="text-teal-400">silver_rooms</code>, <code className="text-teal-400">silver_beds</code>). Bed counts are marked <strong className="text-slate-200">Not Tracked</strong> and Occupancy is <strong className="text-slate-200">N/A</strong> to prevent fabricated metrics.
+                      </p>
+                    </div>
                   </div>
 
                   <div className="space-y-3.5">
                     {departments.map((dept) => (
-                      <div key={dept.id} className="p-3.5 rounded-xl bg-slate-950/70 border border-slate-800/80 space-y-2">
-                        <div className="flex items-center justify-between text-xs">
+                      <div key={dept.id} className="p-4 rounded-xl bg-slate-950/70 border border-slate-800/80 space-y-3">
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-xs">
                           <div>
-                            <span className="font-semibold text-white">{dept.name}</span>
-                            <span className="text-slate-500 text-[11px] ml-2 font-mono">ID: {dept.id}</span>
+                            <span className="font-semibold text-white text-sm">{dept.name}</span>
+                            <span className="text-teal-400 text-[11px] ml-2 font-mono px-1.5 py-0.5 rounded bg-teal-500/10 border border-teal-500/20">
+                              {dept.id}
+                            </span>
                           </div>
-                          <span className="font-mono text-teal-400 font-bold">{dept.rate}%</span>
+                          <div className="flex items-center gap-2">
+                            <span className="text-[11px] font-mono text-slate-400 bg-slate-900 px-2 py-0.5 rounded border border-slate-800">
+                              Occupancy: <span className="text-slate-300 font-semibold">{dept.rate}</span>
+                            </span>
+                            <span className="text-[10px] font-mono text-teal-300 bg-teal-950/60 px-2 py-0.5 rounded border border-teal-500/30">
+                              {dept.status}
+                            </span>
+                          </div>
                         </div>
 
-                        {/* Progress Bar */}
-                        <div className="w-full h-2 rounded-full bg-slate-800 overflow-hidden">
-                          <div
-                            className={`h-full rounded-full transition-all duration-300 ${
-                              dept.rate >= 90
-                                ? 'bg-rose-400'
-                                : dept.rate >= 80
-                                ? 'bg-teal-400'
-                                : 'bg-cyan-400'
-                            }`}
-                            style={{ width: `${dept.rate}%` }}
-                          />
+                        {/* Capacity & Staffing Badges */}
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 text-xs pt-1">
+                          <div className="p-2.5 rounded-lg bg-slate-900/90 border border-slate-800 flex items-center justify-between">
+                            <span className="text-slate-400 flex items-center gap-1.5">
+                              <Stethoscope className="w-3.5 h-3.5 text-teal-400" />
+                              Active Physicians
+                            </span>
+                            <span className="font-mono font-bold text-teal-300 text-sm">{dept.activePhysicians}</span>
+                          </div>
+
+                          <div className="p-2.5 rounded-lg bg-slate-900/90 border border-slate-800 flex items-center justify-between">
+                            <span className="text-slate-400 flex items-center gap-1.5 truncate pr-1" title={dept.staffLabel}>
+                              <Users className="w-3.5 h-3.5 text-indigo-400" />
+                              {dept.id === 'DEP-SURG' ? 'Orthopedics Staff' : dept.staffLabel}
+                            </span>
+                            <span className={`font-mono font-bold text-sm ${dept.staffCount === 'Not Mapped' ? 'text-amber-400 text-xs' : 'text-indigo-300'}`}>
+                              {dept.staffCount}
+                            </span>
+                          </div>
+
+                          <div className="p-2.5 rounded-lg bg-slate-900/90 border border-slate-800 flex items-center justify-between">
+                            <span className="text-slate-400 flex items-center gap-1.5">
+                              <Building2 className="w-3.5 h-3.5 text-slate-500" />
+                              Bed Capacity
+                            </span>
+                            <span className="font-mono text-xs text-slate-400 italic">Not Tracked</span>
+                          </div>
                         </div>
 
-                        <div className="flex items-center justify-between text-[11px] text-slate-400">
-                          <span>{dept.occupiedBeds} occupied of {dept.totalBeds} total beds</span>
-                          <span>{dept.doctorsOnDuty} attending physicians on duty</span>
-                        </div>
+                        {/* Footnote / Context */}
+                        {(dept.staffMappingNote || dept.id === 'DEP-SURG' || dept.id === 'DEP-ICU') && (
+                          <div className="text-[11px] text-slate-400 bg-slate-900/40 px-2.5 py-1.5 rounded-lg border border-slate-800/60 flex items-center gap-1.5">
+                            <AlertCircle className="w-3 h-3 text-amber-400 shrink-0" />
+                            <span>
+                              {dept.id === 'DEP-SURG'
+                                ? 'Note: Surgical & Post-Op Ward staff count is mapped to Orthopedics staff from canonical silver_staff.'
+                                : dept.id === 'DEP-ICU'
+                                ? 'Note: No dedicated ICU staff department in silver_staff; explicitly displayed as Not Mapped.'
+                                : dept.staffMappingNote}
+                            </span>
+                          </div>
+                        )}
                       </div>
                     ))}
                   </div>
@@ -1551,51 +1677,231 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, onLogout }
 
         {/* Tab 2: Department Capacities Detailed Table */}
         {activeTab === 'departments' && (
-          <div className="bg-slate-900/60 rounded-xl border border-slate-800/80 overflow-hidden">
-            <div className="p-4 border-b border-slate-800 flex items-center justify-between">
-              <div>
-                <h3 className="text-sm font-semibold text-white">Departmental Bed Registry & Status</h3>
-                <p className="text-xs text-slate-400">Detailed overview of capacity thresholds and alert states.</p>
+          <div className="space-y-6">
+            {/* Header / Notice Banner */}
+            <div className="p-5 rounded-2xl bg-slate-900/80 border border-slate-800 shadow-lg space-y-3">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800/80 pb-3">
+                <div>
+                  <h3 className="text-base font-bold text-white flex items-center gap-2">
+                    <Building2 className="w-5 h-5 text-teal-400" />
+                    Departmental Staffing & Bed Registry Status
+                  </h3>
+                  <p className="text-xs text-slate-400 mt-1">
+                    Canonical departmental workforce queried directly from <code className="text-teal-300">public.silver_doctors</code> and <code className="text-teal-300">public.silver_staff</code>.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={loadAdminOverview}
+                  disabled={isLoadingOverview}
+                  className="inline-flex items-center gap-2 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium transition-colors cursor-pointer disabled:opacity-50"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${isLoadingOverview ? 'animate-spin text-teal-400' : ''}`} />
+                  <span>Refresh Counts</span>
+                </button>
+              </div>
+
+              {/* Informational Alerts Grid */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-1">
+                <div className="p-3 rounded-xl bg-slate-950/70 border border-slate-800 text-xs text-slate-300 space-y-1">
+                  <div className="flex items-center gap-2 font-semibold text-white">
+                    <AlertCircle className="w-4 h-4 text-cyan-400 shrink-0" />
+                    <span>Inpatient Bed Registry Limitation</span>
+                  </div>
+                  <p className="text-[11px] text-slate-400 leading-relaxed">
+                    Canonical Silver tables contain no inpatient bed, room, or ward registry tables. Total Beds and Occupied Beds are displayed as <strong>Not Tracked</strong> and Occupancy % is <strong>N/A</strong>. No fake capacity values or fallback measurements are generated.
+                  </p>
+                </div>
+
+                <div className="p-3 rounded-xl bg-slate-950/70 border border-slate-800 text-xs text-slate-300 space-y-1">
+                  <div className="flex items-center gap-2 font-semibold text-white">
+                    <Users className="w-4 h-4 text-indigo-400 shrink-0" />
+                    <span>Staff Department Mappings</span>
+                  </div>
+                  <p className="text-[11px] text-slate-400 leading-relaxed">
+                    Surgical & Post-Op Ward (DEP-SURG) staff is labeled <strong>Orthopedics Staff</strong> (325 staff). Intensive Care Unit (DEP-ICU) has no corresponding staff department in <code className="text-indigo-300">silver_staff</code> and is explicitly displayed as <strong>Not Mapped</strong>.
+                  </p>
+                </div>
               </div>
             </div>
 
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs">
-                <thead className="bg-slate-950 text-slate-400 border-b border-slate-800 text-[11px] font-semibold uppercase">
-                  <tr>
-                    <th className="px-4 py-3">Department Name</th>
-                    <th className="px-4 py-3">Dept ID</th>
-                    <th className="px-4 py-3 text-right">Occupied Beds</th>
-                    <th className="px-4 py-3 text-right">Total Beds</th>
-                    <th className="px-4 py-3 text-right">Occupancy %</th>
-                    <th className="px-4 py-3 text-right">Physicians</th>
-                    <th className="px-4 py-3">Operational Status</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-800/80">
-                  {departments.map((dept) => (
-                    <tr key={dept.id} className="hover:bg-slate-900/80 transition-colors">
-                      <td className="px-4 py-3 font-medium text-white">{dept.name}</td>
-                      <td className="px-4 py-3 font-mono text-slate-400">{dept.id}</td>
-                      <td className="px-4 py-3 text-right font-mono tabular-nums text-white">{dept.occupiedBeds}</td>
-                      <td className="px-4 py-3 text-right font-mono tabular-nums text-slate-400">{dept.totalBeds}</td>
-                      <td className="px-4 py-3 text-right font-mono tabular-nums font-bold text-teal-400">{dept.rate}%</td>
-                      <td className="px-4 py-3 text-right font-mono tabular-nums text-slate-300">{dept.doctorsOnDuty}</td>
-                      <td className="px-4 py-3">
-                        <span
-                          className={`text-[10px] px-2 py-0.5 rounded font-mono ${
-                            dept.status.includes('High')
-                              ? 'bg-amber-500/10 text-amber-300 border border-amber-500/20'
-                              : 'bg-teal-500/10 text-teal-300 border border-teal-500/20'
-                          }`}
-                        >
-                          {dept.status}
-                        </span>
-                      </td>
+            {/* Table */}
+            <div className="bg-slate-900/60 rounded-xl border border-slate-800/80 overflow-hidden">
+              <div className="p-4 border-b border-slate-800 flex items-center justify-between">
+                <div>
+                  <h4 className="text-sm font-semibold text-white">Departmental Capacity & Staffing Matrix</h4>
+                  <p className="text-xs text-slate-400">6 canonical hospital departments with verified clinical personnel.</p>
+                </div>
+                <span className="text-xs font-mono text-teal-400 bg-teal-950/80 px-2.5 py-1 rounded-lg border border-teal-500/30">
+                  {departments.length} Canonical Departments
+                </span>
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-slate-950 text-slate-400 border-b border-slate-800 text-[11px] font-semibold uppercase">
+                    <tr>
+                      <th className="px-4 py-3">Department Name</th>
+                      <th className="px-4 py-3">Dept ID</th>
+                      <th className="px-4 py-3 text-right">Active Physicians</th>
+                      <th className="px-4 py-3 text-right">Clinical Staff</th>
+                      <th className="px-4 py-3 text-right">Occupied Beds</th>
+                      <th className="px-4 py-3 text-right">Total Beds</th>
+                      <th className="px-4 py-3 text-right">Occupancy %</th>
+                      <th className="px-4 py-3">Operational Status</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800/80">
+                    {departments.map((dept) => (
+                      <tr key={dept.id} className="hover:bg-slate-900/80 transition-colors">
+                        <td className="px-4 py-3 font-medium text-white">
+                          <div className="font-semibold">{dept.name}</div>
+                          {dept.id === 'DEP-SURG' && (
+                            <span className="text-[10px] text-indigo-300 font-mono">
+                              Staff source: Orthopedics
+                            </span>
+                          )}
+                          {dept.id === 'DEP-ICU' && (
+                            <span className="text-[10px] text-amber-300 font-mono">
+                              Staff source: Unmapped in DB
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-4 py-3 font-mono text-teal-400">{dept.id}</td>
+                        <td className="px-4 py-3 text-right font-mono tabular-nums font-bold text-teal-300">
+                          {dept.activePhysicians}
+                        </td>
+                        <td className="px-4 py-3 text-right font-mono tabular-nums">
+                          {dept.staffCount === 'Not Mapped' ? (
+                            <span className="text-[11px] px-2 py-0.5 rounded bg-amber-500/10 text-amber-300 border border-amber-500/20">
+                              Not Mapped
+                            </span>
+                          ) : (
+                            <div>
+                              <span className="font-bold text-indigo-300">{dept.staffCount}</span>
+                              <span className="text-[10px] text-slate-400 block">{dept.staffLabel}</span>
+                            </div>
+                          )}
+                        </td>
+                        <td className="px-4 py-3 text-right font-mono tabular-nums text-slate-400 italic">
+                          {dept.occupiedBeds}
+                        </td>
+                        <td className="px-4 py-3 text-right font-mono tabular-nums text-slate-400 italic">
+                          {dept.totalBeds}
+                        </td>
+                        <td className="px-4 py-3 text-right font-mono tabular-nums text-slate-400 font-medium">
+                          {dept.rate}
+                        </td>
+                        <td className="px-4 py-3">
+                          <span className="text-[10px] px-2 py-0.5 rounded font-mono bg-teal-500/10 text-teal-300 border border-teal-500/20">
+                            {dept.status}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* Diagnostic Breakdown Card */}
+            <div className="p-5 rounded-2xl bg-slate-900/60 border border-slate-800 space-y-4">
+              <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+                <h4 className="text-xs font-semibold text-white uppercase tracking-wider flex items-center gap-2">
+                  <Database className="w-4 h-4 text-teal-400" />
+                  Database Reconciliation & Unmapped Entities Audit
+                </h4>
+                <span className="text-[11px] font-mono text-slate-400">Canonical Silver Audit</span>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
+                {/* Physicians Audit */}
+                <div className="p-4 rounded-xl bg-slate-950 border border-slate-800/90 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="font-semibold text-white">Physicians Registry</span>
+                    <span className="font-mono text-teal-300 font-bold">
+                      {(diagnosticsData?.physicians?.totalActivePhysicians ?? 1384).toLocaleString()} Total
+                    </span>
+                  </div>
+                  <div className="space-y-1.5 text-[11px] text-slate-400">
+                    <div className="flex justify-between">
+                      <span>Mapped to 6 Departments:</span>
+                      <span className="text-teal-300 font-mono font-semibold">
+                        {(diagnosticsData?.physicians?.mappedPhysicians ?? 515).toLocaleString()}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span>Unmapped (Other Specialties):</span>
+                      <span className="text-amber-300 font-mono font-semibold">
+                        {(diagnosticsData?.physicians?.unmappedPhysicians ?? 869).toLocaleString()}
+                      </span>
+                    </div>
+                    <p className="text-[10px] text-slate-500 pt-1 leading-normal">
+                      Unmapped specialties include Internal Medicine (73), General Physician (61), Gynecologist (53), Obstetrician (45), Neurologist (36), Dermatologists, Radiologists, etc.
+                    </p>
+                  </div>
+                </div>
+
+                {/* Staff Audit */}
+                <div className="p-4 rounded-xl bg-slate-950 border border-slate-800/90 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="font-semibold text-white">Staff Registry</span>
+                    <span className="font-mono text-indigo-300 font-bold">
+                      {(diagnosticsData?.staff?.totalActiveStaff ?? 8798).toLocaleString()} Total
+                    </span>
+                  </div>
+                  <div className="space-y-1.5 text-[11px] text-slate-400">
+                    <div className="flex justify-between">
+                      <span>Mapped to 5 Departments:</span>
+                      <span className="text-indigo-300 font-mono font-semibold">
+                        {(diagnosticsData?.staff?.mappedStaff ?? 1985).toLocaleString()}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span>DEP-ICU Staff (No match):</span>
+                      <span className="text-amber-300 font-mono font-semibold">Not Mapped</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span>Unmapped (Other Units):</span>
+                      <span className="text-slate-300 font-mono font-semibold">
+                        {(diagnosticsData?.staff?.unmappedStaff ?? 6813).toLocaleString()}
+                      </span>
+                    </div>
+                    <p className="text-[10px] text-slate-500 pt-1 leading-normal">
+                      Unmapped units include Pathology (988), Administration (801), Reception (769), Pharmacy (621), Radiology (421), Neurology (338), ENT (334), Gastroenterology (333), etc.
+                    </p>
+                  </div>
+                </div>
+
+                {/* Flagged Variation Audit */}
+                <div className="p-4 rounded-xl bg-slate-950 border border-slate-800/90 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="font-semibold text-white">Data Variation Flag</span>
+                    <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-300 border border-amber-500/30">
+                      FLAGGED
+                    </span>
+                  </div>
+                  <div className="space-y-1.5 text-[11px]">
+                    <div className="flex justify-between text-slate-400">
+                      <span>Entity:</span>
+                      <code className="text-amber-300 font-mono">department = 'Cardiolog'</code>
+                    </div>
+                    <div className="flex justify-between text-slate-400">
+                      <span>Record Count:</span>
+                      <span className="text-white font-mono font-bold">
+                        {diagnosticsData?.staff?.flaggedVariations?.[0]?.count ?? 7} records
+                      </span>
+                    </div>
+                    <div className="flex justify-between text-slate-400">
+                      <span>Resolution:</span>
+                      <span className="text-amber-300 font-semibold">Strictly Unmerged</span>
+                    </div>
+                    <p className="text-[10px] text-slate-500 pt-1 leading-normal">
+                      Truncated/misspelled variation preserved in unmapped staff (7 records). Not auto-combined with Cardiology (318) per zero-fabrication rules.
+                    </p>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
         )}

@@ -820,7 +820,7 @@ function getUniqueRegisteredAccounts(): RegisteredAccount[] {
   return accounts;
 }
 
-// 2.5 Common Unified Multi-Role Login Endpoint
+// 2.5 Common Unified Multi-Role Login Endpoint (Strict Supabase Auth)
 app.post('/api/auth/common-login', async (req: Request, res: Response) => {
   const { identifier, username, email, patientId, password } = req.body;
   const rawInput = String(identifier || username || email || patientId || '').trim();
@@ -839,288 +839,162 @@ app.post('/api/auth/common-login', async (req: Request, res: Response) => {
     });
   }
 
-  // 1. Live Supabase PostgreSQL authentication flow if connected
-  if (isDatabaseConnected) {
-    const adminClient = getSupabaseAdmin();
-    const anonClient = getSupabaseAnon() || adminClient;
-
-    if (adminClient && anonClient) {
-      try {
-        let userRecord: any = null;
-
-        // A. Match by email
-        if (rawInput.includes('@')) {
-          const { data } = await adminClient
-            .from('app_users')
-            .select('*')
-            .eq('email', rawInput.toLowerCase())
-            .single();
-          userRecord = data;
-        }
-
-        // B. Match by patient_id, doctor_id, or staff_id (case-insensitive)
-        if (!userRecord) {
-          const trimmed = rawInput.trim();
-          const { data } = await adminClient
-            .from('app_users')
-            .select('*')
-            .or(`patient_id.ilike.${trimmed},doctor_id.ilike.${trimmed},staff_id.ilike.${trimmed},patient_id.eq.${trimmed.toUpperCase()},doctor_id.eq.${trimmed.toUpperCase()},staff_id.eq.${trimmed.toUpperCase()}`)
-            .single();
-          userRecord = data;
-        }
-
-        // B2. If userRecord still not found, check silver_patients for patient_id resolution
-        if (!userRecord) {
-          const { data: pRec } = await adminClient
-            .from('silver_patients')
-            .select('*')
-            .or(`patient_id.ilike.${rawInput.trim()},patient_id.eq.${rawInput.trim().toUpperCase()}`)
-            .single();
-          if (pRec?.email) {
-            const { data: uRec } = await adminClient
-              .from('app_users')
-              .select('*')
-              .eq('email', pRec.email.toLowerCase())
-              .single();
-            userRecord = uRec || {
-              id: `p-${pRec.patient_id}`,
-              email: pRec.email,
-              role: 'patient',
-              full_name: `${pRec.first_name || ''} ${pRec.last_name || ''}`.trim() || 'Patient',
-              patient_id: pRec.patient_id,
-              is_active: true,
-              status: 'active',
-            };
-          }
-        }
-
-        // C. Match by phone number
-        if (!userRecord) {
-          const cleanPhone = rawInput.replace(/[\s\-\(\)]/g, '');
-          if (cleanPhone.length >= 7) {
-            const { data: phoneUsers } = await adminClient
-              .from('app_users')
-              .select('*');
-            if (phoneUsers && phoneUsers.length > 0) {
-              userRecord = phoneUsers.find((u: any) => {
-                if (!u.phone) return false;
-                const uClean = u.phone.replace(/[\s\-\(\)]/g, '');
-                return uClean.includes(cleanPhone) || cleanPhone.includes(uClean);
-              }) || null;
-            }
-          }
-        }
-
-        // D. Match by full_name
-        if (!userRecord) {
-          const { data } = await adminClient
-            .from('app_users')
-            .select('*')
-            .ilike('full_name', rawInput)
-            .single();
-          userRecord = data;
-        }
-
-          if (userRecord) {
-          // Verify that the account is active and authorized
-          if (userRecord.is_active === false || userRecord.status === 'pending_approval') {
-            return res.status(403).json({
-              success: false,
-              message: 'Your account registration is currently pending verification and approval by Hospital Administration.',
-            });
-          }
-
-          // Authenticate strictly through Supabase Auth
-          const { data: authData, error: authError } = await anonClient.auth.signInWithPassword({
-            email: userRecord.email,
-            password,
-          });
-
-          if (authError || !authData.session || !authData.session.access_token) {
-            return res.status(401).json({
-              success: false,
-              message: 'Invalid password or credentials. Please check your login details.',
-            });
-          }
-
-          let patientProfile = null;
-          if (userRecord.role === 'patient') {
-            const { data: patientRecord } = await adminClient
-              .from('silver_patients')
-              .select('*')
-              .eq('patient_id', userRecord.patient_id)
-              .single();
-            patientProfile = formatPatientProfile(patientRecord || userRecord);
-          }
-
-          return res.json({
-            success: true,
-            role: userRecord.role,
-            token: authData.session.access_token,
-            mustChangePassword: Boolean(userRecord.must_change_password),
-            patientId: userRecord.patient_id,
-            patient: patientProfile,
-            user: {
-              id: userRecord.id,
-              email: userRecord.email,
-              role: userRecord.role,
-              name: userRecord.full_name || 'Hospital User',
-              patient_id: userRecord.patient_id,
-              doctor_id: userRecord.doctor_id,
-              staff_id: userRecord.staff_id,
-            },
-            message: `Authenticated successfully as ${userRecord.role}.`,
-          });
-        }
-      } catch (err) {
-        console.error('Supabase auth error in common-login:', err);
-      }
-    }
+  if (!isDatabaseConnected) {
+    return res.status(503).json({
+      success: false,
+      message: 'Database not connected. Supabase PostgreSQL is required for authentication.',
+    });
   }
 
-  // 2. In-Memory Registry Lookup (for registered accounts & offline test personas)
-  const lookupKey = rawInput.toLowerCase();
-  const lookupIdKey = rawInput.toUpperCase();
-  const registered = REGISTERED_ACCOUNTS.get(lookupKey) ||
-                     REGISTERED_ACCOUNTS.get(lookupIdKey) ||
-                     Array.from(REGISTERED_ACCOUNTS.values()).find((a) =>
-                       a.id === lookupKey ||
-                       a.email?.toLowerCase() === lookupKey ||
-                       a.patient_id?.toUpperCase() === lookupIdKey ||
-                       a.doctor_id?.toUpperCase() === lookupIdKey ||
-                       a.staff_id?.toUpperCase() === lookupIdKey
-                     );
+  const adminClient = getSupabaseAdmin();
+  const anonClient = getSupabaseAnon() || adminClient;
 
-  if (registered) {
-    // Verify that the account is active and authorized
-    if (registered.is_active === false || registered.status === 'pending_approval') {
+  if (!adminClient || !anonClient) {
+    return res.status(503).json({
+      success: false,
+      message: 'Database client not initialized.',
+    });
+  }
+
+  try {
+    let userRecord: any = null;
+
+    // A. Match by email
+    if (rawInput.includes('@')) {
+      const { data } = await adminClient
+        .from('app_users')
+        .select('*')
+        .eq('email', rawInput.toLowerCase())
+        .single();
+      userRecord = data;
+    }
+
+    // B. Match by patient_id, doctor_id, or staff_id (case-insensitive)
+    if (!userRecord) {
+      const trimmed = rawInput.trim();
+      const { data } = await adminClient
+        .from('app_users')
+        .select('*')
+        .or(`patient_id.ilike.${trimmed},doctor_id.ilike.${trimmed},staff_id.ilike.${trimmed},patient_id.eq.${trimmed.toUpperCase()},doctor_id.eq.${trimmed.toUpperCase()},staff_id.eq.${trimmed.toUpperCase()}`)
+        .single();
+      userRecord = data;
+    }
+
+    // B2. If userRecord still not found, check silver_patients for patient_id resolution
+    if (!userRecord) {
+      const { data: pRec } = await adminClient
+        .from('silver_patients')
+        .select('*')
+        .or(`patient_id.ilike.${rawInput.trim()},patient_id.eq.${rawInput.trim().toUpperCase()}`)
+        .single();
+      if (pRec?.email) {
+        const { data: uRec } = await adminClient
+          .from('app_users')
+          .select('*')
+          .eq('email', pRec.email.toLowerCase())
+          .single();
+        userRecord = uRec;
+      }
+    }
+
+    // C. Match by phone number
+    if (!userRecord) {
+      const cleanPhone = rawInput.replace(/[\s\-\(\)]/g, '');
+      if (cleanPhone.length >= 7) {
+        const { data: phoneUsers } = await adminClient
+          .from('app_users')
+          .select('*');
+        if (phoneUsers && phoneUsers.length > 0) {
+          userRecord = phoneUsers.find((u: any) => {
+            if (!u.phone) return false;
+            const uClean = u.phone.replace(/[\s\-\(\)]/g, '');
+            return uClean.includes(cleanPhone) || cleanPhone.includes(uClean);
+          }) || null;
+        }
+      }
+    }
+
+    // D. Match by full_name
+    if (!userRecord) {
+      const { data } = await adminClient
+        .from('app_users')
+        .select('*')
+        .ilike('full_name', rawInput)
+        .single();
+      userRecord = data;
+    }
+
+    if (!userRecord) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid credentials. User account not found in hospital registry. Please check your email address or ID, or register.',
+      });
+    }
+
+    // Verify account status
+    if (userRecord.is_active === false || userRecord.status === 'pending_approval') {
       return res.status(403).json({
         success: false,
         message: 'Your account registration is currently pending verification and approval by Hospital Administration.',
       });
     }
 
-    if (registered.password && registered.password !== password) {
+    // Authenticate strictly through Supabase Auth signInWithPassword
+    const { data: authData, error: authError } = await anonClient.auth.signInWithPassword({
+      email: userRecord.email,
+      password,
+    });
+
+    if (authError || !authData.session || !authData.session.access_token) {
       return res.status(401).json({
         success: false,
-        message: 'Invalid password. Please check your credentials.',
+        message: 'Invalid password or credentials. Please check your login details.',
       });
     }
 
-    const sessionToken = `session-token-${registered.role}-${registered.id}`;
-    let patientProfile: any = undefined;
-    if (registered.role === 'patient') {
-      if (isDatabaseConnected) {
-        const adminClient = getSupabaseAdmin();
-        if (adminClient && registered.patient_id) {
-          const { data: pRec } = await adminClient
-            .from('silver_patients')
-            .select('*')
-            .eq('patient_id', registered.patient_id)
-            .single();
-          if (pRec) {
-            patientProfile = formatPatientProfile(pRec);
-          }
-        }
-      }
-      if (!patientProfile) {
-        patientProfile = {
-          patient_id: registered.patient_id,
-          name: registered.fullName,
-          first_name: registered.fullName.split(' ')[0] || 'Patient',
-          last_name: registered.fullName.split(' ').slice(1).join(' ') || '',
-          email: registered.email,
-          phone: registered.phone || '',
-          date_of_birth: registered.date_of_birth || '',
-          age: registered.date_of_birth ? Math.max(0, new Date().getFullYear() - new Date(registered.date_of_birth).getFullYear()) : 30,
-          gender: 'Not specified',
-          blood_group: 'O+',
-          city: 'Metro Medical District',
-          state: 'CA',
-          address: 'Medical Patient Residence',
-          emergency_contact: 'Primary Contact',
-          primary_doctor_name: 'Dr. Marcus Vance, MD',
-        };
-      }
+    let patientProfile = null;
+    if (userRecord.role === 'patient' && userRecord.patient_id) {
+      const { data: patientRecord } = await adminClient
+        .from('silver_patients')
+        .select('*')
+        .eq('patient_id', userRecord.patient_id)
+        .single();
+      patientProfile = formatPatientProfile(patientRecord || userRecord);
     }
 
     return res.json({
       success: true,
-      isDemoMode: !isDatabaseConnected,
-      role: registered.role,
-      token: sessionToken,
-      user: {
-        id: registered.id,
-        name: registered.fullName,
-        email: registered.email,
-        role: registered.role,
-        patient_id: registered.patient_id,
-        doctor_id: registered.doctor_id,
-        staff_id: registered.staff_id,
-        specialty: registered.specialty,
-        department: registered.department,
-      },
+      role: userRecord.role,
+      token: authData.session.access_token,
+      refreshToken: authData.session.refresh_token,
+      expiresAt: authData.session.expires_at,
+      expiresIn: authData.session.expires_in,
+      mustChangePassword: Boolean(userRecord.must_change_password),
+      patientId: userRecord.patient_id,
+      doctorId: userRecord.doctor_id,
+      staffId: userRecord.staff_id,
       patient: patientProfile,
-      patientId: registered.patient_id,
-      message: `Signed in as ${registered.role.toUpperCase()}: ${registered.fullName}`,
-    });
-  }
-
-  // 3. If in offline mode without database, support test personas gracefully
-  if (!isDatabaseConnected) {
-    const isPatientId = /^P\d+$/i.test(rawInput);
-    const isDoctorId = /^(D\d+|DOC-\d+)$/i.test(rawInput);
-    const isStaffId = /^(S\d+|STF-\d+)$/i.test(rawInput);
-    let detectedRole: 'patient' | 'doctor' | 'staff' | 'admin' = 'patient';
-    let userName = 'Vamsi Krishna Vadlamudi';
-    let assignedPatientId = isPatientId ? rawInput.toUpperCase() : 'P1001';
-    let assignedDoctorId = isDoctorId ? rawInput.toUpperCase() : undefined;
-    let assignedStaffId = isStaffId ? rawInput.toUpperCase() : undefined;
-
-    if (lookupKey.includes('admin') || lookupKey === 'adm-001') {
-      detectedRole = 'admin';
-      userName = 'Arthur Sterling, MHA';
-    } else if (lookupKey.includes('doc') || isDoctorId) {
-      detectedRole = 'doctor';
-      userName = 'Dr. Marcus Vance, MD';
-      assignedDoctorId = assignedDoctorId || 'D102456';
-    } else if (lookupKey.includes('staff') || lookupKey.includes('nurse') || isStaffId) {
-      detectedRole = 'staff';
-      userName = 'Sarah Jenkins, RN';
-      assignedStaffId = assignedStaffId || 'S104523';
-    } else {
-      detectedRole = 'patient';
-      userName = isPatientId ? `Patient ${rawInput.toUpperCase()}` : 'Vamsi Krishna Vadlamudi';
-    }
-
-    const demoToken = `demo-session-token-${detectedRole}-${Date.now()}`;
-
-    return res.json({
-      success: true,
-      isDemoMode: true,
-      role: detectedRole,
-      token: demoToken,
       user: {
-        id: `usr-${detectedRole}-${Date.now()}`,
-        name: userName,
-        email: rawInput.includes('@') ? lookupKey : (detectedRole === 'patient' ? 'vvkrishna879@gmail.com' : `${detectedRole}@hospital.org`),
-        role: detectedRole,
-        patient_id: detectedRole === 'patient' ? assignedPatientId : undefined,
-        doctor_id: detectedRole === 'doctor' ? assignedDoctorId : undefined,
-        staff_id: detectedRole === 'staff' ? assignedStaffId : undefined,
+        id: userRecord.id,
+        email: userRecord.email,
+        role: userRecord.role,
+        name: userRecord.full_name || 'Hospital User',
+        patient_id: userRecord.patient_id,
+        doctor_id: userRecord.doctor_id,
+        staff_id: userRecord.staff_id,
+        specialty: userRecord.specialty,
+        department: userRecord.department,
+        is_active: userRecord.is_active,
       },
-      patientId: detectedRole === 'patient' ? assignedPatientId : undefined,
-      doctorId: detectedRole === 'doctor' ? assignedDoctorId : undefined,
-      staffId: detectedRole === 'staff' ? assignedStaffId : undefined,
-      message: `Signed in as ${detectedRole.toUpperCase()}: ${userName}`,
+      message: `Authenticated successfully as ${userRecord.role}.`,
+    });
+  } catch (err: any) {
+    console.error('Supabase auth error in common-login:', err);
+    return res.status(500).json({
+      success: false,
+      message: 'Authentication processing error. Please try again.',
     });
   }
-
-  // Live database is connected and credentials could not be verified
-  return res.status(401).json({
-    success: false,
-    message: 'Invalid credentials. User account not found in hospital registry. Please check your email address or ID, or register.',
-  });
 });
 
 // 2.6 Dynamic User Registration (Role-aware registration with approval enforcement)
@@ -1384,6 +1258,22 @@ app.post('/api/auth/common-register', async (req: Request, res: Response) => {
             REGISTERED_ACCOUNTS.set(assignedStaffId.toLowerCase(), newAccount);
           }
 
+          // For active accounts, authenticate strictly through Supabase Auth to obtain a genuine JWT session
+          let registeredSession: any = null;
+          if (isActive) {
+            try {
+              const { data: sData } = await anonClient.auth.signInWithPassword({
+                email,
+                password,
+              });
+              if (sData?.session) {
+                registeredSession = sData.session;
+              }
+            } catch (authErr) {
+              console.warn('Sign-in after registration notice:', authErr);
+            }
+          }
+
           return res.json({
             success: true,
             message: responseMessage,
@@ -1404,7 +1294,10 @@ app.post('/api/auth/common-register', async (req: Request, res: Response) => {
               is_active: isActive,
               status,
             },
-            token: isActive ? `session-token-${assignedRole}-${authUser.id}` : undefined,
+            token: registeredSession?.access_token,
+            refreshToken: registeredSession?.refresh_token,
+            expiresAt: registeredSession?.expires_at,
+            expiresIn: registeredSession?.expires_in,
           });
         }
       } catch (err: any) {
@@ -1413,209 +1306,278 @@ app.post('/api/auth/common-register', async (req: Request, res: Response) => {
     }
   }
 
-  // 2. In-Memory Registry for immediate access across testing
-  const newAccount: RegisteredAccount = {
-    id: `usr-${assignedRole}-${Date.now()}`,
-    email,
-    fullName: name,
-    role: assignedRole,
-    password,
-    patient_id: patientId,
-    doctor_id: doctorId,
-    staff_id: assignedStaffId,
-    is_active: isActive,
-    status,
-    specialty: specialization,
-    department,
-    medical_reg_number: undefined,
-    qualifications,
-    designation,
-    years_of_experience: yearsOfExperience,
-    phone: phone || '+1 (555) 234-9000',
-    date_of_birth: dateOfBirth || '1995-01-01',
-    created_at: new Date().toISOString(),
-  };
-
-  REGISTERED_ACCOUNTS.set(email.toLowerCase(), newAccount);
-  REGISTERED_ACCOUNTS.set(newAccount.id, newAccount);
-  if (newAccount.patient_id) {
-    REGISTERED_ACCOUNTS.set(newAccount.patient_id.toUpperCase(), newAccount);
-    REGISTERED_ACCOUNTS.set(newAccount.patient_id.toLowerCase(), newAccount);
-  }
-  if (newAccount.doctor_id) {
-    REGISTERED_ACCOUNTS.set(newAccount.doctor_id.toUpperCase(), newAccount);
-    REGISTERED_ACCOUNTS.set(newAccount.doctor_id.toLowerCase(), newAccount);
-  }
-  if (newAccount.staff_id) {
-    REGISTERED_ACCOUNTS.set(newAccount.staff_id.toUpperCase(), newAccount);
-    REGISTERED_ACCOUNTS.set(newAccount.staff_id.toLowerCase(), newAccount);
-  }
-
-  const sessionToken = isActive ? `session-token-${assignedRole}-${newAccount.id}` : undefined;
-
-  return res.json({
-    success: true,
-    message: responseMessage,
-    patientId,
-    doctorId,
-    staffId: assignedStaffId,
-    role: assignedRole,
-    requiresApproval,
-    status,
-    token: sessionToken,
-    user: {
-      id: newAccount.id,
-      name: newAccount.fullName,
-      email: newAccount.email,
-      role: newAccount.role,
-      patient_id: newAccount.patient_id,
-      doctor_id: newAccount.doctor_id,
-      staff_id: newAccount.staff_id,
-      specialty: newAccount.specialty,
-      department: newAccount.department,
-      is_active: newAccount.is_active,
-      status: newAccount.status,
-    },
+  // Fallback if database is unavailable
+  return res.status(503).json({
+    success: false,
+    message: 'Database not connected. Registration requires live Supabase database.',
   });
 });
 
-// 2.7 Google Single Sign-On Endpoint (Defaults to Patient role)
+// 2.7 Google Single Sign-On Endpoint (Strict Supabase Auth)
 app.post('/api/auth/google', async (req: Request, res: Response) => {
   const { email: rawEmail, name: rawName } = req.body;
   let email = String(rawEmail || '').trim().toLowerCase();
   let name = String(rawName || '').trim();
 
-  if (!email) {
-    email = 'vamsikrishnavadlamudi17@gmail.com';
+  if (!email || !email.includes('@') || !email.includes('.')) {
+    return res.status(400).json({
+      success: false,
+      message: 'Please provide a valid Google account email address to sign in.',
+    });
   }
+
   if (!name) {
-    name = (email.includes('vamsi') || email.includes('krishna')) ? 'Krishna' : 'Google Verified Patient';
+    const localPart = email.split('@')[0];
+    name = localPart
+      .split(/[._-]/)
+      .filter(Boolean)
+      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+      .join(' ') || 'Google Verified User';
   }
 
-  // 1. If live database connected, check Supabase app_users table first
-  if (isDatabaseConnected) {
-    const adminClient = getSupabaseAdmin();
-    if (adminClient) {
-      try {
-        const { data: dbUser } = await adminClient
-          .from('app_users')
-          .select('*')
-          .eq('email', email)
-          .single();
+  if (!isDatabaseConnected) {
+    return res.status(503).json({
+      success: false,
+      message: 'Database not connected. Supabase PostgreSQL is required for authentication.',
+    });
+  }
 
-        if (dbUser) {
-          let patientProfile = null;
-          if (dbUser.role === 'patient') {
-            const { data: patientRecord } = await adminClient
-              .from('silver_patients')
-              .select('*')
-              .eq('patient_id', dbUser.patient_id)
-              .single();
-            patientProfile = formatPatientProfile(patientRecord || dbUser);
-          }
+  const adminClient = getSupabaseAdmin();
+  const anonClient = getSupabaseAnon() || adminClient;
 
-          const token = `session-token-${dbUser.role}-${dbUser.id}`;
-          const existing = REGISTERED_ACCOUNTS.get(email) ||
-                           REGISTERED_ACCOUNTS.get(dbUser.id) ||
-                           (dbUser.patient_id ? REGISTERED_ACCOUNTS.get(dbUser.patient_id.toUpperCase()) : undefined);
-          const account: RegisteredAccount = {
-            id: dbUser.id,
-            email: dbUser.email,
-            fullName: dbUser.full_name || name,
-            role: dbUser.role,
-            password: existing?.password || 'Patient@2026',
-            patient_id: dbUser.patient_id,
-            doctor_id: dbUser.doctor_id,
-            staff_id: dbUser.staff_id,
-            created_at: dbUser.created_at || new Date().toISOString(),
-          };
-          REGISTERED_ACCOUNTS.set(email, account);
-          REGISTERED_ACCOUNTS.set(dbUser.id, account);
-          if (dbUser.patient_id) REGISTERED_ACCOUNTS.set(dbUser.patient_id.toUpperCase(), account);
+  if (!adminClient || !anonClient) {
+    return res.status(503).json({
+      success: false,
+      message: 'Database client not initialized.',
+    });
+  }
 
-          return res.json({
-            success: true,
-            message: `Signed in via Google as ${dbUser.full_name || name} (${dbUser.role.toUpperCase()})`,
-            role: dbUser.role,
-            token,
-            user: {
-              id: dbUser.id,
-              name: dbUser.full_name || name,
-              email: dbUser.email,
-              role: dbUser.role,
-              patient_id: dbUser.patient_id,
-              doctor_id: dbUser.doctor_id,
-              staff_id: dbUser.staff_id,
-            },
-            patient: patientProfile,
-            patientId: dbUser.patient_id,
-          });
-        }
-      } catch (err) {
-        console.error('Supabase Google lookup error:', err);
-      }
+  try {
+    // 1. Check if user exists in public.app_users
+    let { data: dbUser } = await adminClient
+      .from('app_users')
+      .select('*')
+      .eq('email', email)
+      .single();
+
+    // 2. Check if user exists in auth.users
+    let authUser: any = null;
+    const { data: userList } = await adminClient.auth.admin.listUsers();
+    if (userList?.users) {
+      authUser = userList.users.find((u: any) => u.email?.toLowerCase() === email);
     }
-  }
 
-  // 2. If already registered in-memory, preserve role
-  let account = REGISTERED_ACCOUNTS.get(email);
+    // If user does not exist in auth.users, provision in Supabase Auth
+    if (!authUser) {
+      const { data: newAuth, error: createAuthError } = await adminClient.auth.admin.createUser({
+        email,
+        email_confirm: true,
+        user_metadata: {
+          full_name: name,
+          role: dbUser?.role || 'patient',
+        },
+      });
+      if (createAuthError || !newAuth?.user) {
+        return res.status(500).json({
+          success: false,
+          message: `Failed to provision authentication identity: ${createAuthError?.message || 'Unknown error'}`,
+        });
+      }
+      authUser = newAuth.user;
+    }
 
-  if (!account) {
-    const patientId = `P${Math.floor(100000 + Math.random() * 900000)}`;
-    account = {
-      id: `usr-google-${Date.now()}`,
+    // If user does not exist in public.app_users, provision patient record
+    if (!dbUser) {
+      const patientId = `P${Math.floor(100000 + Math.random() * 900000)}`;
+      const { data: newDbUser, error: insertError } = await adminClient
+        .from('app_users')
+        .insert({
+          id: authUser.id,
+          email,
+          role: 'patient',
+          full_name: name,
+          patient_id: patientId,
+          is_active: true,
+          status: 'active',
+        })
+        .select('*')
+        .single();
+
+      if (insertError) {
+        console.error('Error inserting app_users record for Google SSO:', insertError);
+      }
+      dbUser = newDbUser || {
+        id: authUser.id,
+        email,
+        role: 'patient',
+        full_name: name,
+        patient_id: patientId,
+        is_active: true,
+        status: 'active',
+      };
+    }
+
+    // Check account status
+    if (dbUser.is_active === false) {
+      return res.status(403).json({
+        success: false,
+        message: 'This user account has been deactivated. Please contact administration.',
+      });
+    }
+
+    // 3. Issue genuine Supabase session using magiclink verification (generates authentic Supabase JWT)
+    const linkRes = await adminClient.auth.admin.generateLink({
+      type: 'magiclink',
       email,
-      fullName: name,
-      role: 'patient',
-      patient_id: patientId,
-      phone: '+1 (555) 789-0123',
-      date_of_birth: '1996-05-15',
-      created_at: new Date().toISOString(),
-    };
-    REGISTERED_ACCOUNTS.set(email, account);
-    REGISTERED_ACCOUNTS.set(account.id, account);
-    REGISTERED_ACCOUNTS.set(patientId, account);
+    });
+
+    if (!linkRes.data?.properties?.hashed_token) {
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to generate authentication link for Google session.',
+      });
+    }
+
+    const otpRes = await anonClient.auth.verifyOtp({
+      token_hash: linkRes.data.properties.hashed_token,
+      type: 'magiclink',
+    });
+
+    if (!otpRes.data?.session?.access_token) {
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to issue Supabase credentials for Google SSO user.',
+      });
+    }
+
+    const session = otpRes.data.session;
+
+    let patientProfile = null;
+    if (dbUser.role === 'patient' && dbUser.patient_id) {
+      const { data: patientRecord } = await adminClient
+        .from('silver_patients')
+        .select('*')
+        .eq('patient_id', dbUser.patient_id)
+        .single();
+      patientProfile = formatPatientProfile(patientRecord || dbUser);
+    }
+
+    return res.json({
+      success: true,
+      message: `Signed in via Google as ${dbUser.full_name || name} (${dbUser.role.toUpperCase()})`,
+      role: dbUser.role,
+      token: session.access_token,
+      refreshToken: session.refresh_token,
+      expiresAt: session.expires_at,
+      expiresIn: session.expires_in,
+      user: {
+        id: dbUser.id,
+        name: dbUser.full_name || name,
+        email: dbUser.email,
+        role: dbUser.role,
+        patient_id: dbUser.patient_id,
+        doctor_id: dbUser.doctor_id,
+        staff_id: dbUser.staff_id,
+        specialty: dbUser.specialty,
+        department: dbUser.department,
+        is_active: dbUser.is_active,
+      },
+      patient: patientProfile,
+      patientId: dbUser.patient_id,
+      doctorId: dbUser.doctor_id,
+      staffId: dbUser.staff_id,
+    });
+  } catch (err: any) {
+    console.error('Google SSO error:', err);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to process Google single sign-on.',
+    });
+  }
+});
+
+// 2.75 Token Refresh Endpoint (Strict Supabase JWT Refresh)
+app.post('/api/auth/refresh', async (req: Request, res: Response) => {
+  const refreshToken = req.body?.refreshToken || req.body?.refresh_token;
+  if (!refreshToken || typeof refreshToken !== 'string') {
+    return res.status(400).json({
+      success: false,
+      message: 'Refresh token is required.',
+    });
   }
 
-  const token = `session-token-${account.role}-${account.id}`;
+  if (!isDatabaseConnected) {
+    return res.status(503).json({
+      success: false,
+      message: 'Database not connected. Cannot refresh session credentials.',
+    });
+  }
 
-  const demoPatient = account.role === 'patient' ? {
-    patient_id: account.patient_id || 'P1001',
-    name: account.fullName,
-    first_name: account.fullName.split(' ')[0] || 'Google',
-    last_name: account.fullName.split(' ').slice(1).join(' ') || 'User',
-    email: account.email,
-    phone: account.phone || '+1 (555) 234-9182',
-    date_of_birth: account.date_of_birth || '1996-05-15',
-    age: 30,
-    gender: 'Not specified',
-    blood_group: 'O+',
-    city: 'Metro Medical District',
-    state: 'CA',
-    address: '742 Evergreen Terrace, Suite 300',
-    emergency_contact: 'Family Contact (+1 555-234-9183)',
-    primary_doctor_name: 'Dr. Marcus Vance, MD',
-  } : undefined;
+  const anonClient = getSupabaseAnon() || getSupabaseAdmin();
+  const adminClient = getSupabaseAdmin();
 
-  return res.json({
-    success: true,
-    message: `Signed in via Google as ${account.fullName} (${account.role.toUpperCase()})`,
-    role: account.role,
-    token,
-    user: {
-      id: account.id,
-      name: account.fullName,
-      email: account.email,
-      role: account.role,
-      patient_id: account.patient_id,
-      doctor_id: account.doctor_id,
-      staff_id: account.staff_id,
-      specialty: account.specialty,
-      department: account.department,
-    },
-    patient: demoPatient,
-    patientId: account.patient_id,
-  });
+  if (!anonClient || !adminClient) {
+    return res.status(503).json({
+      success: false,
+      message: 'Authentication client unavailable.',
+    });
+  }
+
+  try {
+    const { data, error } = await anonClient.auth.refreshSession({ refresh_token: refreshToken });
+    if (error || !data?.session?.access_token) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid or expired refresh token. Please sign in again.',
+      });
+    }
+
+    const session = data.session;
+    // Resolve user details from app_users
+    const { data: appUser } = await adminClient
+      .from('app_users')
+      .select('*')
+      .eq('id', session.user.id)
+      .single();
+
+    if (appUser && appUser.is_active === false) {
+      return res.status(403).json({
+        success: false,
+        message: 'This user account has been deactivated. Please contact administration.',
+      });
+    }
+
+    return res.json({
+      success: true,
+      token: session.access_token,
+      refreshToken: session.refresh_token,
+      expiresAt: session.expires_at,
+      expiresIn: session.expires_in,
+      role: appUser?.role || 'patient',
+      user: appUser ? {
+        id: appUser.id,
+        email: appUser.email,
+        role: appUser.role,
+        name: appUser.full_name || 'Hospital User',
+        patient_id: appUser.patient_id,
+        doctor_id: appUser.doctor_id,
+        staff_id: appUser.staff_id,
+        specialty: appUser.specialty,
+        department: appUser.department,
+        is_active: appUser.is_active,
+      } : {
+        id: session.user.id,
+        email: session.user.email,
+        role: 'patient',
+      },
+      message: 'Session refreshed successfully.',
+    });
+  } catch (err) {
+    return res.status(401).json({
+      success: false,
+      message: 'Session refresh failed. Please sign in again.',
+    });
+  }
 });
 
 // 2.8 Dynamic Role Upgrade Endpoint (Strictly restricted to authorized Administrators)
@@ -1672,13 +1634,13 @@ app.post('/api/auth/update-role', authenticateToken, requireAdminRole, async (re
     }
   }
 
-  const newToken = `demo-session-token-${newRole}-${Date.now()}`;
+  const currentToken = (req as any).userToken;
 
   return res.json({
     success: true,
     message: `Account successfully elevated to ${newRole.toUpperCase()} role.`,
     role: newRole,
-    token: newToken,
+    token: currentToken,
     user: {
       id: account.id,
       name: account.fullName,
@@ -2267,121 +2229,6 @@ app.get('/api/patient/dashboard', authenticateToken, requirePatientRole, async (
   const adminClient = getSupabaseAdmin();
 
   if (!adminClient || !isDatabaseConnected) {
-    if ((req as any).userToken?.startsWith('demo-session-token-')) {
-      return res.json({
-        success: true,
-        data: {
-          patient: {
-            patient_id: patientId || 'P1001',
-            name: 'Elena Rostova',
-            first_name: 'Elena',
-            last_name: 'Rostova',
-            email: 'elena.rostova@patient.org',
-            phone: '+1 (555) 234-9182',
-            date_of_birth: '1984-06-12',
-            age: 42,
-            gender: 'Female',
-            blood_group: 'O+',
-            city: 'Metro Medical District',
-            state: 'CA',
-            address: '742 Evergreen Terrace, Suite 300',
-            emergency_contact: 'Viktor Rostov (+1 555-234-9183)',
-            primary_doctor_name: 'Dr. Marcus Vance, MD',
-          },
-          upcomingAppointments: [
-            {
-              appointment_id: 'APT-9041',
-              patient_id: patientId || 'P1001',
-              doctor_id: 'DOC-7721',
-              doctor_name: 'Dr. Marcus Vance, MD',
-              specialty: 'Cardiology & Vascular Medicine',
-              hospital_branch: 'MediAI Heart & Vascular Specialty Institute',
-              appointment_date: '2026-10-28',
-              appointment_time: '10:30 AM',
-              status: 'Confirmed',
-              consultation_type: 'In-Person',
-              consultation_duration_minutes: 30,
-              consultation_fee: 175,
-              payment_status: 'Paid',
-              reason: 'Cardiovascular follow-up & ECG evaluation',
-              symptoms: 'Occasional mild palpitations after exertion',
-              notes: 'Bring previous telemetry records and medication list.',
-            },
-            {
-              appointment_id: 'APT-9284',
-              patient_id: patientId || 'P1001',
-              doctor_id: 'DOC-8802',
-              doctor_name: 'Dr. Sarah Lin, MD',
-              specialty: 'General Internal Medicine',
-              hospital_branch: 'MediAI Medical Center — Main Campus',
-              appointment_date: '2026-11-14',
-              appointment_time: '02:00 PM',
-              status: 'Scheduled',
-              consultation_type: 'Video Telehealth',
-              consultation_duration_minutes: 20,
-              consultation_fee: 120,
-              payment_status: 'Pending',
-              reason: 'Routine quarterly metabolic panel consultation',
-              symptoms: 'None - preventive checkup',
-              notes: 'Fasting lab work required 48 hours prior.',
-            },
-          ],
-          completedEncounters: [
-            {
-              encounter_id: 'ENC-4019',
-              patient_id: patientId || 'P1001',
-              doctor_name: 'Dr. Marcus Vance, MD',
-              encounter_date: '2026-08-15',
-              encounter_type: 'Outpatient Specialty Visit',
-              diagnosis: 'Mild sinus tachycardia, controlled essential hypertension',
-              chief_complaint: 'Routine follow-up',
-              treatment_summary: 'Medication dosage adjusted; recommended 30 min daily aerobic walking.',
-            },
-          ],
-          labReports: [
-            {
-              lab_id: 'LAB-8812',
-              patient_id: patientId || 'P1001',
-              test_name: 'Comprehensive Metabolic Panel (CMP-14)',
-              test_date: '2026-08-14',
-              result_summary: 'Electrolytes and renal indices within normal limits',
-              status: 'Final - Signed by Laboratory Director',
-              lab_branch: 'Central Pathology Laboratory',
-            },
-            {
-              lab_id: 'LAB-8813',
-              patient_id: patientId || 'P1001',
-              test_name: 'Lipid Panel with Cardio-CRP',
-              test_date: '2026-08-14',
-              result_summary: 'LDL 98 mg/dL, HDL 54 mg/dL, Triglycerides 124 mg/dL',
-              status: 'Final - Signed by Laboratory Director',
-              lab_branch: 'Central Pathology Laboratory',
-            },
-          ],
-          prescriptions: [
-            {
-              prescription_id: 'RX-7731',
-              patient_id: patientId || 'P1001',
-              doctor_name: 'Dr. Marcus Vance, MD',
-              medication_name: 'Lisinopril 10mg Tablets',
-              dosage: '1 tablet daily in the morning',
-              prescribed_date: '2026-08-15',
-              refills_remaining: 3,
-              pharmacy: 'MediAI Central In-Hospital Pharmacy',
-              status: 'Active',
-            },
-          ],
-          feedbackList: [],
-          notifications: [],
-          backendStatus: {
-            connected: false,
-            engine: 'MediAI Local Clinical Engine',
-            schema: 'Canonical Silver Schema',
-            notice: 'Demonstration Workspace Active',
-          },
-        },
-      });
-    }
     return res.status(503).json({
       success: false,
       message: 'Database connection unavailable.',
@@ -4437,105 +4284,350 @@ app.get('/api/admin/overview', authenticateToken, requireAdminRole, async (req: 
   let patientFeedback: any[] = [];
   let staffRoster: any[] = [];
 
-  if (client && isDatabaseConnected) {
-    try {
-      const [patCount, docCount, staffCount, encCount, fbRes, docSample, staffSample] = await Promise.all([
-        client.from('silver_patients').select('*', { count: 'exact', head: true }),
-        client.from('silver_doctors').select('*', { count: 'exact', head: true }).eq('is_active', true),
-        client.from('silver_staff').select('*', { count: 'exact', head: true }).eq('is_active', true),
-        client.from('silver_encounters').select('*', { count: 'exact', head: true }),
-        client
-          .from('silver_feedback')
-          .select('feedback_id, patient_id, doctor_id, rating, wait_time_rating, comments, feedback_date, silver_patients(name), silver_doctors(doctor_name, specialty)')
-          .order('feedback_date', { ascending: false })
-          .limit(6),
-        client
-          .from('silver_doctors')
-          .select('doctor_id, doctor_name, specialty, hospital_branch')
-          .eq('is_active', true)
-          .limit(4),
-        client
-          .from('silver_staff')
-          .select('staff_id, staff_name, role, department, shift')
-          .eq('is_active', true)
-          .limit(4),
-      ]);
-
-      if (patCount.count !== null && patCount.count !== undefined) totalActivePatients = patCount.count;
-      if (docCount.count !== null && docCount.count !== undefined) totalPhysicians = docCount.count;
-      if (staffCount.count !== null && staffCount.count !== undefined) totalClinicalStaff = staffCount.count;
-      if (encCount.count !== null && encCount.count !== undefined) totalEncounters = encCount.count;
-
-      if (fbRes.data && fbRes.data.length > 0) {
-        patientFeedback = fbRes.data.map((fb: any) => ({
-          id: fb.feedback_id,
-          patient: fb.silver_patients?.name ? `${fb.silver_patients.name} (${fb.patient_id})` : `Patient ${fb.patient_id}`,
-          doctor: fb.silver_doctors?.doctor_name || 'Dr. Attending Physician',
-          department: fb.silver_doctors?.specialty || 'General Medicine',
-          rating: Number(fb.rating) || 5,
-          waitRating: Number(fb.wait_time_rating) || 4,
-          comments: fb.comments && fb.comments !== 'Not Provided' ? fb.comments : 'Care delivered promptly with thorough clinical guidance.',
-          date: fb.feedback_date || new Date().toISOString().split('T')[0],
-        }));
-
-        const totalRating = fbRes.data.reduce((acc: number, f: any) => acc + (Number(f.rating) || 0), 0);
-        patientSatisfactionScore = fbRes.data.length > 0 ? Number((totalRating / fbRes.data.length).toFixed(2)) : 0;
-      }
-
-      if (docSample.data && staffSample.data) {
-        const docRoster = docSample.data.map((d: any) => ({
-          id: d.doctor_id,
-          name: d.doctor_name || 'Dr. Physician',
-          role: 'Attending Physician',
-          department: d.specialty || 'Clinical Department',
-          shift: 'Day',
-          duty: 'On Duty',
-          patients: 12,
-        }));
-        const staffRosterItems = staffSample.data.map((s: any) => ({
-          id: s.staff_id,
-          name: s.staff_name || 'Clinical Staff',
-          role: s.role || 'Clinical Staff',
-          department: s.department || 'General Ward',
-          shift: s.shift || 'Day',
-          duty: 'On Duty',
-          patients: 6,
-        }));
-        staffRoster = [...docRoster, ...staffRosterItems];
-      }
-    } catch (err: any) {
-      console.error('Failed to load admin overview from database', err);
-    }
+  if (!client || !isDatabaseConnected) {
+    return res.status(503).json({
+      success: false,
+      message: 'Database connection offline. Unable to retrieve verified hospital overview.',
+    });
   }
 
-  const executiveMetrics = {
-    bedOccupancyRate: 0,
-    avgWaitTimeMinutes: 0,
-    totalActivePatients,
-    totalPhysicians,
-    totalClinicalStaff,
-    patientSatisfactionScore,
-    monthlyDischarges: totalEncounters > 0 ? Math.round(totalEncounters / 36) : 0,
-    emergencyThroughputRatio: 0,
-  };
+  try {
+    const [
+      patCount,
+      docCount,
+      staffCount,
+      encCount,
+      fbRes,
+      docSample,
+      staffSample,
+    ] = await Promise.all([
+      client.from('silver_patients').select('*', { count: 'exact', head: true }),
+      client.from('silver_doctors').select('*', { count: 'exact', head: true }).eq('is_active', true),
+      client.from('silver_staff').select('*', { count: 'exact', head: true }).eq('is_active', true),
+      client.from('silver_encounters').select('*', { count: 'exact', head: true }),
+      client
+        .from('silver_feedback')
+        .select('feedback_id, patient_id, doctor_id, rating, wait_time_rating, comments, feedback_date, silver_patients(name), silver_doctors(doctor_name, specialty)')
+        .order('feedback_date', { ascending: false })
+        .limit(6),
+      client
+        .from('silver_doctors')
+        .select('doctor_id, doctor_name, specialty, hospital_branch')
+        .eq('is_active', true)
+        .limit(4),
+      client
+        .from('silver_staff')
+        .select('staff_id, staff_name, role, department, shift')
+        .eq('is_active', true)
+        .limit(4),
+    ]);
 
-  const departments = [
-    { id: 'DEP-CARD', name: 'Cardiology & Vascular Medicine', totalBeds: 0, occupiedBeds: 0, rate: 0, doctorsOnDuty: 0, status: 'Not Available' },
-    { id: 'DEP-ICU', name: 'Intensive Care Unit (ICU/CCU)', totalBeds: 0, occupiedBeds: 0, rate: 0, doctorsOnDuty: 0, status: 'Not Available' },
-    { id: 'DEP-EMERG', name: 'Emergency & Trauma Center', totalBeds: 0, occupiedBeds: 0, rate: 0, doctorsOnDuty: 0, status: 'Not Available' },
-    { id: 'DEP-SURG', name: 'Surgical & Post-Op Ward', totalBeds: 0, occupiedBeds: 0, rate: 0, doctorsOnDuty: 0, status: 'Not Available' },
-    { id: 'DEP-PED', name: 'Pediatrics & Neonatal Care', totalBeds: 0, occupiedBeds: 0, rate: 0, doctorsOnDuty: 0, status: 'Not Available' },
-    { id: 'DEP-ONCO', name: 'Oncology & Infusion Suites', totalBeds: 0, occupiedBeds: 0, rate: 0, doctorsOnDuty: 0, status: 'Not Available' },
-  ];
+    if (patCount.error) throw new Error(`silver_patients error: ${patCount.error.message}`);
+    if (docCount.error) throw new Error(`silver_doctors count error: ${docCount.error.message}`);
+    if (staffCount.error) throw new Error(`silver_staff count error: ${staffCount.error.message}`);
+    if (encCount.error) throw new Error(`silver_encounters error: ${encCount.error.message}`);
 
-  return res.json({
-    success: true,
-    admin,
-    executiveMetrics,
-    departments,
-    staffRoster,
-    patientFeedback,
-  });
+    // Helper to paginate and retrieve all records without PostgREST 1,000-row truncation
+    const fetchAllRows = async (tableName: string, selectCols: string, filterCol?: string, filterVal?: any) => {
+      const records: any[] = [];
+      const pageSize = 1000;
+      let pageIndex = 0;
+      while (true) {
+        let q = client.from(tableName).select(selectCols).range(pageIndex * pageSize, (pageIndex + 1) * pageSize - 1);
+        if (filterCol !== undefined) {
+          q = q.eq(filterCol, filterVal);
+        }
+        const { data, error } = await q;
+        if (error) throw new Error(`Query error on ${tableName} (page ${pageIndex}): ${error.message}`);
+        if (!data || data.length === 0) break;
+        records.push(...data);
+        if (data.length < pageSize) break;
+        pageIndex++;
+      }
+      return records;
+    };
+
+    const [allDoctors, allStaff] = await Promise.all([
+      fetchAllRows('silver_doctors', 'specialty', 'is_active', true),
+      fetchAllRows('silver_staff', 'department', 'is_active', true),
+    ]);
+
+    if (patCount.count !== null && patCount.count !== undefined) totalActivePatients = patCount.count;
+    if (docCount.count !== null && docCount.count !== undefined) totalPhysicians = docCount.count;
+    if (staffCount.count !== null && staffCount.count !== undefined) totalClinicalStaff = staffCount.count;
+    if (encCount.count !== null && encCount.count !== undefined) totalEncounters = encCount.count;
+
+    if (fbRes.data && fbRes.data.length > 0) {
+      patientFeedback = fbRes.data.map((fb: any) => ({
+        id: fb.feedback_id,
+        patient: fb.silver_patients?.name ? `${fb.silver_patients.name} (${fb.patient_id})` : `Patient ${fb.patient_id}`,
+        doctor: fb.silver_doctors?.doctor_name || 'Dr. Attending Physician',
+        department: fb.silver_doctors?.specialty || 'General Medicine',
+        rating: Number(fb.rating) || 5,
+        waitRating: Number(fb.wait_time_rating) || 4,
+        comments: fb.comments && fb.comments !== 'Not Provided' ? fb.comments : 'Care delivered promptly with thorough clinical guidance.',
+        date: fb.feedback_date || new Date().toISOString().split('T')[0],
+      }));
+
+      const totalRating = fbRes.data.reduce((acc: number, f: any) => acc + (Number(f.rating) || 0), 0);
+      patientSatisfactionScore = fbRes.data.length > 0 ? Number((totalRating / fbRes.data.length).toFixed(2)) : 0;
+    }
+
+    if (docSample.data && staffSample.data) {
+      const docRoster = docSample.data.map((d: any) => ({
+        id: d.doctor_id,
+        name: d.doctor_name || 'Dr. Physician',
+        role: 'Attending Physician',
+        department: d.specialty || 'Clinical Department',
+        shift: 'Day',
+        duty: 'On Duty',
+        patients: 12,
+      }));
+      const staffRosterItems = staffSample.data.map((s: any) => ({
+        id: s.staff_id,
+        name: s.staff_name || 'Clinical Staff',
+        role: s.role || 'Clinical Staff',
+        department: s.department || 'General Ward',
+        shift: s.shift || 'Day',
+        duty: 'On Duty',
+        patients: 6,
+      }));
+      staffRoster = [...docRoster, ...staffRosterItems];
+    }
+
+    // Physician specialty distribution aggregation
+    const DOCTOR_SPECIALTY_MAPPINGS: Record<string, string[]> = {
+      'DEP-CARD': ['Cardiologist', 'Interventional Cardiologist', 'Cardiology & Vascular Medicine'],
+      'DEP-ICU': ['Critical Care Anesthesiologist', 'Anesthesiologist'],
+      'DEP-EMERG': ['Emergency Physician', 'Emergency Medicine Specialist'],
+      'DEP-SURG': ['Orthopedic Surgeon', 'Laparoscopic Surgeon', 'General Surgeon'],
+      'DEP-PED': ['Child Specialist', 'Pediatrician'],
+      'DEP-ONCO': ['Surgical Oncologist', 'Medical Oncologist'],
+    };
+
+    const docSpecialtyCounts: Record<string, number> = {};
+    allDoctors.forEach((d: any) => {
+      const spec = d.specialty || 'Unspecified';
+      docSpecialtyCounts[spec] = (docSpecialtyCounts[spec] || 0) + 1;
+    });
+
+    const activePhysiciansByDept: Record<string, number> = {};
+    const mappedSpecialtiesSet = new Set<string>();
+
+    for (const [deptId, specs] of Object.entries(DOCTOR_SPECIALTY_MAPPINGS)) {
+      let count = 0;
+      specs.forEach((s) => {
+        mappedSpecialtiesSet.add(s);
+        count += (docSpecialtyCounts[s] || 0);
+      });
+      activePhysiciansByDept[deptId] = count;
+    }
+
+    // Unmapped physicians breakdown
+    const unmappedSpecialtiesBreakdown: Record<string, number> = {};
+    let totalUnmappedDoctors = 0;
+    Object.entries(docSpecialtyCounts).forEach(([spec, count]) => {
+      if (!mappedSpecialtiesSet.has(spec)) {
+        unmappedSpecialtiesBreakdown[spec] = count;
+        totalUnmappedDoctors += count;
+      }
+    });
+
+    // Staff department distribution aggregation
+    const STAFF_DEPT_MAPPINGS: Record<string, { dept: string; label: string } | null> = {
+      'DEP-CARD': { dept: 'Cardiology', label: 'Cardiology Staff' },
+      'DEP-ICU': null,
+      'DEP-EMERG': { dept: 'Emergency', label: 'Emergency Staff' },
+      'DEP-SURG': { dept: 'Orthopedics', label: 'Orthopedics Staff' },
+      'DEP-PED': { dept: 'Pediatrics', label: 'Pediatrics Staff' },
+      'DEP-ONCO': { dept: 'Oncology', label: 'Oncology Staff' },
+    };
+
+    const staffDeptCounts: Record<string, number> = {};
+    allStaff.forEach((s: any) => {
+      const dept = s.department || 'Unspecified';
+      staffDeptCounts[dept] = (staffDeptCounts[dept] || 0) + 1;
+    });
+
+    const staffByDept: Record<string, { count: number | string; label: string; note?: string }> = {};
+    const mappedStaffDeptsSet = new Set(['Cardiology', 'Emergency', 'Orthopedics', 'Pediatrics', 'Oncology']);
+
+    for (const [deptId, mapping] of Object.entries(STAFF_DEPT_MAPPINGS)) {
+      if (!mapping) {
+        staffByDept[deptId] = {
+          count: 'Not Mapped',
+          label: 'Not Mapped',
+          note: 'No matching staff department exists in canonical silver_staff table. Explicitly unmapped to prevent fabrication.',
+        };
+      } else {
+        const count = staffDeptCounts[mapping.dept] || 0;
+        staffByDept[deptId] = {
+          count,
+          label: mapping.label,
+          note: deptId === 'DEP-SURG' ? 'Staff mapped from Orthopedics department in canonical silver_staff table.' : undefined,
+        };
+      }
+    }
+
+    // Unmapped staff departments and explicit 'Cardiolog' variation flag
+    const unmappedDepartmentsBreakdown: Record<string, number> = {};
+    let totalUnmappedStaff = 0;
+    Object.entries(staffDeptCounts).forEach(([dept, count]) => {
+      if (!mappedStaffDeptsSet.has(dept)) {
+        unmappedDepartmentsBreakdown[dept] = count;
+        totalUnmappedStaff += count;
+      }
+    });
+
+    const totalActivePhysicians = Object.values(docSpecialtyCounts).reduce((a, b) => a + b, 0);
+    const totalActiveStaff = Object.values(staffDeptCounts).reduce((a, b) => a + b, 0);
+
+    const executiveMetrics = {
+      bedOccupancyRate: 'N/A',
+      avgWaitTimeMinutes: 0,
+      totalActivePatients,
+      totalPhysicians: totalActivePhysicians || totalPhysicians,
+      totalClinicalStaff: totalActiveStaff || totalClinicalStaff,
+      patientSatisfactionScore,
+      monthlyDischarges: totalEncounters > 0 ? Math.round(totalEncounters / 36) : 0,
+      emergencyThroughputRatio: 0,
+    };
+
+    const departments = [
+      {
+        id: 'DEP-CARD',
+        name: 'Cardiology & Vascular Medicine',
+        totalBeds: 'Not Tracked',
+        occupiedBeds: 'Not Tracked',
+        occupancyRate: 'N/A',
+        rate: 'N/A',
+        activePhysicians: activePhysiciansByDept['DEP-CARD'] || 0,
+        doctorsOnDuty: activePhysiciansByDept['DEP-CARD'] || 0,
+        staffCount: staffByDept['DEP-CARD'].count,
+        staffLabel: staffByDept['DEP-CARD'].label,
+        status: 'Active Staffing Only',
+        bedTrackingNote: 'Bed management requires dedicated inpatient tracking tables not present in current Silver schema.',
+      },
+      {
+        id: 'DEP-ICU',
+        name: 'Intensive Care Unit (ICU/CCU)',
+        totalBeds: 'Not Tracked',
+        occupiedBeds: 'Not Tracked',
+        occupancyRate: 'N/A',
+        rate: 'N/A',
+        activePhysicians: activePhysiciansByDept['DEP-ICU'] || 0,
+        doctorsOnDuty: activePhysiciansByDept['DEP-ICU'] || 0,
+        staffCount: staffByDept['DEP-ICU'].count,
+        staffLabel: staffByDept['DEP-ICU'].label,
+        status: 'Active Staffing Only',
+        bedTrackingNote: 'Bed management requires dedicated inpatient tracking tables not present in current Silver schema.',
+        staffMappingNote: staffByDept['DEP-ICU'].note,
+      },
+      {
+        id: 'DEP-EMERG',
+        name: 'Emergency & Trauma Center',
+        totalBeds: 'Not Tracked',
+        occupiedBeds: 'Not Tracked',
+        occupancyRate: 'N/A',
+        rate: 'N/A',
+        activePhysicians: activePhysiciansByDept['DEP-EMERG'] || 0,
+        doctorsOnDuty: activePhysiciansByDept['DEP-EMERG'] || 0,
+        staffCount: staffByDept['DEP-EMERG'].count,
+        staffLabel: staffByDept['DEP-EMERG'].label,
+        status: 'Active Staffing Only',
+        bedTrackingNote: 'Bed management requires dedicated inpatient tracking tables not present in current Silver schema.',
+      },
+      {
+        id: 'DEP-SURG',
+        name: 'Surgical & Post-Op Ward',
+        totalBeds: 'Not Tracked',
+        occupiedBeds: 'Not Tracked',
+        occupancyRate: 'N/A',
+        rate: 'N/A',
+        activePhysicians: activePhysiciansByDept['DEP-SURG'] || 0,
+        doctorsOnDuty: activePhysiciansByDept['DEP-SURG'] || 0,
+        staffCount: staffByDept['DEP-SURG'].count,
+        staffLabel: staffByDept['DEP-SURG'].label,
+        status: 'Active Staffing Only',
+        bedTrackingNote: 'Bed management requires dedicated inpatient tracking tables not present in current Silver schema.',
+        staffMappingNote: staffByDept['DEP-SURG'].note,
+      },
+      {
+        id: 'DEP-PED',
+        name: 'Pediatrics & Neonatal Care',
+        totalBeds: 'Not Tracked',
+        occupiedBeds: 'Not Tracked',
+        occupancyRate: 'N/A',
+        rate: 'N/A',
+        activePhysicians: activePhysiciansByDept['DEP-PED'] || 0,
+        doctorsOnDuty: activePhysiciansByDept['DEP-PED'] || 0,
+        staffCount: staffByDept['DEP-PED'].count,
+        staffLabel: staffByDept['DEP-PED'].label,
+        status: 'Active Staffing Only',
+        bedTrackingNote: 'Bed management requires dedicated inpatient tracking tables not present in current Silver schema.',
+      },
+      {
+        id: 'DEP-ONCO',
+        name: 'Oncology & Infusion Suites',
+        totalBeds: 'Not Tracked',
+        occupiedBeds: 'Not Tracked',
+        occupancyRate: 'N/A',
+        rate: 'N/A',
+        activePhysicians: activePhysiciansByDept['DEP-ONCO'] || 0,
+        doctorsOnDuty: activePhysiciansByDept['DEP-ONCO'] || 0,
+        staffCount: staffByDept['DEP-ONCO'].count,
+        staffLabel: staffByDept['DEP-ONCO'].label,
+        status: 'Active Staffing Only',
+        bedTrackingNote: 'Bed management requires dedicated inpatient tracking tables not present in current Silver schema.',
+      },
+    ];
+
+    const diagnostics = {
+      bedTracking: {
+        status: 'Not Tracked',
+        reason: 'Canonical Silver schema contains no bed, room, admission, or ward registry tables (e.g. silver_rooms, silver_beds, silver_admissions).',
+        policy: 'Display Not Tracked / N/A without mock data or zero percentages.',
+      },
+      physicians: {
+        totalActivePhysicians,
+        mappedPhysicians: Object.values(activePhysiciansByDept).reduce((a, b) => a + b, 0),
+        unmappedPhysicians: totalUnmappedDoctors,
+        mappedByDepartment: activePhysiciansByDept,
+        unmappedSpecialtiesBreakdown,
+      },
+      staff: {
+        totalActiveStaff,
+        mappedStaff: Object.values(staffByDept).reduce((acc, s) => acc + (typeof s.count === 'number' ? s.count : 0), 0),
+        unmappedStaff: totalUnmappedStaff,
+        mappedByDepartment: staffByDept,
+        unmappedDepartmentsBreakdown,
+        flaggedVariations: [
+          {
+            department: 'Cardiolog',
+            count: staffDeptCounts['Cardiolog'] || 0,
+            issue: 'Unmapped spelling / truncated variation of Cardiology',
+            action: 'Preserved as unmapped per data governance rules; strictly NOT merged into Cardiology.',
+          },
+        ],
+      },
+    };
+
+    return res.json({
+      success: true,
+      admin,
+      executiveMetrics,
+      departments,
+      staffRoster,
+      patientFeedback,
+      diagnostics,
+    });
+  } catch (err: any) {
+    console.error('Failed to load admin overview from database', err);
+    return res.status(500).json({
+      success: false,
+      message: `Failed to load admin overview from database: ${sanitizeError(err)}`,
+    });
+  }
 });
 
 // Phase 1: Date-Filtered Admin Dashboard Analytics (Power BI Admin Integration)
@@ -5960,23 +6052,8 @@ async function resolvePatientContext(authHeader?: string): Promise<PatientContex
   }
 
   const token = authHeader.split(' ')[1];
-  let patientId = 'P182162';
-  let patientName = 'Elena Rostova';
-
-  // In-memory or demo token resolution
-  if (token.startsWith('session-token-') || token.startsWith('demo-session-token-')) {
-    const raw = token.replace('session-token-', '').replace('demo-session-token-', '');
-    const parts = raw.split('-');
-    const userIdOrSuffix = parts.slice(1).join('-');
-
-    const inMem = REGISTERED_ACCOUNTS.get(userIdOrSuffix) || Array.from(REGISTERED_ACCOUNTS.values()).find(
-      (a) => a.id === userIdOrSuffix || a.patient_id === userIdOrSuffix
-    );
-    if (inMem) {
-      patientId = inMem.patient_id || 'P182162';
-      patientName = inMem.fullName;
-    }
-  }
+  let patientId = '';
+  let patientName = '';
 
   // Live Supabase check
   if (isDatabaseConnected) {
@@ -5987,14 +6064,18 @@ async function resolvePatientContext(authHeader?: string): Promise<PatientContex
         if (user) {
           const { data: appUser } = await admin.from('app_users').select('*').eq('id', user.id).single();
           if (appUser && appUser.role === 'patient') {
-            patientId = appUser.patient_id || patientId;
-            patientName = appUser.full_name || patientName;
+            patientId = appUser.patient_id || '';
+            patientName = appUser.full_name || '';
           }
         }
       } catch {
         // Fallback
       }
     }
+  }
+
+  if (!patientId) {
+    return { isAuthenticated: false, appointments: [] };
   }
 
   const appointments: Array<any> = [];
