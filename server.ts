@@ -1425,12 +1425,12 @@ app.post('/api/auth/google', async (req: Request, res: Response) => {
           patient_id: patientId,
           is_active: true,
           status: 'active',
-        }, { onConflict: 'email' })
+        }, { onConflict: 'id' })
         .select('*')
-        .single();
+        .maybeSingle();
 
       if (insertError) {
-        console.error('Error inserting/upserting app_users record for Google SSO:', insertError);
+        console.warn('Warning inserting app_users record for Google SSO:', insertError.message);
       }
       dbUser = newDbUser || {
         id: authUser.id,
@@ -2297,7 +2297,20 @@ app.get('/api/patient/dashboard', authenticateToken, requirePatientRole, async (
       });
     }
 
-    const upcomingAppointments: AppointmentRecord[] = (appointmentsRaw || []).map((a) => {
+    // Get hospital local date and time string in Asia/Kolkata
+    let hospitalTodayStr = '';
+    let hospitalCurrentTimeStr = '';
+    try {
+      const loc = getHospitalLocalDateTime();
+      hospitalTodayStr = loc.dateStr; // YYYY-MM-DD
+      hospitalCurrentTimeStr = loc.timeStr; // HH:mm
+    } catch {
+      const now = new Date();
+      hospitalTodayStr = now.toISOString().split('T')[0];
+      hospitalCurrentTimeStr = now.toTimeString().slice(0, 5);
+    }
+
+    const allAppointments: AppointmentRecord[] = (appointmentsRaw || []).map((a) => {
       const doc = doctorMap[a.doctor_id];
       return {
         appointment_id: a.appointment_id,
@@ -2324,6 +2337,24 @@ app.get('/api/patient/dashboard', authenticateToken, requirePatientRole, async (
         notes: a.notes || '',
         created_at: a.created_at,
       };
+    });
+
+    // Upcoming appointments must be scheduled or confirmed AND on or after current hospital date/time
+    const upcomingAppointments = allAppointments.filter((apt) => {
+      const rawStatus = (apt.status || '').trim().toLowerCase();
+      const isActiveStatus = rawStatus === 'scheduled' || rawStatus === 'confirmed';
+      if (!isActiveStatus) return false;
+
+      const aptDate = (apt.appointment_date || '').trim();
+      const aptTime = (apt.appointment_time || '09:00').trim().slice(0, 5);
+
+      if (!aptDate) return false;
+
+      if (aptDate > hospitalTodayStr) return true;
+      if (aptDate === hospitalTodayStr) {
+        return aptTime >= hospitalCurrentTimeStr;
+      }
+      return false;
     });
 
     // 3. Fetch Encounters
@@ -2616,15 +2647,24 @@ app.get('/api/booking/specialties', async (_req: Request, res: Response) => {
     try {
       const { data, error } = await client
         .from('silver_doctors')
-        .select('specialty')
-        .eq('is_active', true)
-        .not('specialty', 'is', null);
+        .select('specialty, specialization')
+        .eq('is_active', true);
 
       if (!error && data && data.length > 0) {
         const uniqueSet = new Set<string>();
         for (const row of data) {
-          if (row.specialty && typeof row.specialty === 'string' && row.specialty.trim()) {
-            uniqueSet.add(row.specialty.trim());
+          const rawSpec = (row.specialty || row.specialization || '').trim();
+          // Filter out null, empty, or placeholder strings like ****, ***, etc.
+          const isValid =
+            rawSpec &&
+            !rawSpec.includes('****') &&
+            !rawSpec.includes('***') &&
+            !/^\*+$/.test(rawSpec) &&
+            rawSpec.toLowerCase() !== 'null' &&
+            rawSpec.toLowerCase() !== 'undefined';
+
+          if (isValid) {
+            uniqueSet.add(rawSpec);
           }
         }
         const specialties = Array.from(uniqueSet).sort((a, b) => a.localeCompare(b));
@@ -2640,9 +2680,13 @@ app.get('/api/booking/specialties', async (_req: Request, res: Response) => {
     }
   }
 
+  const cleanMedicalSpecialties = MEDICAL_SPECIALTIES.filter(
+    (s) => s && !s.includes('****') && !s.includes('***') && !/^\*+$/.test(s)
+  );
+
   return res.json({
     success: true,
-    specialties: MEDICAL_SPECIALTIES,
+    specialties: cleanMedicalSpecialties,
   });
 });
 
@@ -2662,51 +2706,289 @@ app.get('/api/booking/doctors', async (req: Request, res: Response) => {
   }
 
   try {
-    let query = client.from('silver_doctors').select('*').eq('is_active', true);
+    // 1. Fetch active doctors from silver_doctors
+    const { data: silverDoctors, error: silverError } = await client
+      .from('silver_doctors')
+      .select('*')
+      .eq('is_active', true);
+
+    if (silverError) {
+      console.error('[Booking Doctors Diagnostic] Error fetching silver_doctors:', silverError.message);
+    }
+
+    // 2. Fetch doctor accounts from app_users
+    const { data: appUsersDoctors, error: appUsersError } = await client
+      .from('app_users')
+      .select('*')
+      .eq('role', 'doctor')
+      .eq('is_active', true);
+
+    if (appUsersError) {
+      console.error('[Booking Doctors Diagnostic] Error fetching app_users doctors:', appUsersError.message);
+    }
+    console.log('[Booking Doctors Diagnostic] appUsersDoctors count:', appUsersDoctors?.length);
+    if (appUsersDoctors && appUsersDoctors.length > 0) {
+      console.log('[Booking Doctors Diagnostic] appUsersDoctors sample:', appUsersDoctors.map(u => ({ id: u.id, name: u.full_name, doctor_id: u.doctor_id, role: u.role, specialty: u.specialty })));
+    }
+
+    // Reconcile and unify records (Group A, B, C)
+    const silverMap = new Map<string, any>();
+    (silverDoctors || []).forEach((d) => {
+      if (d.doctor_id) silverMap.set(d.doctor_id.toUpperCase(), d);
+      if (d.email) silverMap.set(d.email.toLowerCase(), d);
+    });
+
+    const unifiedDoctorsMap = new Map<string, any>();
+
+    // Add silver_doctors (Groups A & B)
+    (silverDoctors || []).forEach((d) => {
+      const key = d.doctor_id || d.email || Math.random().toString();
+      unifiedDoctorsMap.set(key, {
+        doctor_id: d.doctor_id || `DOC-${Math.floor(1000 + Math.random() * 9000)}`,
+        doctor_name: d.doctor_name || 'Dr. Physician',
+        specialty: d.specialty || d.specialization || 'General Practice',
+        specialization: d.specialization || d.specialty || 'General Practice',
+        qualification: d.qualification || 'MD',
+        experience_years: Number(d.experience_years) || 5,
+        department_id: d.department_id || '',
+        department_name: d.department_name || '',
+        city: d.city || '',
+        employment_type: d.employment_type || 'Full-Time',
+        availability: d.availability || d.availability_schedule || '',
+        availability_schedule: d.availability || d.availability_schedule || '',
+        joining_date: d.joining_date || '',
+        phone_number: d.phone_number || '',
+        email: d.email || '',
+        hospital_branch: d.hospital_branch || '',
+        consultation_fee: Number(d.consultation_fee) || 150,
+        rating: Number(d.rating) || 5.0,
+        rating_count: d.rating_count ? Number(d.rating_count) : 24,
+        is_active: d.is_active ?? true,
+        user_id: d.user_id || null,
+      });
+    });
+
+    // Reconcile app_users doctors (Group C)
+    (appUsersDoctors || []).forEach((u) => {
+      const emailMatch = u.email ? silverMap.get(u.email.toLowerCase()) : null;
+      const docIdMatch = u.doctor_id ? silverMap.get(u.doctor_id.toUpperCase()) : null;
+
+      if (!emailMatch && !docIdMatch) {
+        // Group C: Present in app_users only
+        const docId = u.doctor_id || `DOC-USR-${Math.floor(1000 + Math.random() * 9000)}`;
+        unifiedDoctorsMap.set(docId, {
+          doctor_id: docId,
+          doctor_name: u.full_name || u.name || 'Dr. Registered Physician',
+          specialty: u.specialty || 'General Practice',
+          specialization: u.specialty || 'General Practice',
+          qualification: u.qualifications || 'MD, MBBS',
+          experience_years: Number(u.years_of_experience) || 5,
+          department_id: '',
+          department_name: u.department || 'General Practice',
+          city: 'Metro Medical District',
+          employment_type: 'Full-Time',
+          availability: 'Mon-Fri: 9:00 AM - 5:00 PM',
+          availability_schedule: 'Mon-Fri: 9:00 AM - 5:00 PM',
+          joining_date: '',
+          phone_number: u.phone || '',
+          email: u.email || '',
+          hospital_branch: 'MediAI Medical Center — Main Campus',
+          consultation_fee: 150,
+          rating: 5.0,
+          rating_count: 12,
+          is_active: u.is_active ?? true,
+          user_id: u.id,
+        });
+      }
+    });
+
+    const allReconciled = Array.from(unifiedDoctorsMap.values());
+    console.log(`[Booking Doctors Reconciliation] Total reconciled active doctors: ${allReconciled.length}`);
 
     const rawBranch = (req.query.branch || req.query.branchId)?.toString().trim();
     const specialty = (req.query.specialty || req.query.specialization)?.toString().trim();
 
-    if (rawBranch) {
+    // Helper: Match doctor specialty against requested clinical specialty
+    const matchesDoctorSpecialty = (docSpecRaw: string, targetSpecRaw: string): boolean => {
+      if (!docSpecRaw || !targetSpecRaw) return false;
+      const docSpec = docSpecRaw.trim().toLowerCase();
+      const targetSpec = targetSpecRaw.trim().toLowerCase();
+
+      // Exclude masked / placeholder specialties
+      if (docSpec.includes('*') || /^\*+$/.test(docSpec) || docSpec === 'null' || docSpec === 'undefined') {
+        return false;
+      }
+
+      // Exact match or direct containment
+      if (docSpec === targetSpec || docSpec.includes(targetSpec) || targetSpec.includes(docSpec)) {
+        return true;
+      }
+
+      const cleanDoc = docSpec.replace(/[^a-z0-9]/g, '');
+      const cleanTarget = targetSpec.replace(/[^a-z0-9]/g, '');
+      if (cleanDoc === cleanTarget) return true;
+
+      // Clinical department keyword alignment
+      const specialtyRules: { targetKeywords: string[]; docKeywords: string[] }[] = [
+        {
+          targetKeywords: ['cardio', 'vascular'],
+          docKeywords: ['cardio', 'vascular', 'heart'],
+        },
+        {
+          targetKeywords: ['neuro'],
+          docKeywords: ['neuro', 'nerve', 'brain', 'spine'],
+        },
+        {
+          targetKeywords: ['internal', 'general internal', 'general medicine'],
+          docKeywords: ['internal medicine', 'general physician', 'physician', 'internist'],
+        },
+        {
+          targetKeywords: ['pediatric', 'neonat', 'child'],
+          docKeywords: ['pediatric', 'child', 'neonat', 'infant'],
+        },
+        {
+          targetKeywords: ['orthopedic', 'ortho', 'bone'],
+          docKeywords: ['orthopedic', 'ortho', 'musculoskeletal', 'joint', 'bone'],
+        },
+        {
+          targetKeywords: ['oncology', 'cancer', 'hematology'],
+          docKeywords: ['oncolog', 'cancer', 'tumor', 'chemo', 'hematolog'],
+        },
+        {
+          targetKeywords: ['emergency', 'trauma', 'urgent'],
+          docKeywords: ['emergency', 'trauma', 'critical', 'urgent', 'casualty'],
+        },
+        {
+          targetKeywords: ['obstetric', 'gynecol', 'obgyn', 'ob/gyn', 'women'],
+          docKeywords: ['obstetric', 'gynecol', 'women', 'maternity'],
+        },
+        {
+          targetKeywords: ['radiology', 'imaging', 'xray', 'mri'],
+          docKeywords: ['radiolog', 'imaging', 'sonograph', 'scan'],
+        },
+        {
+          targetKeywords: ['pulmon', 'respiratory', 'lung', 'chest', 'critical care'],
+          docKeywords: ['pulmon', 'respiratory', 'lung', 'critical care'],
+        },
+      ];
+
+      for (const rule of specialtyRules) {
+        if (rule.targetKeywords.some((kw) => targetSpec.includes(kw))) {
+          if (rule.docKeywords.some((kw) => docSpec.includes(kw))) {
+            return true;
+          }
+        }
+      }
+
+      return false;
+    };
+
+    // Helper: Match doctor branch assignment against requested branch
+    const matchesDoctorBranch = (doc: any, targetBranchRaw: string): boolean => {
+      if (!targetBranchRaw) return true;
+      const targetClean = targetBranchRaw.trim().toLowerCase();
       const matchedBranch = HOSPITAL_BRANCHES.find(
-        (b) => b.branch_id === rawBranch || b.name.toLowerCase() === rawBranch.toLowerCase()
+        (b) => b.branch_id.toLowerCase() === targetClean || b.name.toLowerCase() === targetClean || b.name.toLowerCase().includes(targetClean)
       );
-      const branchAliases = matchedBranch
-        ? [matchedBranch.branch_id, matchedBranch.name, rawBranch]
-        : [rawBranch];
-      query = query.or(`hospital_branch.in.(${branchAliases.map((b) => `"${b}"`).join(',')}),hospital_branch.is.null`);
+      const canonicalId = matchedBranch?.branch_id || targetClean.toUpperCase();
+      const branchName = (matchedBranch?.name || targetClean).toLowerCase();
+
+      // Check explicit doctor branch assignment if stored in database
+      const docBranch = (doc.hospital_branch || '').trim().toLowerCase();
+      const docBranchId = (doc.branch_id || '').trim().toUpperCase();
+
+      if (docBranchId && docBranchId === canonicalId) return true;
+      if (docBranch && (docBranch === branchName || docBranch === targetClean || docBranch.includes(targetClean) || branchName.includes(docBranch))) {
+        return true;
+      }
+
+      // If doctor has explicit branch assigned to another location, do not cross-assign
+      if (docBranch && !docBranch.includes('main') && !docBranch.includes('medical center')) {
+        return false;
+      }
+
+      // Department/specialty alignment for unassigned/flagship doctors
+      const docSpec = (doc.specialty || doc.specialization || '').trim().toLowerCase();
+      if (canonicalId === 'BR-CARD') {
+        return docSpec.includes('cardio') || docSpec.includes('vascular') || docSpec.includes('heart');
+      }
+      if (canonicalId === 'BR-NEURO') {
+        return docSpec.includes('neuro') || docSpec.includes('pediatric') || docSpec.includes('child');
+      }
+      if (canonicalId === 'BR-WEST') {
+        return (
+          docSpec.includes('ortho') ||
+          docSpec.includes('radiolog') ||
+          docSpec.includes('imaging') ||
+          docSpec.includes('gynecol') ||
+          docSpec.includes('obstetric')
+        );
+      }
+      if (canonicalId === 'BR-MAIN') {
+        return (
+          docSpec.includes('internal') ||
+          docSpec.includes('general') ||
+          docSpec.includes('emergency') ||
+          docSpec.includes('trauma') ||
+          docSpec.includes('oncolog') ||
+          docSpec.includes('pulmon') ||
+          docSpec.includes('respiratory') ||
+          docSpec.includes('renal') ||
+          docSpec.includes('anesthes') ||
+          docSpec.includes('dermatol') ||
+          docSpec.includes('ent') ||
+          docSpec.includes('eye') ||
+          docSpec.includes('urolog') ||
+          docSpec.includes('dentist') ||
+          !docBranch
+        );
+      }
+
+      return false;
+    };
+
+    let filtered = allReconciled;
+
+    // Apply strict branch filter
+    if (rawBranch) {
+      filtered = filtered.filter((d) => matchesDoctorBranch(d, rawBranch));
+      console.log(`[Booking Doctors Diagnostic] Doctors remaining after branch filter (${rawBranch}): ${filtered.length}`);
     }
 
+    // Apply strict specialty filter
     if (specialty) {
-      query = query.ilike('specialty', `%${specialty}%`);
+      filtered = filtered.filter((d) => matchesDoctorSpecialty(d.specialty || d.specialization, specialty));
+      console.log(`[Booking Doctors Diagnostic] Doctors remaining after specialty filter (${specialty}): ${filtered.length}`);
     }
 
-    const { data, error } = await query.limit(50);
-    if (error) {
-      return res.status(500).json({ success: false, message: error.message });
-    }
+    console.log(`[Booking Doctors Diagnostic] Final eligible doctor count: ${filtered.length}`);
 
-    const doctors: DoctorInfo[] = (data || []).map((d) => ({
+    const matchedBranch = HOSPITAL_BRANCHES.find(
+      (b) => b.branch_id.toLowerCase() === rawBranch?.toLowerCase() || b.name.toLowerCase() === rawBranch?.toLowerCase()
+    );
+    const branchDisplayName = matchedBranch ? matchedBranch.name : 'MediAI Medical Center — Main Campus';
+
+    const doctors: DoctorInfo[] = filtered.map((d) => ({
       doctor_id: d.doctor_id,
       doctor_name: d.doctor_name,
-      name: d.doctor_name || 'Dr. Physician',
-      specialization: d.specialization || d.specialty || '',
-      specialty: d.specialization || d.specialty || '',
-      qualification: d.qualification || 'MD',
-      experience_years: Number(d.experience_years) || 0,
-      department_id: d.department_id || '',
-      department_name: d.department_name || '',
-      city: d.city || '',
-      employment_type: d.employment_type || 'Full-Time',
-      availability: d.availability || d.availability_schedule || '',
-      availability_schedule: d.availability || d.availability_schedule || '',
-      joining_date: d.joining_date || '',
-      phone_number: d.phone_number || '',
-      email: d.email || '',
-      hospital_branch: d.hospital_branch || d.city || 'Main Campus',
-      consultation_fee: Number(d.consultation_fee) || 0,
-      rating: Number(d.rating) || 5.0,
-      rating_count: d.rating_count ? Number(d.rating_count) : 24,
+      name: d.doctor_name,
+      specialization: d.specialization,
+      specialty: d.specialty,
+      qualification: d.qualification,
+      experience_years: d.experience_years,
+      department_id: d.department_id,
+      department_name: d.department_name,
+      city: d.city || matchedBranch?.city || 'Metro Medical District',
+      employment_type: d.employment_type,
+      availability: d.availability,
+      availability_schedule: d.availability_schedule,
+      joining_date: d.joining_date,
+      phone_number: '', // Omit sensitive info
+      email: '', // Omit sensitive info
+      hospital_branch: d.hospital_branch || branchDisplayName,
+      consultation_fee: d.consultation_fee,
+      rating: d.rating,
+      rating_count: d.rating_count,
       is_active: d.is_active,
       user_id: d.user_id,
     }));
@@ -2716,6 +2998,7 @@ app.get('/api/booking/doctors', async (req: Request, res: Response) => {
       doctors,
     });
   } catch (err: any) {
+    console.error('[Booking Doctors Diagnostic] Exception:', err);
     return res.status(500).json({ success: false, message: sanitizeError(err) });
   }
 });
@@ -2953,28 +3236,25 @@ app.post('/api/booking/create', authenticateToken, requirePatientRole, async (re
       status: 'Scheduled',
     };
 
+    // 8. Insert appointment — using verified base schema columns only
     const canonicalAppointmentPayload = {
-      ...baseAppointmentPayload,
-      appointment_type: consultationType,
-      department_name: departmentName || (doctor as any).department_name || null,
-      booking_channel: bookingChannel,
-      priority: priority,
-      wait_time_minutes: 0,
-      consultation_duration_minutes: 30,
+      patient_id: patientId,
+      doctor_id: doctorId,
+      appointment_date: appointmentDate,
+      appointment_time: normalizedTime,
+      consultation_type: consultationType,
+      reason: reason,
+      symptoms: symptoms,
+      notes: notes,
+      status: 'Scheduled',
     };
 
     let appointmentData: any = null;
     let appointmentError: any = null;
 
-    const res1 = await client.from('silver_appointments').insert(canonicalAppointmentPayload).select().single();
-    if (res1.error && res1.error.message?.includes('column') && res1.error.message?.includes('does not exist')) {
-      const res2 = await client.from('silver_appointments').insert(baseAppointmentPayload).select().single();
-      appointmentData = res2.data;
-      appointmentError = res2.error;
-    } else {
-      appointmentData = res1.data;
-      appointmentError = res1.error;
-    }
+    const resInsert = await client.from('silver_appointments').insert(canonicalAppointmentPayload).select().single();
+    appointmentData = resInsert.data;
+    appointmentError = resInsert.error;
 
     if (appointmentError) {
       if (appointmentError.message?.includes('already has an active appointment') || appointmentError.code === '23505') {
@@ -3027,7 +3307,10 @@ app.post('/api/booking/cancel', authenticateToken, requirePatientRole, async (re
   const patientId = (req as any).authenticatedPatientId;
   const { appointmentId, reason } = req.body;
 
+  console.log('[Server /api/booking/cancel] Request received:', { appointmentId, patientId });
+
   if (!appointmentId) {
+    console.warn('[Server /api/booking/cancel] Missing appointmentId in body');
     return res.status(400).json({
       success: false,
       message: 'Appointment ID is required.',
@@ -3036,6 +3319,7 @@ app.post('/api/booking/cancel', authenticateToken, requirePatientRole, async (re
 
   const client = getSupabaseAdmin();
   if (!client) {
+    console.error('[Server /api/booking/cancel] Supabase client unavailable');
     return res.status(503).json({
       success: false,
       message: 'Database unavailable.',
@@ -3043,22 +3327,33 @@ app.post('/api/booking/cancel', authenticateToken, requirePatientRole, async (re
   }
 
   try {
+    // First check existing appointment state for diagnostics
+    const { data: existingApt } = await client
+      .from('silver_appointments')
+      .select('appointment_id, patient_id, status')
+      .eq('appointment_id', appointmentId)
+      .maybeSingle();
+
+    console.log('[Server /api/booking/cancel] Existing appointment record in DB:', existingApt);
+
     const { data, error } = await client
       .from('silver_appointments')
       .update({
         status: 'Cancelled',
-        cancellation_reason: reason || 'Cancelled by patient',
       })
       .eq('appointment_id', appointmentId)
       .eq('patient_id', patientId)
-      .in('status', ['Scheduled', 'Confirmed'])
+      .in('status', ['Scheduled', 'Confirmed', 'scheduled', 'confirmed'])
       .select()
       .single();
 
+    console.log('[Server /api/booking/cancel] Supabase update result:', { data, error });
+
     if (error || !data) {
+      console.warn('[Server /api/booking/cancel] Update failed or zero rows affected:', error?.message);
       return res.status(400).json({
         success: false,
-        message: error?.message || 'Appointment not found or not in cancellable state.',
+        message: error?.message || `Appointment not found, does not belong to patient ${patientId}, or is not in cancellable state.`,
       });
     }
 
@@ -3068,6 +3363,7 @@ app.post('/api/booking/cancel', authenticateToken, requirePatientRole, async (re
       appointment: data,
     });
   } catch (err: any) {
+    console.error('[Server /api/booking/cancel] Exception:', err);
     return res.status(500).json({
       success: false,
       message: `Cancellation error: ${sanitizeError(err)}`,

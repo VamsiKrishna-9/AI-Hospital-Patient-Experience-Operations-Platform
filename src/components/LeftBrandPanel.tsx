@@ -63,11 +63,6 @@ export const LeftBrandPanel: React.FC = () => {
             </span>{' '}
             of the Way.
           </h1>
-
-          {/* Exact Supporting Text */}
-          <p className="text-sm lg:text-base text-slate-300 leading-relaxed max-w-lg">
-            From booking your appointment to meeting your doctor and sharing feedback, enjoy a more connected healthcare experience.
-          </p>
         </div>
 
         {/* 5-Stage Animated Patient Journey */}

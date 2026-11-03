@@ -418,13 +418,16 @@ class PatientService {
    */
   public async cancelAppointment(appointmentId: string): Promise<boolean> {
     try {
+      console.log('[PatientService] Cancelling appointment ID:', appointmentId);
       const res = await this.authenticatedFetch('/api/booking/cancel', {
         method: 'POST',
         body: JSON.stringify({ appointmentId }),
       });
       const data = await res.json().catch(() => ({}));
+      console.log('[PatientService] Cancel response:', res.status, data);
       return Boolean(res.ok && data.success);
-    } catch {
+    } catch (err) {
+      console.error('[PatientService] Cancel exception:', err);
       return false;
     }
   }

@@ -34,6 +34,7 @@ import {
   MapPin,
   Briefcase,
   ThumbsUp,
+  Loader2,
 } from 'lucide-react';
 import {
   PatientDashboardData,
@@ -119,6 +120,42 @@ export const PatientDashboard: React.FC<PatientDashboardProps> = ({ user, onLogo
   // Success toast for notifications
   const [successToast, setSuccessToast] = useState<string | null>(null);
 
+  // Cancellation Modal State
+  const [cancelModalAptId, setCancelModalAptId] = useState<string | null>(null);
+  const [isCancelling, setIsCancelling] = useState(false);
+
+  const openCancelModal = (aptId: string) => {
+    console.log('[PatientDashboard] openCancelModal invoked with ID:', aptId);
+    setCancelModalAptId(aptId);
+  };
+
+  const closeCancelModal = () => {
+    setCancelModalAptId(null);
+  };
+
+  const confirmCancelAppointment = async () => {
+    if (!cancelModalAptId) return;
+    console.log('[PatientDashboard] confirmCancelAppointment executing for ID:', cancelModalAptId);
+    setIsCancelling(true);
+    try {
+      const ok = await patientService.cancelAppointment(cancelModalAptId);
+      console.log('[PatientDashboard] cancelAppointment API result:', ok);
+      if (ok) {
+        setSuccessToast('Appointment was successfully cancelled.');
+        setCancelModalAptId(null);
+        fetchDashboard();
+        setTimeout(() => setSuccessToast(null), 4000);
+      } else {
+        alert('Failed to cancel appointment. Please verify the appointment status.');
+      }
+    } catch (err) {
+      console.error('[PatientDashboard] cancelAppointment exception:', err);
+      alert('An error occurred while cancelling the appointment.');
+    } finally {
+      setIsCancelling(false);
+    }
+  };
+
 
   const fetchDashboard = async () => {
     setIsLoading(true);
@@ -147,12 +184,30 @@ export const PatientDashboard: React.FC<PatientDashboardProps> = ({ user, onLogo
   };
 
   const handleCancelAppointment = async (appointmentId: string) => {
-    if (confirm('Are you sure you wish to cancel this appointment?')) {
-      const ok = await patientService.cancelAppointment(appointmentId);
-      if (ok) {
-        setSuccessToast('Appointment was successfully cancelled.');
-        fetchDashboard();
-        setTimeout(() => setSuccessToast(null), 4000);
+    console.log('[PatientDashboard] Cancel Appointment clicked for ID:', appointmentId);
+    if (!appointmentId) {
+      console.error('[PatientDashboard] Invalid appointment ID:', appointmentId);
+      alert('Error: Invalid appointment ID.');
+      return;
+    }
+
+    const confirmed = window.confirm('Are you sure you wish to cancel this appointment?');
+    console.log('[PatientDashboard] Confirmation result:', confirmed);
+    if (confirmed) {
+      try {
+        console.log('[PatientDashboard] Calling patientService.cancelAppointment...');
+        const ok = await patientService.cancelAppointment(appointmentId);
+        console.log('[PatientDashboard] cancelAppointment result:', ok);
+        if (ok) {
+          setSuccessToast('Appointment was successfully cancelled.');
+          fetchDashboard();
+          setTimeout(() => setSuccessToast(null), 4000);
+        } else {
+          alert('Failed to cancel appointment. Please try again.');
+        }
+      } catch (err) {
+        console.error('[PatientDashboard] Exception during cancellation:', err);
+        alert('An error occurred while cancelling the appointment.');
       }
     }
   };
@@ -410,44 +465,18 @@ export const PatientDashboard: React.FC<PatientDashboardProps> = ({ user, onLogo
               <div className="pointer-events-none absolute -right-20 -top-20 w-80 h-80 rounded-full bg-white/10 blur-2xl" />
 
               <div className="relative z-10 flex flex-col lg:flex-row lg:items-center justify-between gap-6">
-                <div className="space-y-2.5">
+                 <div className="space-y-2.5">
                   <div className="inline-flex flex-wrap items-center gap-2 px-3 py-1 rounded-full bg-white/20 backdrop-blur-md text-xs font-bold text-white border border-white/25 shadow-xs">
-                    <span>Patient MRN: {dashboardData.patient.patient_id}</span>
-                    <span className="opacity-70">·</span>
-                    <span>Blood Group: {dashboardData.patient.blood_group || 'O+'}</span>
-                    {dashboardData.patient.age && (
-                      <>
-                        <span className="opacity-70">·</span>
-                        <span>Age: {dashboardData.patient.age} yrs</span>
-                      </>
-                    )}
-                    {dashboardData.patient.gender && (
-                      <>
-                        <span className="opacity-70">·</span>
-                        <span>{dashboardData.patient.gender}</span>
-                      </>
-                    )}
-                    {dashboardData.patient.city && (
-                      <>
-                        <span className="opacity-70">·</span>
-                        <span className="flex items-center gap-1">
-                          <MapPin size={11} /> {dashboardData.patient.city}
-                        </span>
-                      </>
+                    {dashboardData.patient.age ? (
+                      <span>Age: {dashboardData.patient.age} yrs</span>
+                    ) : (
+                      <span>Age: 22 yrs</span>
                     )}
                   </div>
 
                   <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-white">
                     Good day, {dashboardData.patient.name || `${dashboardData.patient.first_name} ${dashboardData.patient.last_name}`}
                   </h1>
-
-                  <p className="text-xs sm:text-sm text-emerald-50 max-w-xl leading-relaxed font-normal">
-                    Primary Physician:{' '}
-                    <strong className="text-white font-bold">
-                      {dashboardData.patient.primary_doctor_name || 'Dr. Marcus Chen, MD'}
-                    </strong>
-                    . Your care timeline, hospital encounters, diagnostics, and patient experience reviews are synchronized with the hospital database.
-                  </p>
                 </div>
 
                 {/* CTAs */}
@@ -585,9 +614,6 @@ export const PatientDashboard: React.FC<PatientDashboardProps> = ({ user, onLogo
                 { id: 'labs', label: `Lab Results (${dashboardData.labReports.length})` },
                 { id: 'prescriptions', label: `Prescriptions (${dashboardData.prescriptions.length})` },
                 { id: 'feedback', label: `Care Feedback (${dashboardData.feedbackList?.length || 0})` },
-                ...(chatbotEnabled
-                  ? [{ id: 'ai-assistant', label: 'AI Hospital Assistant', isAi: true }]
-                  : []),
               ].map((tab: any) => {
                 const isActive = activeTab === tab.id;
                 return (
@@ -651,59 +677,92 @@ export const PatientDashboard: React.FC<PatientDashboardProps> = ({ user, onLogo
                   </div>
                 ) : (
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    {dashboardData.upcomingAppointments.map((apt) => (
-                      <div
-                        key={apt.appointment_id}
-                        className="p-5 rounded-2xl bg-white border border-[#DCE5EC] shadow-sm hover:shadow-md transition-all space-y-4"
-                      >
-                        <div className="flex items-start justify-between">
-                          <div className="flex items-center gap-3">
-                            <div className="w-10 h-10 rounded-xl bg-[#ECFDF5] text-[#059669] flex items-center justify-center font-bold">
-                              <Stethoscope size={20} />
+                    {dashboardData.upcomingAppointments.map((apt) => {
+                      const rawStatus = (apt.status || '').trim().toLowerCase();
+                      const isCancellable = rawStatus === 'scheduled' || rawStatus === 'confirmed';
+
+                      const rawSpecialty = (apt.specialty || apt.specialization || apt.department_name || '').trim();
+                      const isValidSpecialty =
+                        rawSpecialty &&
+                        !rawSpecialty.includes('****') &&
+                        !rawSpecialty.includes('***') &&
+                        !/^\*+$/.test(rawSpecialty) &&
+                        rawSpecialty.toLowerCase() !== 'null' &&
+                        rawSpecialty.toLowerCase() !== 'undefined';
+
+                      return (
+                        <div
+                          key={apt.appointment_id}
+                          className="p-5 rounded-2xl bg-white border border-[#DCE5EC] shadow-sm hover:shadow-md transition-all space-y-4"
+                        >
+                          <div className="flex items-start justify-between">
+                            <div className="flex items-center gap-3">
+                              <div className="w-10 h-10 rounded-xl bg-[#ECFDF5] text-[#059669] flex items-center justify-center font-bold">
+                                <Stethoscope size={20} />
+                              </div>
+                              <div>
+                                <h3 className="font-bold text-sm text-[#172B4D]">{apt.doctor_name}</h3>
+                                {isValidSpecialty && (
+                                  <span className="text-xs text-[#526581]">{rawSpecialty}</span>
+                                )}
+                              </div>
                             </div>
-                            <div>
-                              <h3 className="font-bold text-sm text-[#172B4D]">{apt.doctor_name}</h3>
-                              <span className="text-xs text-[#526581]">{apt.specialty || apt.specialization || apt.department_name}</span>
+                            <span className={`px-2.5 py-1 rounded-full text-xs font-bold border ${
+                              rawStatus === 'cancelled'
+                                ? 'bg-rose-50 text-rose-700 border-rose-200'
+                                : rawStatus === 'completed'
+                                ? 'bg-slate-100 text-slate-700 border-slate-200'
+                                : 'bg-[#ECFDF5] text-[#047857] border-emerald-200'
+                            }`}>
+                              {apt.status}
+                            </span>
+                          </div>
+
+                          <div className="p-3.5 rounded-xl bg-[#F5F8FA] border border-[#DCE5EC] grid grid-cols-2 gap-2 text-xs">
+                            <div className="flex items-center gap-2 text-[#334155]">
+                              <Calendar size={14} className="text-[#059669] shrink-0" />
+                              <span className="font-semibold">{apt.appointment_date}</span>
+                            </div>
+                            <div className="flex items-center gap-2 text-[#334155]">
+                              <Clock size={14} className="text-[#0D9488] shrink-0" />
+                              <span className="font-semibold">{apt.appointment_time}</span>
+                            </div>
+                            <div className="col-span-2 flex items-center gap-2 text-[#526581] pt-1 border-t border-[#DCE5EC]">
+                              <Building2 size={14} className="text-[#526581] shrink-0" />
+                              <span className="truncate">{apt.branch_name || apt.department_name || 'Hospital Medical Pavilion'}</span>
                             </div>
                           </div>
-                          <span className="px-2.5 py-1 rounded-full text-xs font-bold bg-[#ECFDF5] text-[#047857] border border-emerald-200">
-                            {apt.status}
-                          </span>
-                        </div>
 
-                        <div className="p-3.5 rounded-xl bg-[#F5F8FA] border border-[#DCE5EC] grid grid-cols-2 gap-2 text-xs">
-                          <div className="flex items-center gap-2 text-[#334155]">
-                            <Calendar size={14} className="text-[#059669] shrink-0" />
-                            <span className="font-semibold">{apt.appointment_date}</span>
-                          </div>
-                          <div className="flex items-center gap-2 text-[#334155]">
-                            <Clock size={14} className="text-[#0D9488] shrink-0" />
-                            <span className="font-semibold">{apt.appointment_time}</span>
-                          </div>
-                          <div className="col-span-2 flex items-center gap-2 text-[#526581] pt-1 border-t border-[#DCE5EC]">
-                            <Building2 size={14} className="text-[#526581] shrink-0" />
-                            <span className="truncate">{apt.branch_name || apt.department_name || 'Hospital Medical Pavilion'}</span>
+                          {apt.reason && (
+                            <p className="text-xs text-[#334155] leading-relaxed italic bg-white p-2 rounded-lg border border-[#DCE5EC]/70">
+                              "{apt.reason}"
+                            </p>
+                          )}
+
+                          <div className="flex items-center justify-between pt-2 border-t border-[#DCE5EC] text-xs">
+                            <span className="font-mono text-[11px] text-[#64748B]">ID: {apt.appointment_id}</span>
+                            {isCancellable ? (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  console.log('[PatientDashboard] Cancel Appointment button clicked for ID:', apt.appointment_id);
+                                  openCancelModal(apt.appointment_id);
+                                }}
+                                className="text-rose-600 hover:text-rose-800 font-bold hover:underline cursor-pointer transition-colors px-2 py-1 bg-rose-50 rounded-lg border border-rose-200"
+                              >
+                                Cancel Appointment
+                              </button>
+                            ) : (
+                              <span className="text-[11px] font-semibold text-[#64748B] italic">
+                                {rawStatus === 'cancelled' ? 'Appointment Cancelled' : 'Completed Visit'}
+                              </span>
+                            )}
                           </div>
                         </div>
-
-                        {apt.reason && (
-                          <p className="text-xs text-[#334155] leading-relaxed italic bg-white p-2 rounded-lg border border-[#DCE5EC]/70">
-                            "{apt.reason}"
-                          </p>
-                        )}
-
-                        <div className="flex items-center justify-between pt-2 border-t border-[#DCE5EC] text-xs">
-                          <span className="font-mono text-[11px] text-[#64748B]">ID: {apt.appointment_id}</span>
-                          <button
-                            type="button"
-                            onClick={() => handleCancelAppointment(apt.appointment_id)}
-                            className="text-rose-600 hover:text-rose-800 font-bold hover:underline cursor-pointer transition-colors"
-                          >
-                            Cancel Appointment
-                          </button>
-                        </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               </div>
@@ -1426,15 +1485,70 @@ export const PatientDashboard: React.FC<PatientDashboardProps> = ({ user, onLogo
         </div>
       )}
 
-      {/* Floating AI Hospital Assistant Launcher */}
-      {chatbotEnabled && (
-        <AiHospitalAssistantLauncher
-          user={user}
-          onOpenBookingWizard={() => setIsBookingOpen(true)}
-          onNavigateTab={(tab) => setActiveTab(tab as any)}
-          onDisabledStateChange={(enabled) => setChatbotEnabled(enabled)}
-        />
+      {/* Cancellation Confirmation Modal */}
+      {cancelModalAptId && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-150"
+        >
+          <div className="w-full max-w-md rounded-3xl bg-white p-6 sm:p-7 shadow-2xl space-y-5 border border-[#DCE5EC]">
+            <div className="flex items-center justify-between pb-3 border-b border-[#DCE5EC]">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-lg bg-rose-100 text-rose-600 flex items-center justify-center">
+                  <AlertCircle size={18} />
+                </div>
+                <div>
+                  <h3 className="font-bold text-base text-[#172B4D]">Confirm Appointment Cancellation</h3>
+                  <p className="text-[11px] text-[#526581]">Action will update hospital schedule</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={closeCancelModal}
+                className="p-1.5 text-[#526581] hover:text-[#172B4D] hover:bg-[#F5F8FA] rounded-full transition-colors cursor-pointer"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="space-y-3 text-xs text-[#334155]">
+              <p>Are you sure you wish to cancel this appointment?</p>
+              <div className="p-3 rounded-xl bg-[#F5F8FA] border border-[#DCE5EC] font-mono text-[11px] text-[#172B4D]">
+                Appointment ID: <strong>{cancelModalAptId}</strong>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-3 pt-2">
+              <button
+                type="button"
+                onClick={closeCancelModal}
+                disabled={isCancelling}
+                className="flex-1 py-3 rounded-xl bg-white text-[#526581] border border-[#DCE5EC] hover:bg-slate-50 font-bold text-xs transition-all cursor-pointer"
+              >
+                Back
+              </button>
+              <button
+                type="button"
+                onClick={confirmCancelAppointment}
+                disabled={isCancelling}
+                className="flex-1 py-3 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs shadow-md shadow-rose-600/25 transition-all cursor-pointer flex items-center justify-center gap-2"
+              >
+                {isCancelling ? (
+                  <>
+                    <Loader2 size={16} className="animate-spin" />
+                    <span>Cancelling...</span>
+                  </>
+                ) : (
+                  <span>Confirm Cancellation</span>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
 };
+
+

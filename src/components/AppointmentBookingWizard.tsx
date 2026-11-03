@@ -28,6 +28,7 @@ import {
   BookingWizardState,
 } from '../types/patient';
 import { patientService } from '../services/patientService';
+import { sanitizeSpecialty } from '../utils/sanitizer';
 
 interface AppointmentBookingWizardProps {
   isOpen: boolean;
@@ -87,13 +88,37 @@ export const AppointmentBookingWizard: React.FC<AppointmentBookingWizardProps> =
 
   // Load doctors when branch or specialty changes
   useEffect(() => {
+    let isCurrent = true;
     if (wizardState.branchId && wizardState.specialty) {
       setIsLoadingDoctors(true);
+      setDoctors([]); // Clear stale doctor results before loading new results
+
+      console.log('[Booking Wizard Diagnostic] Step 3 Doctor Search Initiated:', {
+        selectedBranchId: wizardState.branchId,
+        selectedBranchName: wizardState.branchName,
+        selectedSpecialty: wizardState.specialty,
+      });
+
       patientService.getDoctors(wizardState.branchId, wizardState.specialty).then((docs) => {
+        if (!isCurrent) return;
+        console.log('[Booking Wizard Diagnostic] Doctors Received From API:', {
+          branchId: wizardState.branchId,
+          specialty: wizardState.specialty,
+          rawApiDoctorCount: docs.length,
+          stateDoctorCount: docs.length,
+          doctorIds: docs.map((d) => d.doctor_id),
+          renderedCardCount: docs.length,
+        });
         setDoctors(docs);
         setIsLoadingDoctors(false);
       });
+    } else {
+      setDoctors([]);
+      setIsLoadingDoctors(false);
     }
+    return () => {
+      isCurrent = false;
+    };
   }, [wizardState.branchId, wizardState.specialty]);
 
   // Load availability slots when doctor and date are selected
@@ -328,6 +353,8 @@ export const AppointmentBookingWizard: React.FC<AppointmentBookingWizardProps> =
                             ...prev,
                             branchId: b.branch_id,
                             branchName: b.name,
+                            specialty: '',
+                            doctor: null,
                           }))
                         }
                         className={`p-4 rounded-2xl border text-left cursor-pointer transition-all duration-200 ${
@@ -478,7 +505,9 @@ export const AppointmentBookingWizard: React.FC<AppointmentBookingWizardProps> =
                             <h4 className="text-sm font-bold text-[#172B4D] leading-tight">
                               {doc.name}
                             </h4>
-                            <p className="text-xs text-[#047857] font-bold">{doc.specialty}</p>
+                            {sanitizeSpecialty(doc.specialty) ? (
+                              <p className="text-xs text-[#047857] font-bold">{sanitizeSpecialty(doc.specialty)}</p>
+                            ) : null}
                             <p className="text-xs text-[#526581] line-clamp-1 font-medium">{doc.qualification}</p>
 
                             <div className="flex items-center justify-between pt-1.5 border-t border-[#DCE5EC] text-xs">
@@ -694,12 +723,6 @@ export const AppointmentBookingWizard: React.FC<AppointmentBookingWizardProps> =
                       {wizardState.doctor?.name}
                     </h3>
                     <p className="text-xs text-[#334155] font-semibold">{wizardState.specialty}</p>
-                  </div>
-                  <div className="text-right">
-                    <span className="text-xs font-bold text-[#526581] block">Consultation Fee</span>
-                    <span className="text-lg font-extrabold text-[#047857]">
-                      ${wizardState.doctor?.consultation_fee}
-                    </span>
                   </div>
                 </div>
 
