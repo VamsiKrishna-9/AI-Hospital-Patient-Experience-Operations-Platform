@@ -366,13 +366,24 @@ export const PatientDashboard: React.FC<PatientDashboardProps> = ({ user, onLogo
               <AlertCircle size={18} className="text-rose-600 shrink-0" />
               <span>{error}</span>
             </div>
-            <button
-              type="button"
-              onClick={fetchDashboard}
-              className="px-3.5 py-1.5 rounded-xl bg-white border border-rose-300 font-bold text-rose-700 hover:bg-rose-100 transition-colors shadow-xs"
-            >
-              Retry
-            </button>
+            <div className="flex items-center gap-2">
+              {error.toLowerCase().includes('session') && (
+                <button
+                  type="button"
+                  onClick={onLogout}
+                  className="px-3.5 py-1.5 rounded-xl bg-rose-600 font-bold text-white hover:bg-rose-700 transition-colors shadow-xs cursor-pointer"
+                >
+                  Sign In Again
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={fetchDashboard}
+                className="px-3.5 py-1.5 rounded-xl bg-white border border-rose-300 font-bold text-rose-700 hover:bg-rose-100 transition-colors shadow-xs cursor-pointer"
+              >
+                Retry
+              </button>
+            </div>
           </div>
         )}
 

@@ -36,6 +36,7 @@ import {
 } from '../types/auth';
 import { PasswordStrengthIndicator } from './PasswordStrengthIndicator';
 import { authService } from '../services/authService';
+import { supabase } from '../services/supabaseClient';
 import {
   calculatePasswordStrength,
   isValidEmail,
@@ -259,39 +260,29 @@ export const SignupScreen: React.FC<SignupScreenProps> = ({
     }
   };
 
-  // Google sign up adheres to safe default Patient role
+  // Google sign up adheres to safe default Patient role via official Supabase OAuth
   const handleGoogleSignup = async () => {
     setGeneralError(null);
     setIsLoading(true);
     try {
-      const response = await authService.googleLogin({
-        email: email.includes('@') ? email.trim() : undefined,
-        name: fullName.trim() || undefined,
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: {
+          redirectTo: `${window.location.origin}/auth/callback`,
+          queryParams: {
+            prompt: 'select_account',
+          },
+        },
       });
 
-      if (response.success && response.user) {
-        const userRole = response.user.role || 'patient';
-        if (onRoleChange) onRoleChange(userRole);
-
-        if (userRole === 'doctor') {
-          onNavigate('doctor-dashboard', 'doctor', { user: response.user });
-        } else if (userRole === 'staff') {
-          onNavigate('staff-dashboard', 'staff', { user: response.user });
-        } else if (userRole === 'admin') {
-          onNavigate('admin-dashboard', 'admin', { user: response.user });
-        } else {
-          onNavigate('patient-dashboard', 'patient', {
-            patientId: response.patientId || response.user.patient_id,
-            user: response.user,
-          });
-        }
-        return;
+      if (error) {
+        console.error('Google authentication failed:', error.message);
+        setGeneralError(`Google authentication failed: ${error.message}`);
+        setIsLoading(false);
       }
-
-      setGeneralError(response.message || 'Google account creation failed.');
-    } catch {
-      setGeneralError('Failed to create account via Google identity provider.');
-    } finally {
+    } catch (err: any) {
+      console.error('Google authentication error:', err);
+      setGeneralError('Failed to connect to Google authentication service.');
       setIsLoading(false);
     }
   };

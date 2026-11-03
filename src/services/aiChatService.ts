@@ -28,9 +28,10 @@ export interface AiChatResponse {
   isError?: boolean;
 }
 
+import { authService } from './authService';
+
 const CHAT_HISTORY_STORAGE_KEY = 'mediai_ai_assistant_history';
 const CHATBOT_ENABLED_STORAGE_KEY = 'mediai_ai_assistant_enabled';
-const AUTH_TOKEN_KEY = 'mediai_patient_auth_token';
 
 class AiChatService {
   /**
@@ -226,11 +227,7 @@ class AiChatService {
   }
 
   private getAuthToken(): string | null {
-    try {
-      return sessionStorage.getItem(AUTH_TOKEN_KEY);
-    } catch {
-      return null;
-    }
+    return authService.getAuthToken();
   }
 }
 

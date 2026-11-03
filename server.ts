@@ -256,6 +256,18 @@ function requireAdminRole(req: Request, res: Response, next: NextFunction) {
 // API ROUTES
 // ============================================================================
 
+// Public Supabase Configuration Endpoint (Returns only public url and anon key safely)
+app.get('/api/config', (_req: Request, res: Response) => {
+  const supabaseUrl = process.env.SUPABASE_URL?.trim() || process.env.VITE_SUPABASE_URL?.trim() || null;
+  const supabaseAnonKey = process.env.SUPABASE_ANON_KEY?.trim() || process.env.VITE_SUPABASE_ANON_KEY?.trim() || null;
+  
+  return res.json({
+    success: Boolean(supabaseUrl && supabaseAnonKey),
+    supabaseUrl,
+    supabaseAnonKey,
+  });
+});
+
 // Server Health
 app.get('/api/health', (_req: Request, res: Response) => {
   return res.json({
@@ -433,9 +445,23 @@ app.post('/api/auth/patient/login', async (req: Request, res: Response) => {
     return res.json({
       success: true,
       message: 'Authenticated successfully.',
-      token,
+      token: authData.session.access_token,
+      refreshToken: authData.session.refresh_token,
+      expiresAt: authData.session.expires_at,
+      expiresIn: authData.session.expires_in,
       patientId: userRecord.patient_id,
       patient: formattedProfile,
+      role: 'patient',
+      user: {
+        id: userRecord.id,
+        email: userRecord.email,
+        name: userRecord.full_name || formattedProfile.name,
+        full_name: userRecord.full_name || formattedProfile.name,
+        role: 'patient',
+        patient_id: userRecord.patient_id,
+        phone: userRecord.phone,
+        is_active: userRecord.is_active,
+      },
     });
   } catch (err) {
     return res.status(500).json({
@@ -1391,7 +1417,7 @@ app.post('/api/auth/google', async (req: Request, res: Response) => {
       const patientId = `P${Math.floor(100000 + Math.random() * 900000)}`;
       const { data: newDbUser, error: insertError } = await adminClient
         .from('app_users')
-        .insert({
+        .upsert({
           id: authUser.id,
           email,
           role: 'patient',
@@ -1399,12 +1425,12 @@ app.post('/api/auth/google', async (req: Request, res: Response) => {
           patient_id: patientId,
           is_active: true,
           status: 'active',
-        })
+        }, { onConflict: 'email' })
         .select('*')
         .single();
 
       if (insertError) {
-        console.error('Error inserting app_users record for Google SSO:', insertError);
+        console.error('Error inserting/upserting app_users record for Google SSO:', insertError);
       }
       dbUser = newDbUser || {
         id: authUser.id,

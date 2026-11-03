@@ -16,6 +16,7 @@ import { StaffDashboard } from './components/StaffDashboard';
 import { AdminDashboard } from './components/AdminDashboard';
 import { patientService } from './services/patientService';
 import { authService } from './services/authService';
+import { supabase } from './services/supabaseClient';
 import { AiHospitalAssistantLauncher } from './components/AiHospitalAssistantLauncher';
 
 export default function App() {
@@ -99,6 +100,54 @@ export default function App() {
     if (authService.getAuthToken() && authService.isTokenExpired()) {
       authService.refreshToken().catch(() => {});
     }
+  }, []);
+
+  // Handle Supabase OAuth Callback on /auth/callback or window hash/search
+  useEffect(() => {
+    const handleAuthCallback = async () => {
+      const isCallbackPath = window.location.pathname.includes('/auth/callback') || window.location.hash.includes('access_token') || window.location.search.includes('code');
+      if (!isCallbackPath) return;
+
+      try {
+        const { data, error } = await supabase.auth.getSession();
+        if (error) {
+          console.error('OAuth session error:', error.message);
+          return;
+        }
+
+        const session = data?.session;
+        if (session && session.user) {
+          const email = session.user.email;
+          const name = session.user.user_metadata?.full_name || session.user.user_metadata?.name || email?.split('@')[0] || 'Google User';
+
+          // Call backend /api/auth/google to sync profile with public.app_users and generate role session
+          const res = await fetch('/api/auth/google', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email, name }),
+          });
+
+          const result = await res.json().catch(() => ({}));
+          if (res.ok && result.success && result.token && result.user) {
+            authService.saveSession(result.token, result.user, result.refreshToken, result.expiresAt);
+            setActiveUser(result.user);
+            const userRole = result.user.role || 'patient';
+            setSelectedRole(userRole);
+            if (userRole === 'doctor') setScreen('doctor-dashboard');
+            else if (userRole === 'staff') setScreen('staff-dashboard');
+            else if (userRole === 'admin') setScreen('admin-dashboard');
+            else setScreen('patient-dashboard');
+
+            // Clean URL hash/search without reloading
+            window.history.replaceState({}, document.title, window.location.pathname);
+          }
+        }
+      } catch (err) {
+        console.error('Failed to process OAuth callback session:', err);
+      }
+    };
+
+    handleAuthCallback();
   }, []);
 
   // Enforce single-role confinement across the session lifecycle

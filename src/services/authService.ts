@@ -109,10 +109,33 @@ class AuthService {
 
   public isTokenExpired(): boolean {
     try {
+      let expiresAtSec: number | null = null;
       const expiresAtStr = sessionStorage.getItem(AuthService.EXPIRES_AT_KEY);
-      if (!expiresAtStr) return false;
-      const expiresAtSec = parseInt(expiresAtStr, 10);
-      if (isNaN(expiresAtSec)) return false;
+      if (expiresAtStr) {
+        expiresAtSec = parseInt(expiresAtStr, 10);
+      }
+
+      // Fallback: decode JWT expiration from token payload if EXPIRES_AT_KEY is missing
+      if (!expiresAtSec || isNaN(expiresAtSec)) {
+        const token = this.getAuthToken();
+        if (token && token.includes('.')) {
+          const parts = token.split('.');
+          if (parts.length >= 2) {
+            try {
+              const decodedStr = atob(parts[1].replace(/-/g, '+').replace(/_/g, '/'));
+              const payload = JSON.parse(decodedStr);
+              if (payload?.exp && typeof payload.exp === 'number') {
+                expiresAtSec = payload.exp;
+                sessionStorage.setItem(AuthService.EXPIRES_AT_KEY, String(payload.exp));
+              }
+            } catch {
+              // Ignore payload decode failure
+            }
+          }
+        }
+      }
+
+      if (!expiresAtSec || isNaN(expiresAtSec)) return false;
       // Consider expired if within 60 seconds of expiration
       const nowSec = Math.floor(Date.now() / 1000);
       return nowSec >= (expiresAtSec - 60);

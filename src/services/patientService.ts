@@ -20,11 +20,18 @@ class PatientService {
     return authService.getAuthToken();
   }
 
-  public setSession(token: string, patientId: string): void {
+  public setSession(
+    token: string,
+    patientId: string,
+    refreshToken?: string,
+    expiresAt?: number,
+    user?: any
+  ): void {
     try {
       sessionStorage.setItem(TOKEN_KEY, token);
       sessionStorage.setItem(CURRENT_PATIENT_KEY, patientId);
-      authService.saveSession(token, { patient_id: patientId });
+      const userPayload = user || { patient_id: patientId, role: 'patient' };
+      authService.saveSession(token, userPayload, refreshToken, expiresAt);
     } catch (e) {
       console.error('Session storage failed', e);
     }
@@ -58,6 +65,39 @@ class PatientService {
       'Content-Type': 'application/json',
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     };
+  }
+
+  /**
+   * Centralized authenticated fetch with pre-expiry refresh and single 401 auto-retry.
+   * Handles 401 (auth failure) and 403 (forbidden) distinctly.
+   * Never clears valid sessions because of transient or unrelated API errors.
+   */
+  private async authenticatedFetch(url: string, init?: RequestInit): Promise<Response> {
+    // 1. If token is expiring within 60s, refresh in advance
+    if (authService.isTokenExpired()) {
+      await authService.refreshToken().catch(() => {});
+    }
+
+    const headers: Record<string, string> = {
+      ...(this.getAuthHeaders() as Record<string, string>),
+      ...((init?.headers as Record<string, string>) || {}),
+    };
+
+    let res = await fetch(url, { ...init, headers });
+
+    // 2. On 401: Attempt refresh once and retry
+    if (res.status === 401) {
+      const refreshed = await authService.refreshToken().catch(() => false);
+      if (refreshed) {
+        const retryHeaders: Record<string, string> = {
+          ...(this.getAuthHeaders() as Record<string, string>),
+          ...((init?.headers as Record<string, string>) || {}),
+        };
+        res = await fetch(url, { ...init, headers: retryHeaders });
+      }
+    }
+
+    return res;
   }
 
   /**
@@ -98,7 +138,17 @@ class PatientService {
       }
 
       if (res.ok && data.success && data.token) {
-        this.setSession(data.token, data.patient?.patient_id || patientId);
+        this.setSession(
+          data.token,
+          data.patient?.patient_id || data.patientId || patientId,
+          data.refreshToken,
+          data.expiresAt,
+          data.user || {
+            patient_id: data.patient?.patient_id || data.patientId || patientId,
+            name: data.patient?.name || data.patient?.first_name,
+            role: 'patient',
+          }
+        );
         return {
           success: true,
           message: data.message || 'Login successful',
@@ -192,20 +242,26 @@ class PatientService {
     message?: string;
   }> {
     try {
-      const res = await fetch('/api/patient/dashboard', {
+      const res = await this.authenticatedFetch('/api/patient/dashboard', {
         method: 'GET',
-        headers: this.getAuthHeaders(),
       });
 
       if (res.status === 401) {
-        this.clearSession();
         return {
           success: false,
           message: 'Your session has expired. Please sign in again.',
         };
       }
 
-      const json = await res.json();
+      if (res.status === 403) {
+        const json = await res.json().catch(() => ({}));
+        return {
+          success: false,
+          message: json.message || 'Access restricted: Patient role authorization required.',
+        };
+      }
+
+      const json = await res.json().catch(() => ({}));
       if (res.ok && json.success) {
         return {
           success: true,
@@ -216,7 +272,7 @@ class PatientService {
         success: false,
         message: json.message || 'Failed to retrieve patient dashboard.',
       };
-    } catch (err) {
+    } catch {
       return {
         success: false,
         message: 'Network error communicating with hospital services.',
@@ -338,9 +394,8 @@ class PatientService {
         doctor_id: canonicalDoctorId,
       };
 
-      const res = await fetch('/api/booking/create', {
+      const res = await this.authenticatedFetch('/api/booking/create', {
         method: 'POST',
-        headers: this.getAuthHeaders(),
         body: JSON.stringify(bodyPayload),
       });
 
@@ -363,12 +418,11 @@ class PatientService {
    */
   public async cancelAppointment(appointmentId: string): Promise<boolean> {
     try {
-      const res = await fetch('/api/booking/cancel', {
+      const res = await this.authenticatedFetch('/api/booking/cancel', {
         method: 'POST',
-        headers: this.getAuthHeaders(),
         body: JSON.stringify({ appointmentId }),
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       return Boolean(res.ok && data.success);
     } catch {
       return false;
@@ -445,12 +499,11 @@ class PatientService {
         feedback_channel: resolvedChannel,
       };
 
-      const res = await fetch('/api/patient/feedback', {
+      const res = await this.authenticatedFetch('/api/patient/feedback', {
         method: 'POST',
-        headers: this.getAuthHeaders(),
         body: JSON.stringify(bodyPayload),
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       return {
         success: res.ok && data.success,
         message: data.message || 'Feedback submitted.',

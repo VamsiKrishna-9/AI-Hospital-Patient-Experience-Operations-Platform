@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import { HospitalRole, ScreenState, AuthUser } from '../types/auth';
 import { authService } from '../services/authService';
+import { supabase } from '../services/supabaseClient';
 
 interface LoginScreenProps {
   onNavigate: (
@@ -222,19 +223,27 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
 
   const handleGoogleLogin = async () => {
     setError(null);
-    const remembered = authService.getRememberedIdentity();
-    const candidateEmail = identifier.includes('@') && identifier.includes('.')
-      ? identifier.trim()
-      : (remembered?.email && remembered.email.includes('@') && remembered.email.includes('.'))
-      ? remembered.email.trim()
-      : '';
+    setIsLoading(true);
+    try {
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: {
+          redirectTo: `${window.location.origin}/auth/callback`,
+          queryParams: {
+            prompt: 'select_account',
+          },
+        },
+      });
 
-    if (candidateEmail) {
-      await performGoogleAuth(candidateEmail);
-    } else {
-      setGoogleModalEmail(identifier.trim());
-      setGoogleModalError(null);
-      setShowGoogleModal(true);
+      if (error) {
+        console.error('Google authentication failed:', error.message);
+        setError(`Google authentication failed: ${error.message}`);
+        setIsLoading(false);
+      }
+    } catch (err: any) {
+      console.error('Google authentication error:', err);
+      setError('Failed to connect to Google authentication service.');
+      setIsLoading(false);
     }
   };
 
