@@ -360,7 +360,7 @@ export const PatientDashboard: React.FC<PatientDashboardProps> = ({ user, onLogo
               <button
                 type="button"
                 onClick={() => setActiveTab('ai-assistant')}
-                title="Open AI Hospital Assistant Workspace"
+                title="Medi AI Assistant"
                 className={`hidden md:inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-bold border transition-all cursor-pointer ${
                   activeTab === 'ai-assistant'
                     ? 'bg-teal-600 text-white border-teal-600 shadow-sm'
@@ -368,7 +368,7 @@ export const PatientDashboard: React.FC<PatientDashboardProps> = ({ user, onLogo
                 }`}
               >
                 <AiHospitalAssistantLogo size={16} showText={false} />
-                <span>AI Assistant</span>
+                <span>Medi AI Assistant</span>
               </button>
             ) : (
               <button

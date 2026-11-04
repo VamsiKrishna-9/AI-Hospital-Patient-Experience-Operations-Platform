@@ -5,29 +5,17 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import {
-  MessageSquare,
   X,
-  Minus,
-  Send,
-  Trash2,
+  ArrowUp,
   RefreshCw,
-  Sparkles,
-  ChevronDown,
-  Calendar,
-  Clock,
-  ShieldCheck,
+  Trash2,
   AlertCircle,
   HelpCircle,
-  ExternalLink,
+  MinusCircle,
   ChevronRight,
-  Maximize2,
-  Minimize2,
-  FileText,
-  UserCheck,
-  Building2,
-  Info,
+  Sparkles,
 } from 'lucide-react';
-import { AiHospitalAssistantLogo } from './AiHospitalAssistantLogo';
+import { MediAiRobotAvatar } from './AiHospitalAssistantLogo';
 import { aiChatService, ChatMessage } from '../services/aiChatService';
 import { AuthUser } from '../types/auth';
 
@@ -44,23 +32,20 @@ interface AiHospitalAssistantProps {
 const DEFAULT_WELCOME_MESSAGE: ChatMessage = {
   id: 'welcome-msg',
   role: 'model',
-  content:
-    "Hello! I'm your AI Hospital Assistant. I can help you find hospital information, understand appointment procedures, navigate hospital services, and access your available patient information securely. How can I help you today?",
+  content: 'Need my help?\nStart chat now',
   timestamp: 'Just now',
   quickActions: [
-    { label: 'Check Upcoming Appointments', action: 'view-appointments' },
-    { label: 'Book New Appointment', action: 'book-appointment' },
-    { label: 'View Lab Reports', action: 'view-labs' },
+    { label: 'Book Appointment', action: 'book-appointment' },
+    { label: 'Upcoming Visits', action: 'view-appointments' },
+    { label: 'Hospital Contact', action: 'contact-support' },
   ],
 };
 
 const SUGGESTED_QUESTIONS = [
-  'What hospital departments are available?',
-  'How can I book an appointment?',
-  'How can I check my upcoming appointments?',
-  'What are the hospital visiting hours?',
-  'How can I access my lab results?',
-  'How can I contact hospital support?',
+  'How do I book an appointment?',
+  'What departments are available?',
+  'What are the visiting hours?',
+  'How can I view my lab results?',
 ];
 
 export const AiHospitalAssistant: React.FC<AiHospitalAssistantProps> = ({
@@ -79,20 +64,14 @@ export const AiHospitalAssistant: React.FC<AiHospitalAssistantProps> = ({
 
   const [inputMessage, setInputMessage] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [isExpanded, setIsExpanded] = useState(false); // expanded view in floating mode
-
-  // Confirmation dialog state for "Remove Chatbot"
   const [showRemoveDialog, setShowRemoveDialog] = useState(false);
-  // Confirmation dialog state for "Clear Conversation"
   const [showClearDialog, setShowClearDialog] = useState(false);
-  // Toast notification
+  const [showSuggestions, setShowSuggestions] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
 
-  // Auto-scroll to bottom of conversation
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
@@ -100,12 +79,10 @@ export const AiHospitalAssistant: React.FC<AiHospitalAssistantProps> = ({
   useEffect(() => {
     if (isOpen || mode === 'fullpage') {
       scrollToBottom();
-      // Focus textarea on open
       setTimeout(() => inputRef.current?.focus(), 150);
     }
   }, [messages, isOpen, mode]);
 
-  // Persist messages whenever they change
   useEffect(() => {
     if (messages.length > 0 && messages[0].id !== 'welcome-msg') {
       aiChatService.saveHistory(messages);
@@ -116,7 +93,6 @@ export const AiHospitalAssistant: React.FC<AiHospitalAssistantProps> = ({
     const text = (textToSend || inputMessage).trim();
     if (!text || isLoading) return;
 
-    setErrorMessage(null);
     const userMsgId = `usr-${Date.now()}`;
     const userMsg: ChatMessage = {
       id: userMsgId,
@@ -129,10 +105,10 @@ export const AiHospitalAssistant: React.FC<AiHospitalAssistantProps> = ({
     setMessages(newMessages);
     setInputMessage('');
     setIsLoading(true);
+    setShowSuggestions(false);
 
     try {
       const response = await aiChatService.sendMessage(text, newMessages);
-
       if (response.success) {
         const assistantMsg: ChatMessage = {
           id: `ai-${Date.now()}`,
@@ -151,23 +127,30 @@ export const AiHospitalAssistant: React.FC<AiHospitalAssistantProps> = ({
           isError: true,
         };
         setMessages((prev) => [...prev, errorMsg]);
-        setErrorMessage(response.reply);
       }
-    } catch (err: any) {
-      setErrorMessage('Unexpected communication error. Please try again.');
+    } catch {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `ai-err-${Date.now()}`,
+          role: 'model',
+          content: 'Unable to communicate with the assistant. Please try again.',
+          timestamp: 'Just now',
+          isError: true,
+        },
+      ]);
     } finally {
       setIsLoading(false);
     }
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
       e.preventDefault();
       handleSendMessage();
     }
   };
 
-  // Start fresh conversation (New Chat)
   const handleNewChat = () => {
     const fresh: ChatMessage = {
       ...DEFAULT_WELCOME_MESSAGE,
@@ -176,32 +159,27 @@ export const AiHospitalAssistant: React.FC<AiHospitalAssistantProps> = ({
     };
     setMessages([fresh]);
     aiChatService.clearHistory();
-    setErrorMessage(null);
-    setToastMessage('Started a fresh conversation session.');
-    setTimeout(() => setToastMessage(null), 3000);
+    setToastMessage('Started new session');
+    setTimeout(() => setToastMessage(null), 2500);
   };
 
-  // Clear Conversation (with confirmation)
   const handleConfirmClear = () => {
     aiChatService.clearHistory();
     setMessages([DEFAULT_WELCOME_MESSAGE]);
     setShowClearDialog(false);
-    setErrorMessage(null);
-    setToastMessage('Conversation history has been cleared.');
-    setTimeout(() => setToastMessage(null), 3500);
+    setToastMessage('Conversation cleared');
+    setTimeout(() => setToastMessage(null), 2500);
   };
 
-  // Remove Chatbot (with exact title and message requested)
   const handleConfirmRemove = async () => {
     setShowRemoveDialog(false);
     const result = await aiChatService.setChatbotEnabled(false);
     if (onRemoveChatbot) {
       onRemoveChatbot();
     }
-    setToastMessage(result.message || 'AI Hospital Assistant has been removed from your account.');
+    setToastMessage(result.message || 'AI Assistant removed');
   };
 
-  // Execute quick actions within message bubbles
   const handleQuickAction = (action: string) => {
     if (action === 'book-appointment' && onOpenBookingWizard) {
       onOpenBookingWizard();
@@ -212,349 +190,260 @@ export const AiHospitalAssistant: React.FC<AiHospitalAssistantProps> = ({
     } else if (action === 'view-labs' && onNavigateTab) {
       onNavigateTab('labs');
       if (mode === 'floating' && onClose) onClose();
-    } else if (action === 'view-prescriptions' && onNavigateTab) {
-      onNavigateTab('prescriptions');
-      if (mode === 'floating' && onClose) onClose();
-    } else if (action === 'view-feedback' && onNavigateTab) {
-      onNavigateTab('feedback');
-      if (mode === 'floating' && onClose) onClose();
     } else if (action === 'contact-support') {
-      handleSendMessage('What are the main campus phone numbers and support contact details?');
+      handleSendMessage('What are the hospital main contact details and campus departments?');
     }
   };
 
-  // Format message content with markdown-like bullet points and bolding
   const renderMessageContent = (content: string) => {
     const lines = content.split('\n');
     return lines.map((line, idx) => {
       const trimmed = line.trim();
-      if (trimmed.startsWith('• ') || trimmed.startsWith('- ') || trimmed.startsWith('* ')) {
-        const itemText = trimmed.replace(/^([•\-*]\s*)/, '');
-        return (
-          <li key={idx} className="ml-4 list-disc text-inherit my-0.5 leading-relaxed">
-            {formatBoldText(itemText)}
-          </li>
-        );
-      }
-      if (/^\d+\.\s/.test(trimmed)) {
-        const itemText = trimmed.replace(/^\d+\.\s*/, '');
-        return (
-          <li key={idx} className="ml-4 list-decimal text-inherit my-0.5 leading-relaxed">
-            {formatBoldText(itemText)}
-          </li>
-        );
-      }
       if (!trimmed) {
-        return <div key={idx} className="h-2" />;
+        return <div key={idx} className="h-1.5" />;
       }
       return (
-        <p key={idx} className="my-1 leading-relaxed">
-          {formatBoldText(trimmed)}
+        <p key={idx} className="leading-relaxed">
+          {trimmed}
         </p>
       );
     });
   };
 
-  const formatBoldText = (text: string) => {
-    const parts = text.split(/(\*\*.*?\*\*)/g);
-    return parts.map((part, i) => {
-      if (part.startsWith('**') && part.endsWith('**')) {
-        return (
-          <strong key={i} className="font-bold text-inherit">
-            {part.slice(2, -2)}
-          </strong>
-        );
-      }
-      return part;
-    });
-  };
-
-  // If in floating mode and closed, do not render panel
   if (mode === 'floating' && !isOpen) {
     return null;
   }
 
-  const containerClasses =
-    mode === 'floating'
-      ? `fixed bottom-5 right-5 z-50 flex flex-col bg-white border border-slate-200 shadow-2xl rounded-3xl overflow-hidden transition-all duration-200 animate-in fade-in slide-in-from-bottom-4 ${
-          isExpanded
-            ? 'w-[92vw] sm:w-[600px] h-[82vh] max-h-[750px]'
-            : 'w-[92vw] sm:w-[410px] h-[580px] max-h-[85vh]'
-        }`
-      : 'w-full flex-1 flex flex-col bg-white border border-[#DCE5EC] rounded-3xl shadow-sm overflow-hidden min-h-[640px]';
-
-  return (
-    <div className={containerClasses} role="region" aria-label="AI Hospital Assistant Chat Interface">
-      {/* 1. Header with Branding, Logo, and Controls */}
-      <div className="bg-gradient-to-r from-slate-900 via-sky-950 to-teal-950 text-white px-4 py-3.5 flex items-center justify-between border-b border-teal-900/50 shrink-0">
-        <div className="flex items-center gap-3">
-          <AiHospitalAssistantLogo size={36} showText={false} />
-          <div>
-            <div className="flex items-center gap-2">
-              <h2 className="font-bold text-sm sm:text-base text-white tracking-tight leading-none">
-                AI Hospital Assistant
-              </h2>
-              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-teal-500/20 text-teal-300 border border-teal-400/30">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                24/7 Live
-              </span>
-            </div>
-            <p className="text-[11px] text-slate-300 leading-tight mt-0.5">
-              Your 24/7 companion for hospital information, appointments, and more.
-            </p>
-          </div>
-        </div>
-
-        {/* Header Action Tools */}
-        <div className="flex items-center gap-1 text-slate-300">
-          {/* New Chat */}
-          <button
-            type="button"
-            onClick={handleNewChat}
-            title="Start New Chat"
-            className="p-1.5 rounded-lg hover:bg-white/10 hover:text-white transition-colors cursor-pointer"
-            aria-label="Start new conversation"
-          >
-            <RefreshCw size={15} />
-          </button>
-
-          {/* Clear Conversation */}
-          <button
-            type="button"
-            onClick={() => setShowClearDialog(true)}
-            title="Clear Conversation History"
-            className="p-1.5 rounded-lg hover:bg-white/10 hover:text-rose-300 transition-colors cursor-pointer"
-            aria-label="Clear conversation history"
-          >
-            <Trash2 size={15} />
-          </button>
-
-          {/* Floating mode: Expand / Minimize */}
-          {mode === 'floating' && (
-            <button
-              type="button"
-              onClick={() => setIsExpanded(!isExpanded)}
-              title={isExpanded ? 'Restore default size' : 'Expand panel'}
-              className="hidden sm:inline-flex p-1.5 rounded-lg hover:bg-white/10 hover:text-white transition-colors cursor-pointer"
-              aria-label={isExpanded ? 'Restore size' : 'Expand window'}
-            >
-              {isExpanded ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
-            </button>
-          )}
-
-          {/* Remove / Disable Chatbot Option */}
-          <button
-            type="button"
-            onClick={() => setShowRemoveDialog(true)}
-            title="Remove Chatbot from Account"
-            className="px-2 py-1 rounded-md text-[11px] font-medium bg-white/10 hover:bg-rose-500/20 text-slate-200 hover:text-rose-200 border border-white/15 transition-colors cursor-pointer"
-          >
-            Remove Chatbot
-          </button>
-
-          {/* Close button (floating mode only) */}
-          {mode === 'floating' && onClose && (
-            <button
-              type="button"
-              onClick={onClose}
-              title="Close Assistant"
-              className="p-1.5 rounded-lg hover:bg-white/10 hover:text-white transition-colors cursor-pointer ml-1"
-              aria-label="Close assistant"
-            >
-              <X size={17} />
-            </button>
-          )}
-        </div>
-      </div>
-
-      {/* Toast Alert Banner */}
-      {toastMessage && (
-        <div className="px-4 py-2 bg-emerald-50 text-emerald-800 text-xs font-semibold border-b border-emerald-200 flex items-center justify-between animate-in fade-in">
-          <span>{toastMessage}</span>
-          <button
-            type="button"
-            onClick={() => setToastMessage(null)}
-            className="text-emerald-700 hover:text-emerald-900 font-bold ml-2 cursor-pointer"
-          >
-            Dismiss
-          </button>
-        </div>
+  const cardContent = (
+    <div className="relative w-full h-full flex flex-col">
+      {/* Standalone Circular Close Button at Top-Right (matching reference layout) */}
+      {onClose && (
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Close Medi AI Assistant"
+          title="Close Medi AI Assistant"
+          className="absolute -top-3.5 -right-3.5 w-10 h-10 rounded-full bg-[#0F172A] shadow-xl border border-slate-700/80 flex items-center justify-center text-[#00BFA6] hover:text-teal-300 hover:bg-slate-800 hover:scale-105 active:scale-95 transition-all duration-150 cursor-pointer z-30"
+        >
+          <X size={20} strokeWidth={2.8} />
+        </button>
       )}
 
-      {/* 2. Messages Scroll Area */}
-      <div className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-4 bg-slate-50/60">
-        {/* Verified Hospital AI Safety Notice */}
-        <div className="p-3 rounded-2xl bg-teal-50/80 border border-teal-200/80 text-[11px] text-teal-900 flex items-start gap-2.5 shadow-xs">
-          <ShieldCheck size={16} className="text-teal-700 shrink-0 mt-0.5" />
-          <div className="leading-relaxed">
-            <span className="font-bold">Official MediAI Medical Center Intelligence:</span> Access verified clinic
-            schedules, department directories, and your personal appointments securely. In emergencies, please call{' '}
-            <strong className="font-bold text-rose-700">911</strong> or visit our 24/7 Emergency Campus immediately.
+      {/* Main Card with High-Visibility Dark Theme */}
+      <div className="relative w-full h-full bg-[#0F172A] rounded-[32px] shadow-2xl shadow-black/50 flex flex-col p-5 sm:p-6 overflow-hidden border border-slate-700/80">
+        {/* Top Header Row */}
+        <div className="flex items-center justify-between shrink-0 mb-3">
+          {/* Vibrant Teal Pill Header with Medi AI Robot Avatar */}
+          <div className="inline-flex items-center gap-2.5 px-3.5 py-1.5 rounded-full bg-[#00BFA6] text-white shadow-md">
+            <MediAiRobotAvatar size={24} className="border border-white/80" />
+            <span className="font-semibold text-[13px] tracking-wide text-white select-none">
+              Medi AI Assistant
+            </span>
+          </div>
+
+          {/* Discreet Auxiliary Controls */}
+          <div className="flex items-center gap-1 text-slate-400">
+            <button
+              type="button"
+              onClick={handleNewChat}
+              title="Start New Chat"
+              aria-label="New chat"
+              className="p-1.5 rounded-full hover:bg-slate-800 hover:text-slate-200 transition-colors cursor-pointer"
+            >
+              <RefreshCw size={13} />
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowClearDialog(true)}
+              title="Clear Conversation"
+              aria-label="Clear conversation"
+              className="p-1.5 rounded-full hover:bg-slate-800 hover:text-slate-200 transition-colors cursor-pointer"
+            >
+              <Trash2 size={13} />
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowRemoveDialog(true)}
+              title="Remove Chatbot"
+              aria-label="Remove Chatbot"
+              className="p-1.5 rounded-full hover:bg-rose-950/50 hover:text-rose-400 transition-colors cursor-pointer"
+            >
+              <MinusCircle size={13} />
+            </button>
           </div>
         </div>
 
-        {/* Message Stream */}
-        {messages.map((msg) => {
-          const isUser = msg.role === 'user';
-          return (
-            <div
-              key={msg.id}
-              className={`flex flex-col ${isUser ? 'items-end' : 'items-start'} space-y-1.5`}
+        {/* Toast Notification */}
+        {toastMessage && (
+          <div className="mb-2 px-3 py-1.5 bg-teal-950/80 text-teal-200 text-[11px] font-medium rounded-xl flex items-center justify-between border border-teal-700/80 animate-in fade-in">
+            <span>{toastMessage}</span>
+            <button
+              type="button"
+              onClick={() => setToastMessage(null)}
+              className="text-teal-400 hover:text-teal-200 font-bold ml-2 cursor-pointer"
             >
-              <div className="flex items-center gap-1.5 text-[10px] text-slate-400 font-medium px-1">
-                <span>{isUser ? user?.name || 'You (Patient)' : 'AI Hospital Assistant'}</span>
-                <span>·</span>
-                <span>{msg.timestamp}</span>
-              </div>
+              ✕
+            </button>
+          </div>
+        )}
 
-              <div className="flex items-start gap-2 max-w-[88%] sm:max-w-[80%]">
-                {!isUser && (
-                  <div className="shrink-0 mt-0.5">
-                    <AiHospitalAssistantLogo size={28} showText={false} />
-                  </div>
-                )}
-
+        {/* Conversation Message Stream */}
+        <div className="flex-1 overflow-y-auto space-y-3 py-2 pr-1 no-scrollbar">
+          {messages.map((msg) => {
+            const isUser = msg.role === 'user';
+            return (
+              <div
+                key={msg.id}
+                className={`flex flex-col ${isUser ? 'items-end' : 'items-start'} space-y-1`}
+              >
                 <div
-                  className={`rounded-2xl px-4 py-3 text-xs sm:text-[13px] leading-relaxed shadow-sm transition-all ${
+                  className={`px-4 py-2.5 max-w-[85%] text-[13px] leading-snug transition-all ${
                     isUser
-                      ? 'bg-sky-600 text-white rounded-br-xs font-medium'
+                      ? 'bg-[#1E293B] text-slate-100 border border-slate-700/80 rounded-[22px] rounded-tr-xs font-normal shadow-xs'
                       : msg.isError
-                      ? 'bg-rose-50 text-rose-900 border border-rose-200 rounded-bl-xs'
-                      : 'bg-white text-slate-800 border border-slate-200/80 rounded-bl-xs font-normal'
+                      ? 'bg-rose-950/60 text-rose-200 border border-rose-800/80 rounded-[22px] rounded-tl-xs'
+                      : 'bg-[#00BFA6] text-white rounded-[22px] rounded-tl-xs font-normal shadow-sm'
                   }`}
                 >
                   {renderMessageContent(msg.content)}
 
-                  {/* Interactive Quick Action Buttons attached to AI reply */}
-                  {msg.quickActions && msg.quickActions.length > 0 && (
-                    <div className="mt-3 pt-2.5 border-t border-slate-100 flex flex-wrap gap-1.5">
+                  {/* Quick Action Chips attached to greeting or AI reply */}
+                  {!isUser && msg.quickActions && msg.quickActions.length > 0 && (
+                    <div className="mt-2.5 pt-2 border-t border-white/20 flex flex-wrap gap-1.5">
                       {msg.quickActions.map((qa, qidx) => (
                         <button
                           key={qidx}
                           type="button"
                           onClick={() => handleQuickAction(qa.action)}
-                          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-bold bg-teal-50 text-teal-800 hover:bg-teal-100 border border-teal-200 transition-colors cursor-pointer"
+                          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-slate-900/90 text-teal-200 hover:bg-slate-950 hover:text-white transition-colors shadow-2xs cursor-pointer border border-teal-400/30"
                         >
-                          <Sparkles size={11} className="text-teal-600" />
+                          <Sparkles size={10} className="text-teal-400" />
                           <span>{qa.label}</span>
-                          <ChevronRight size={12} className="text-teal-500" />
+                          <ChevronRight size={10} className="text-teal-400" />
                         </button>
                       ))}
                     </div>
                   )}
                 </div>
               </div>
-            </div>
-          );
-        })}
+            );
+          })}
 
-        {/* Loading Indicator */}
-        {isLoading && (
-          <div className="flex items-start gap-2 max-w-[85%]">
-            <div className="shrink-0 mt-0.5">
-              <AiHospitalAssistantLogo size={28} showText={false} />
+          {/* Thinking / Loading indicator */}
+          {isLoading && (
+            <div className="flex items-start">
+              <div className="bg-[#00BFA6] text-white rounded-[22px] rounded-tl-xs px-4 py-2.5 text-xs flex items-center gap-2 shadow-xs">
+                <span className="flex gap-1 items-center">
+                  <span className="w-1.5 h-1.5 rounded-full bg-white animate-bounce [animation-delay:-0.3s]" />
+                  <span className="w-1.5 h-1.5 rounded-full bg-white animate-bounce [animation-delay:-0.15s]" />
+                  <span className="w-1.5 h-1.5 rounded-full bg-white animate-bounce" />
+                </span>
+                <span className="font-medium text-white/90">Thinking...</span>
+              </div>
             </div>
-            <div className="bg-white border border-slate-200 rounded-2xl rounded-bl-xs px-4 py-3 text-xs text-slate-500 shadow-sm flex items-center gap-2">
-              <span className="flex gap-1">
-                <span className="w-2 h-2 rounded-full bg-teal-500 animate-bounce [animation-delay:-0.3s]" />
-                <span className="w-2 h-2 rounded-full bg-sky-500 animate-bounce [animation-delay:-0.15s]" />
-                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-bounce" />
-              </span>
-              <span className="font-medium text-slate-600">AI Hospital Assistant is thinking...</span>
-            </div>
-          </div>
-        )}
+          )}
 
-        <div ref={messagesEndRef} />
-      </div>
-
-      {/* 3. Suggested Quick Questions Carousel */}
-      <div className="px-4 py-2 bg-white border-t border-slate-100 overflow-x-auto shrink-0">
-        <div className="flex items-center gap-2 text-[11px] text-slate-400 font-medium mb-1.5">
-          <HelpCircle size={12} />
-          <span>Suggested Questions:</span>
+          <div ref={messagesEndRef} />
         </div>
-        <div className="flex items-center gap-1.5 overflow-x-auto pb-1 no-scrollbar">
-          {SUGGESTED_QUESTIONS.map((q, idx) => (
+
+        {/* Quick Suggestions toggle/chips */}
+        <div className="pt-1.5 pb-2">
+          <div className="flex items-center justify-between text-[11px] text-slate-400 mb-1">
             <button
-              key={idx}
               type="button"
-              disabled={isLoading}
-              onClick={() => handleSendMessage(q)}
-              className="shrink-0 px-3 py-1.5 rounded-full text-[11px] font-medium bg-slate-100 hover:bg-teal-50 text-slate-700 hover:text-teal-900 border border-slate-200 hover:border-teal-300 transition-colors cursor-pointer disabled:opacity-50"
+              onClick={() => setShowSuggestions(!showSuggestions)}
+              className="inline-flex items-center gap-1 hover:text-teal-400 transition-colors cursor-pointer"
             >
-              {q}
+              <HelpCircle size={11} />
+              <span>{showSuggestions ? 'Hide suggested questions' : 'Quick questions'}</span>
             </button>
-          ))}
+          </div>
+          {showSuggestions && (
+            <div className="flex items-center gap-1.5 overflow-x-auto pb-1 no-scrollbar animate-in fade-in">
+              {SUGGESTED_QUESTIONS.map((q, idx) => (
+                <button
+                  key={idx}
+                  type="button"
+                  disabled={isLoading}
+                  onClick={() => handleSendMessage(q)}
+                  className="shrink-0 px-2.5 py-1 rounded-full text-[11px] bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-teal-300 border border-slate-700 hover:border-teal-500/50 transition-colors cursor-pointer disabled:opacity-50"
+                >
+                  {q}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Pill Input Bar with Circular Send Button */}
+        <div className="shrink-0">
+          <div className="flex items-center justify-between bg-[#1E293B] border border-slate-700/80 rounded-full px-4 py-1.5 transition-all focus-within:ring-2 focus-within:ring-teal-400/30 focus-within:border-teal-400/80">
+            <input
+              ref={inputRef}
+              type="text"
+              value={inputMessage}
+              onChange={(e) => setInputMessage(e.target.value)}
+              onKeyDown={handleKeyDown}
+              disabled={isLoading}
+              placeholder="Your text here....."
+              className="flex-1 bg-transparent text-[13px] text-white placeholder-slate-400 focus:outline-none py-1.5"
+            />
+
+            <button
+              type="button"
+              onClick={() => handleSendMessage()}
+              disabled={!inputMessage.trim() || isLoading}
+              aria-label="Send message"
+              title="Send"
+              className="w-8 h-8 rounded-full bg-[#00BFA6] hover:bg-[#00A892] text-white flex items-center justify-center shrink-0 shadow-md transition-transform active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer ml-2"
+            >
+              <ArrowUp size={16} strokeWidth={2.8} />
+            </button>
+          </div>
         </div>
       </div>
 
-      {/* 4. Message Input & Send Control */}
-      <div className="p-3 bg-white border-t border-slate-200 shrink-0">
-        <div className="flex items-end gap-2 bg-slate-50 border border-slate-200 rounded-2xl p-1.5 focus-within:border-teal-500 focus-within:ring-2 focus-within:ring-teal-500/20 transition-all">
-          <textarea
-            ref={inputRef}
-            rows={1}
-            value={inputMessage}
-            onChange={(e) => setInputMessage(e.target.value)}
-            onKeyDown={handleKeyDown}
-            disabled={isLoading}
-            placeholder="Ask about departments, doctors, appointments, or services..."
-            className="flex-1 bg-transparent px-3 py-2 text-xs sm:text-sm text-slate-800 placeholder-slate-400 resize-none focus:outline-none min-h-[38px] max-h-32"
-          />
+      {/* Cascading Stacked Deck Underneath (Layer 1) - matching reference layout in dark theme */}
+      <div
+        className="absolute -bottom-3 inset-x-5 h-7 bg-[#1E293B] border-b border-x border-slate-700/60 rounded-b-[28px] -z-10 shadow-sm pointer-events-none"
+        aria-hidden="true"
+      />
 
-          <button
-            type="button"
-            onClick={() => handleSendMessage()}
-            disabled={!inputMessage.trim() || isLoading}
-            aria-label="Send message"
-            className="p-2.5 rounded-xl bg-gradient-to-r from-sky-600 to-teal-600 hover:from-sky-700 hover:to-teal-700 text-white font-bold transition-all shadow-sm disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
-          >
-            <Send size={15} />
-          </button>
-        </div>
-        <div className="flex items-center justify-between mt-1.5 px-1 text-[10px] text-slate-400">
-          <span>Press Enter to send, Shift + Enter for new line</span>
-          <span>MediAI Confidential Healthcare Platform</span>
-        </div>
-      </div>
+      {/* Cascading Stacked Deck Underneath (Layer 2) - matching reference layout in dark theme */}
+      <div
+        className="absolute -bottom-6 inset-x-9 h-7 bg-[#334155] border-b border-x border-slate-700/40 rounded-b-[24px] -z-20 shadow-sm pointer-events-none"
+        aria-hidden="true"
+      />
 
-      {/* ========================================================================= */}
-      {/* CONFIRMATION MODAL: REMOVE CHATBOT (Exact specifications from user brief) */}
-      {/* ========================================================================= */}
+      {/* Remove Confirmation Modal */}
       {showRemoveDialog && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-xs animate-in fade-in">
-          <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4 animate-in zoom-in-95">
-            <div className="w-12 h-12 rounded-2xl bg-rose-50 text-rose-600 flex items-center justify-center border border-rose-200">
-              <AlertCircle size={24} />
+        <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs animate-in fade-in">
+          <div className="bg-slate-900 rounded-3xl max-w-sm w-full p-5 shadow-2xl border border-slate-700/80 space-y-3.5 animate-in zoom-in-95">
+            <div className="w-10 h-10 rounded-2xl bg-rose-950/60 text-rose-400 flex items-center justify-center border border-rose-800/60">
+              <AlertCircle size={20} />
             </div>
 
-            <div className="space-y-2">
-              <h3 className="text-lg font-bold text-slate-900 tracking-tight">
-                Remove AI Hospital Assistant?
+            <div className="space-y-1">
+              <h3 className="text-base font-bold text-white tracking-tight">
+                Remove Medi AI Assistant?
               </h3>
-              <p className="text-xs text-slate-600 leading-relaxed">
-                Are you sure you want to remove the AI Hospital Assistant from your account? You can restore it later from settings, if supported.
+              <p className="text-xs text-slate-300 leading-relaxed">
+                Are you sure you want to remove Medi AI Assistant from your view? You can restore it later if needed.
               </p>
             </div>
 
-            <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 text-[11px] text-slate-500 space-y-1">
-              <p>• Your patient account, records, and appointments remain completely safe and untouched.</p>
-              <p>• Only the assistant launcher and navigation shortcut will be hidden for this account.</p>
-            </div>
-
-            <div className="flex items-center justify-end gap-3 pt-2">
+            <div className="flex items-center justify-end gap-2.5 pt-1">
               <button
                 type="button"
                 onClick={() => setShowRemoveDialog(false)}
-                className="px-4 py-2.5 rounded-xl border border-slate-300 text-slate-700 hover:bg-slate-100 text-xs font-bold transition-colors cursor-pointer"
+                className="px-3.5 py-2 rounded-xl border border-slate-700 text-slate-300 hover:bg-slate-800 text-xs font-bold transition-colors cursor-pointer"
               >
                 Cancel
               </button>
               <button
                 type="button"
                 onClick={handleConfirmRemove}
-                className="px-5 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold transition-colors shadow-sm cursor-pointer"
+                className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold transition-colors shadow-sm cursor-pointer"
               >
                 Remove
               </button>
@@ -563,44 +452,60 @@ export const AiHospitalAssistant: React.FC<AiHospitalAssistantProps> = ({
         </div>
       )}
 
-      {/* ========================================================================= */}
-      {/* CONFIRMATION MODAL: CLEAR CONVERSATION HISTORY                            */}
-      {/* ========================================================================= */}
+      {/* Clear History Confirmation Modal */}
       {showClearDialog && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-xs animate-in fade-in">
-          <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4 animate-in zoom-in-95">
-            <div className="w-12 h-12 rounded-2xl bg-amber-50 text-amber-600 flex items-center justify-center border border-amber-200">
-              <Trash2 size={24} />
+        <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs animate-in fade-in">
+          <div className="bg-slate-900 rounded-3xl max-w-sm w-full p-5 shadow-2xl border border-slate-700/80 space-y-3.5 animate-in zoom-in-95">
+            <div className="w-10 h-10 rounded-2xl bg-amber-950/60 text-amber-400 flex items-center justify-center border border-amber-800/60">
+              <Trash2 size={20} />
             </div>
 
-            <div className="space-y-2">
-              <h3 className="text-lg font-bold text-slate-900 tracking-tight">
-                Clear Conversation History?
+            <div className="space-y-1">
+              <h3 className="text-base font-bold text-white tracking-tight">
+                Clear Conversation?
               </h3>
-              <p className="text-xs text-slate-600 leading-relaxed">
-                Are you sure you want to clear your current conversation history? This cannot be undone.
+              <p className="text-xs text-slate-300 leading-relaxed">
+                Clear all conversation history? This cannot be undone.
               </p>
             </div>
 
-            <div className="flex items-center justify-end gap-3 pt-2">
+            <div className="flex items-center justify-end gap-2.5 pt-1">
               <button
                 type="button"
                 onClick={() => setShowClearDialog(false)}
-                className="px-4 py-2.5 rounded-xl border border-slate-300 text-slate-700 hover:bg-slate-100 text-xs font-bold transition-colors cursor-pointer"
+                className="px-3.5 py-2 rounded-xl border border-slate-700 text-slate-300 hover:bg-slate-800 text-xs font-bold transition-colors cursor-pointer"
               >
                 Cancel
               </button>
               <button
                 type="button"
                 onClick={handleConfirmClear}
-                className="px-5 py-2.5 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold transition-colors shadow-sm cursor-pointer"
+                className="px-4 py-2 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold transition-colors shadow-sm cursor-pointer"
               >
-                Clear History
+                Clear
               </button>
             </div>
           </div>
         </div>
       )}
+    </div>
+  );
+
+  if (mode === 'fullpage') {
+    return (
+      <div className="w-full flex items-center justify-center py-6 sm:py-10 bg-slate-950/80 rounded-3xl min-h-[540px]">
+        <div className="w-[350px] max-w-[92vw] h-[460px]">{cardContent}</div>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className="fixed bottom-10 right-6 sm:right-8 z-50 w-[calc(100vw-36px)] sm:w-[350px] max-w-[360px] h-[450px] max-h-[82vh] animate-in fade-in slide-in-from-bottom-4 duration-200"
+      role="region"
+      aria-label="Medi AI Assistant"
+    >
+      {cardContent}
     </div>
   );
 };

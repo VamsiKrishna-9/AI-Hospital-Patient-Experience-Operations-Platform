@@ -4,11 +4,10 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { AiHospitalAssistantLogo } from './AiHospitalAssistantLogo';
+import { MediAiRobotAvatar } from './AiHospitalAssistantLogo';
 import { AiHospitalAssistant } from './AiHospitalAssistant';
 import { aiChatService } from '../services/aiChatService';
 import { AuthUser } from '../types/auth';
-import { Sparkles, X } from 'lucide-react';
 
 interface AiHospitalAssistantLauncherProps {
   user?: AuthUser | null;
@@ -25,7 +24,7 @@ export const AiHospitalAssistantLauncher: React.FC<AiHospitalAssistantLauncherPr
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [isEnabled, setIsEnabled] = useState<boolean>(() => aiChatService.isChatbotEnabled());
-  const [showTooltip, setShowTooltip] = useState(false);
+  const [isHovered, setIsHovered] = useState(false);
 
   // Sync with service preference
   useEffect(() => {
@@ -41,7 +40,7 @@ export const AiHospitalAssistantLauncher: React.FC<AiHospitalAssistantLauncherPr
     return () => {
       mounted = false;
     };
-  }, []);
+  }, [onDisabledStateChange]);
 
   const handleRemove = () => {
     setIsEnabled(false);
@@ -60,27 +59,37 @@ export const AiHospitalAssistantLauncher: React.FC<AiHospitalAssistantLauncherPr
     <>
       {/* Floating Action Launcher Button (Visible when closed) */}
       {!isOpen && (
-        <div className="fixed bottom-6 right-6 z-40 flex items-center gap-3">
-          {/* Subtle Attention Prompt Pill */}
+        <div className="fixed bottom-6 right-6 z-40 flex items-center gap-2.5">
+          {/* Hover Tooltip: Unmistakably visible as Medi AI Assistant when pointed at */}
           <div
-            className={`hidden sm:flex items-center gap-2 px-3.5 py-2 rounded-2xl bg-white/95 text-slate-800 text-xs font-bold shadow-xl border border-teal-200/80 backdrop-blur-md transition-all duration-300 animate-in fade-in slide-in-from-right-4 ${
-              showTooltip ? 'opacity-100 scale-100' : 'opacity-90'
+            className={`pointer-events-none transition-all duration-200 select-none px-3 py-1.5 rounded-full bg-slate-900/95 text-white text-xs font-semibold shadow-lg border border-slate-700/60 backdrop-blur-xs flex items-center gap-1.5 ${
+              isHovered ? 'opacity-100 translate-x-0' : 'opacity-0 translate-x-2'
             }`}
           >
-            <Sparkles size={14} className="text-teal-600 animate-pulse" />
-            <span>Need hospital help? Ask AI</span>
+            <span className="w-1.5 h-1.5 rounded-full bg-[#00BFA6] animate-pulse" />
+            <span>Medi AI Assistant</span>
           </div>
 
           <button
             type="button"
             onClick={() => setIsOpen(true)}
-            onMouseEnter={() => setShowTooltip(true)}
-            onMouseLeave={() => setShowTooltip(false)}
-            aria-label="Open AI Hospital Assistant"
-            className="group relative flex items-center justify-center w-14 h-14 rounded-2xl bg-gradient-to-tr from-sky-600 via-teal-600 to-emerald-600 text-white shadow-xl shadow-teal-900/25 hover:shadow-2xl hover:shadow-teal-900/35 hover:scale-105 active:scale-95 transition-all duration-200 cursor-pointer border border-white/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-400 focus-visible:ring-offset-2"
+            onMouseEnter={() => setIsHovered(true)}
+            onMouseLeave={() => setIsHovered(false)}
+            onFocus={() => setIsHovered(true)}
+            onBlur={() => setIsHovered(false)}
+            aria-label="Medi AI Assistant"
+            title="Medi AI Assistant"
+            className="group relative flex items-center justify-center w-13 h-13 sm:w-14 sm:h-14 rounded-full bg-[#0F172A] text-slate-100 shadow-2xl shadow-black/50 hover:scale-105 active:scale-95 transition-all duration-200 cursor-pointer border-2 border-[#00BFA6] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-400 focus-visible:ring-offset-2 p-1"
           >
-            <AiHospitalAssistantLogo size={36} showText={false} />
-            <span className="sr-only">Open AI Hospital Assistant</span>
+            {/* Cute Healthcare Robot Avatar from reference image */}
+            <MediAiRobotAvatar size={38} alt="Medi AI Assistant" />
+
+            {/* Subtle Teal active badge */}
+            <span className="absolute -top-0.5 -right-0.5 flex h-3 w-3">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-teal-400 opacity-75" />
+              <span className="relative inline-flex rounded-full h-3 w-3 bg-[#00BFA6] border-2 border-[#0F172A]" />
+            </span>
+            <span className="sr-only">Medi AI Assistant</span>
           </button>
         </div>
       )}

@@ -64,6 +64,11 @@ export const getSupabaseBrowserClient = async (): Promise<SupabaseClient | null>
   return initPromise;
 };
 
+export const isSupabaseConfigured = async (): Promise<boolean> => {
+  const cli = await getSupabaseBrowserClient();
+  return Boolean(cli);
+};
+
 // Singleton export with async initialization fallback
 export const supabase = {
   auth: {
@@ -71,7 +76,12 @@ export const supabase = {
       const cli = await getSupabaseBrowserClient();
       if (!cli) {
         return {
-          error: new Error('Supabase client not configured. Please configure SUPABASE_URL and SUPABASE_ANON_KEY in your AI Studio Secrets.'),
+          data: null,
+          error: {
+            name: 'SupabaseNotConfiguredError',
+            message: 'Supabase client not configured. Please configure SUPABASE_URL and SUPABASE_ANON_KEY in your AI Studio Secrets.',
+            isUnconfigured: true,
+          },
         };
       }
       return cli.auth.signInWithOAuth(options);
