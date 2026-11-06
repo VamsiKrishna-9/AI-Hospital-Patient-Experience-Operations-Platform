@@ -104,50 +104,75 @@ export default function App() {
 
   // Handle Supabase OAuth Callback on /auth/callback or window hash/search
   useEffect(() => {
-    const handleAuthCallback = async () => {
-      const isCallbackPath = window.location.pathname.includes('/auth/callback') || window.location.hash.includes('access_token') || window.location.search.includes('code');
-      if (!isCallbackPath) return;
+    let isMounted = true;
+    let isHandled = false;
+
+    const processSession = async (session: any) => {
+      if (!session?.user || isHandled) return;
+      isHandled = true;
 
       try {
-        const { data, error } = await supabase.auth.getSession();
-        if (error) {
-          console.error('OAuth session error:', error.message);
-          return;
-        }
+        const email = session.user.email;
+        const name =
+          session.user.user_metadata?.full_name ||
+          session.user.user_metadata?.name ||
+          email?.split('@')[0] ||
+          'Google User';
 
-        const session = data?.session;
-        if (session && session.user) {
-          const email = session.user.email;
-          const name = session.user.user_metadata?.full_name || session.user.user_metadata?.name || email?.split('@')[0] || 'Google User';
+        // Call backend /api/auth/google to sync profile with public.app_users and generate role session
+        const res = await fetch('/api/auth/google', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, name }),
+        });
 
-          // Call backend /api/auth/google to sync profile with public.app_users and generate role session
-          const res = await fetch('/api/auth/google', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ email, name }),
-          });
+        const result = await res.json().catch(() => ({}));
+        if (!isMounted) return;
 
-          const result = await res.json().catch(() => ({}));
-          if (res.ok && result.success && result.token && result.user) {
-            authService.saveSession(result.token, result.user, result.refreshToken, result.expiresAt);
-            setActiveUser(result.user);
-            const userRole = result.user.role || 'patient';
-            setSelectedRole(userRole);
-            if (userRole === 'doctor') setScreen('doctor-dashboard');
-            else if (userRole === 'staff') setScreen('staff-dashboard');
-            else if (userRole === 'admin') setScreen('admin-dashboard');
-            else setScreen('patient-dashboard');
+        if (res.ok && result.success && result.token && result.user) {
+          authService.saveSession(result.token, result.user, result.refreshToken, result.expiresAt);
+          setActiveUser(result.user);
+          const userRole = result.user.role || 'patient';
+          setSelectedRole(userRole);
+          if (userRole === 'doctor') setScreen('doctor-dashboard');
+          else if (userRole === 'staff') setScreen('staff-dashboard');
+          else if (userRole === 'admin') setScreen('admin-dashboard');
+          else setScreen('patient-dashboard');
 
-            // Clean URL hash/search without reloading
-            window.history.replaceState({}, document.title, window.location.pathname);
-          }
+          // Clean URL hash/search and remove /auth/callback from pathname without full page reload
+          const cleanPath = window.location.pathname.replace(/\/auth\/callback\/?$/, '') || '/';
+          window.history.replaceState({}, document.title, cleanPath);
         }
       } catch (err) {
         console.error('Failed to process OAuth callback session:', err);
       }
     };
 
-    handleAuthCallback();
+    const isCallbackPath =
+      window.location.pathname.includes('/auth/callback') ||
+      window.location.hash.includes('access_token') ||
+      window.location.search.includes('code');
+
+    if (isCallbackPath) {
+      // 1. Check for existing session in Supabase client
+      supabase.auth.getSession().then(({ data }: any) => {
+        if (data?.session && isMounted) {
+          processSession(data.session);
+        }
+      });
+
+      // 2. Listen for SIGNED_IN or INITIAL_SESSION events from Supabase PKCE/hash detection
+      const { data: authListener } = supabase.auth.onAuthStateChange((event: string, session: any) => {
+        if ((event === 'SIGNED_IN' || event === 'INITIAL_SESSION') && session && isMounted) {
+          processSession(session);
+        }
+      });
+
+      return () => {
+        isMounted = false;
+        authListener?.subscription?.unsubscribe();
+      };
+    }
   }, []);
 
   // Enforce single-role confinement across the session lifecycle

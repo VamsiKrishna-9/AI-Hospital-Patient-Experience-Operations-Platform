@@ -1661,11 +1661,29 @@ app.post('/api/auth/google', async (req: Request, res: Response) => {
       .from('app_users')
       .select('*')
       .eq('email', email)
-      .single();
+      .maybeSingle();
+
+    // Check REGISTERED_ACCOUNTS if not yet in app_users or if a recognized hospital persona needs role preservation
+    const registered = REGISTERED_ACCOUNTS.get(email.toLowerCase());
+    if (registered && (!dbUser || (dbUser.role === 'patient' && registered.role !== 'patient'))) {
+      dbUser = {
+        id: dbUser?.id || registered.id,
+        email: registered.email,
+        role: registered.role,
+        full_name: registered.fullName,
+        patient_id: registered.patient_id,
+        doctor_id: registered.doctor_id,
+        staff_id: registered.staff_id,
+        specialty: registered.specialty,
+        department: registered.department,
+        is_active: registered.is_active,
+        status: registered.status,
+      };
+    }
 
     // 2. Check if user exists in auth.users
     let authUser: any = null;
-    const { data: userList } = await adminClient.auth.admin.listUsers();
+    const { data: userList } = await adminClient.auth.admin.listUsers({ perPage: 1000 });
     if (userList?.users) {
       authUser = userList.users.find((u: any) => u.email?.toLowerCase() === email);
     }
@@ -1680,13 +1698,18 @@ app.post('/api/auth/google', async (req: Request, res: Response) => {
           role: dbUser?.role || 'patient',
         },
       });
-      if (createAuthError || !newAuth?.user) {
+
+      if (newAuth?.user) {
+        authUser = newAuth.user;
+      } else if (createAuthError?.message?.includes('already been registered')) {
+        const linkProbe = await adminClient.auth.admin.generateLink({ type: 'magiclink', email });
+        authUser = linkProbe.data?.user || null;
+      } else {
         return res.status(500).json({
           success: false,
           message: `Failed to provision authentication identity: ${createAuthError?.message || 'Unknown error'}`,
         });
       }
-      authUser = newAuth.user;
     }
 
     // If user does not exist in public.app_users, provision patient record
@@ -1718,6 +1741,27 @@ app.post('/api/auth/google', async (req: Request, res: Response) => {
         is_active: true,
         status: 'active',
       };
+    } else if (registered && (dbUser.id === registered.id || registered.role !== 'patient')) {
+      // Sync hospital persona to app_users with authUser ID
+      try {
+        await adminClient
+          .from('app_users')
+          .upsert({
+            id: authUser.id,
+            email: dbUser.email,
+            role: dbUser.role,
+            full_name: dbUser.full_name,
+            patient_id: dbUser.patient_id || null,
+            doctor_id: dbUser.doctor_id || null,
+            staff_id: dbUser.staff_id || null,
+            specialty: dbUser.specialty || null,
+            department: dbUser.department || null,
+            is_active: dbUser.is_active ?? true,
+            status: dbUser.status || 'active',
+          }, { onConflict: 'id' });
+      } catch (err: any) {
+        console.warn('Persona sync notice:', err?.message);
+      }
     }
 
     // Check account status
