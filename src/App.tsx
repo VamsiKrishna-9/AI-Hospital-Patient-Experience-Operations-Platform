@@ -14,9 +14,10 @@ import { PatientDashboard } from './components/PatientDashboard';
 import { DoctorDashboard } from './components/DoctorDashboard';
 import { StaffDashboard } from './components/StaffDashboard';
 import { AdminDashboard } from './components/AdminDashboard';
+import { AuthCallback } from './components/AuthCallback';
+import { GoogleOnboardingScreen } from './components/GoogleOnboardingScreen';
 import { patientService } from './services/patientService';
 import { authService } from './services/authService';
-import { supabase } from './services/supabaseClient';
 import { AiHospitalAssistantLauncher } from './components/AiHospitalAssistantLauncher';
 
 export default function App() {
@@ -25,17 +26,25 @@ export default function App() {
   });
 
   const [screen, setScreen] = useState<ScreenState>(() => {
+    if (typeof window !== 'undefined' && window.location.pathname.includes('/auth/callback')) {
+      return 'auth-callback';
+    }
     const user = authService.getActiveUser();
     if (user && user.role) {
-      if (user.role === 'doctor') return 'doctor-dashboard';
-      if (user.role === 'staff') return 'staff-dashboard';
-      if (user.role === 'admin') return 'admin-dashboard';
+      const r = (user.role || '').toLowerCase();
+      if (r === 'doctor') return 'doctor-dashboard';
+      if (r === 'staff') return 'staff-dashboard';
+      if (r === 'admin') return 'admin-dashboard';
       return 'patient-dashboard';
     }
     return patientService.isAuthenticated() ? 'patient-dashboard' : 'login';
   });
 
   const [selectedRole, setSelectedRole] = useState<HospitalRole>('patient');
+  const [onboardingData, setOnboardingData] = useState<{
+    authUser: any;
+    token: string;
+  } | null>(null);
   const [changePasswordData, setChangePasswordData] = useState<{
     patientId: string;
     tempToken?: string;
@@ -44,14 +53,27 @@ export default function App() {
   const handleNavigate = (
     newScreen: ScreenState,
     role?: HospitalRole,
-    extra?: { patientId?: string; tempToken?: string; user?: AuthUser }
+    extra?: {
+      patientId?: string;
+      tempToken?: string;
+      user?: AuthUser;
+      token?: string;
+      onboardingData?: { authUser: any; token: string };
+    }
   ) => {
-    const assignedRole = extra?.user?.role || role || activeUser?.role;
+    const rawRole = extra?.user?.role || role || activeUser?.role;
+    const assignedRole = (rawRole ? String(rawRole).toLowerCase() : undefined) as HospitalRole | undefined;
     if (assignedRole) {
       setSelectedRole(assignedRole);
     }
     if (extra?.user) {
-      setActiveUser(extra.user);
+      setActiveUser({
+        ...extra.user,
+        role: (extra.user.role ? String(extra.user.role).toLowerCase() : 'patient') as HospitalRole,
+      });
+    }
+    if (extra?.onboardingData) {
+      setOnboardingData(extra.onboardingData);
     }
     if (newScreen === 'change-password' && extra?.patientId) {
       setChangePasswordData({
@@ -102,89 +124,29 @@ export default function App() {
     }
   }, []);
 
-  // Handle Supabase OAuth Callback on /auth/callback or window hash/search
+  // Listen for browser popstate events (e.g. navigation to /auth/callback)
   useEffect(() => {
-    let isMounted = true;
-    let isHandled = false;
-
-    const processSession = async (session: any) => {
-      if (!session?.user || isHandled) return;
-      isHandled = true;
-
-      try {
-        const email = session.user.email;
-        const name =
-          session.user.user_metadata?.full_name ||
-          session.user.user_metadata?.name ||
-          email?.split('@')[0] ||
-          'Google User';
-
-        // Call backend /api/auth/google to sync profile with public.app_users and generate role session
-        const res = await fetch('/api/auth/google', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email, name }),
-        });
-
-        const result = await res.json().catch(() => ({}));
-        if (!isMounted) return;
-
-        if (res.ok && result.success && result.token && result.user) {
-          authService.saveSession(result.token, result.user, result.refreshToken, result.expiresAt);
-          setActiveUser(result.user);
-          const userRole = result.user.role || 'patient';
-          setSelectedRole(userRole);
-          if (userRole === 'doctor') setScreen('doctor-dashboard');
-          else if (userRole === 'staff') setScreen('staff-dashboard');
-          else if (userRole === 'admin') setScreen('admin-dashboard');
-          else setScreen('patient-dashboard');
-
-          // Clean URL hash/search and remove /auth/callback from pathname without full page reload
-          const cleanPath = window.location.pathname.replace(/\/auth\/callback\/?$/, '') || '/';
-          window.history.replaceState({}, document.title, cleanPath);
-        }
-      } catch (err) {
-        console.error('Failed to process OAuth callback session:', err);
+    const handlePopState = () => {
+      if (typeof window !== 'undefined' && window.location.pathname.includes('/auth/callback')) {
+        setScreen('auth-callback');
       }
     };
-
-    const isCallbackPath =
-      window.location.pathname.includes('/auth/callback') ||
-      window.location.hash.includes('access_token') ||
-      window.location.search.includes('code');
-
-    if (isCallbackPath) {
-      // 1. Check for existing session in Supabase client
-      supabase.auth.getSession().then(({ data }: any) => {
-        if (data?.session && isMounted) {
-          processSession(data.session);
-        }
-      });
-
-      // 2. Listen for SIGNED_IN or INITIAL_SESSION events from Supabase PKCE/hash detection
-      const { data: authListener } = supabase.auth.onAuthStateChange((event: string, session: any) => {
-        if ((event === 'SIGNED_IN' || event === 'INITIAL_SESSION') && session && isMounted) {
-          processSession(session);
-        }
-      });
-
-      return () => {
-        isMounted = false;
-        authListener?.subscription?.unsubscribe();
-      };
-    }
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
   }, []);
+
 
   // Enforce single-role confinement across the session lifecycle
   useEffect(() => {
     if (activeUser?.role && screen.endsWith('-dashboard')) {
+      const normalizedRole = (activeUser.role || '').toLowerCase() as HospitalRole;
       const roleToScreen: Record<HospitalRole, ScreenState> = {
         doctor: 'doctor-dashboard',
         staff: 'staff-dashboard',
         admin: 'admin-dashboard',
         patient: 'patient-dashboard',
       };
-      const authorizedScreen = roleToScreen[activeUser.role];
+      const authorizedScreen = roleToScreen[normalizedRole] || 'patient-dashboard';
       if (authorizedScreen && screen !== authorizedScreen) {
         setScreen(authorizedScreen);
       }
@@ -259,6 +221,18 @@ export default function App() {
                 setChangePasswordData(null);
                 setScreen('login');
               }}
+            />
+          )}
+
+          {screen === 'auth-callback' && (
+            <AuthCallback onNavigate={handleNavigate} />
+          )}
+
+          {screen === 'google-onboarding' && (
+            <GoogleOnboardingScreen
+              authUser={onboardingData?.authUser}
+              token={onboardingData?.token}
+              onNavigate={handleNavigate}
             />
           )}
         </div>

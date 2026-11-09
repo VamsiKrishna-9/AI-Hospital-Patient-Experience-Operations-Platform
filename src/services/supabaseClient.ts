@@ -33,7 +33,8 @@ export const getSupabaseBrowserClient = async (): Promise<SupabaseClient | null>
     // 2. If missing, fetch securely from backend /api/config endpoint
     if (!url || !anon || url.includes('example.com') || url.includes('[PROJECT_REF]')) {
       try {
-        const res = await fetch('/api/config');
+        const configEndpoint = typeof window !== 'undefined' ? '/api/config' : 'http://localhost:3000/api/config';
+        const res = await fetch(configEndpoint);
         const data = await res.json().catch(() => ({}));
         if (data.success && data.supabaseUrl && data.supabaseAnonKey) {
           url = data.supabaseUrl;
@@ -90,6 +91,29 @@ export const supabase = {
       const cli = await getSupabaseBrowserClient();
       if (!cli) return { data: { session: null }, error: null };
       return cli.auth.getSession();
+    },
+    exchangeCodeForSession: async (code: string) => {
+      const cli = await getSupabaseBrowserClient();
+      if (!cli) {
+        return {
+          data: { session: null, user: null },
+          error: {
+            name: 'SupabaseNotConfiguredError',
+            message: 'Supabase client not configured.',
+          },
+        };
+      }
+      return cli.auth.exchangeCodeForSession(code);
+    },
+    getUser: async (jwt?: string) => {
+      const cli = await getSupabaseBrowserClient();
+      if (!cli) return { data: { user: null }, error: { name: 'SupabaseNotConfiguredError', message: 'Client not configured' } };
+      return cli.auth.getUser(jwt);
+    },
+    signOut: async () => {
+      const cli = await getSupabaseBrowserClient();
+      if (!cli) return { error: null };
+      return cli.auth.signOut();
     },
     onAuthStateChange: (callback: any) => {
       getSupabaseBrowserClient().then((cli) => {

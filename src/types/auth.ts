@@ -13,7 +13,9 @@ export type ScreenState =
   | 'doctor-dashboard'
   | 'staff-dashboard'
   | 'admin-dashboard'
-  | 'change-password';
+  | 'change-password'
+  | 'auth-callback'
+  | 'google-onboarding';
 
 export interface AuthUser {
   id: string;
