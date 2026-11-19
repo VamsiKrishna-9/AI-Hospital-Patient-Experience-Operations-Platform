@@ -3,6 +3,16 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+export interface RagSource {
+  source: string;
+  title: string;
+  section: string;
+  page?: number | null;
+  chunkId?: string;
+  snippet?: string;
+  score?: number;
+}
+
 export interface ChatMessage {
   id: string;
   role: 'user' | 'model';
@@ -12,6 +22,7 @@ export interface ChatMessage {
     label: string;
     action: 'book-appointment' | 'view-appointments' | 'view-labs' | 'view-prescriptions' | 'view-feedback' | 'contact-support';
   }>;
+  sources?: RagSource[];
   isError?: boolean;
 }
 
@@ -23,6 +34,7 @@ export interface AiChatResponse {
     label: string;
     action: 'book-appointment' | 'view-appointments' | 'view-labs' | 'view-prescriptions' | 'view-feedback' | 'contact-support';
   }>;
+  sources?: RagSource[];
   isConfigured?: boolean;
   message?: string;
   isError?: boolean;
@@ -214,6 +226,7 @@ class AiChatService {
         reply: data.reply || 'I am ready to assist you with hospital information and appointments.',
         timestamp: data.timestamp || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         quickActions: data.quickActions,
+        sources: Array.isArray(data.sources) ? data.sources : undefined,
         isConfigured: data.isConfigured !== false,
       };
     } catch (error: any) {

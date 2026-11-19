@@ -49,3 +49,26 @@
   background: #94A3B8;
 }
 
+/* Scoped dark scrollbar for Medi AI Assistant message stream */
+.mediai-chat-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0, 201, 167, 0.28) transparent;
+}
+
+.mediai-chat-scroll::-webkit-scrollbar {
+  width: 5px;
+}
+
+.mediai-chat-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.mediai-chat-scroll::-webkit-scrollbar-thumb {
+  background: rgba(0, 201, 167, 0.25);
+  border-radius: 9999px;
+}
+
+.mediai-chat-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 212, 255, 0.45);
+}
+

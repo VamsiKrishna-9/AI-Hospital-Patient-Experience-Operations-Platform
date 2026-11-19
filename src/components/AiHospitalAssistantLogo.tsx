@@ -22,17 +22,31 @@ export const MediAiRobotAvatar: React.FC<{
   className?: string;
   alt?: string;
 }> = ({ size = 32, className = '', alt = 'Medi AI Assistant' }) => {
+  const [imgFailed, setImgFailed] = React.useState(false);
+
   return (
     <div
       className={`relative shrink-0 rounded-full overflow-hidden bg-[#EBF6FD] flex items-center justify-center border border-white/80 shadow-xs select-none ${className}`}
       style={{ width: size, height: size }}
     >
-      <img
-        src="/assets/aistudio/medi_ai_avatar_square.png"
-        alt={alt}
-        className="w-full h-full object-cover rounded-full"
-        loading="eager"
-      />
+      {!imgFailed ? (
+        <img
+          src="/assets/aistudio/medi_ai_avatar_square.png"
+          alt={alt}
+          referrerPolicy="no-referrer"
+          onError={() => setImgFailed(true)}
+          className="w-full h-full object-cover rounded-full"
+          loading="eager"
+        />
+      ) : (
+        <span
+          className="flex h-full w-full items-center justify-center rounded-full bg-gradient-to-br from-[#00C9A7] to-[#00D4FF] text-[#06131F] font-bold"
+          style={{ fontSize: Math.max(10, Math.round(size * 0.36)) }}
+          aria-label={alt}
+        >
+          AI
+        </span>
+      )}
     </div>
   );
 };

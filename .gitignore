@@ -6,3 +6,8 @@ coverage/
 *.log
 .env*
 !.env.example
+.rag_cache/
+rag_service/vectorstore/
+rag_service/.venv/
+__pycache__/
+*.pyc

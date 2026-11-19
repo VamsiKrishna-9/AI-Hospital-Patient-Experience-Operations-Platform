@@ -7,7 +7,6 @@ import express, { Request, Response, NextFunction } from 'express';
 import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import dotenv from 'dotenv';
-import { GoogleGenAI } from '@google/genai';
 import {
   PatientProfile,
   DoctorInfo,
@@ -40,6 +39,13 @@ import {
   validateAppointmentTimeSlot,
   validateHospitalBranch,
 } from './src/server/bookingValidation';
+import {
+  queryAdvancedRag,
+  checkPythonRagHealth,
+  getNodeRagEngine,
+  FALLBACK_UNKNOWN_ANSWER,
+  RagHistoryItem,
+} from './src/server/advancedRag';
 
 dotenv.config({ override: true });
 
@@ -7497,8 +7503,85 @@ function generateVerifiedHospitalReply(
   };
 }
 
+function isAcuteEmergencyQuery(userMsg: string): boolean {
+  const query = userMsg.toLowerCase().trim();
+  const isInformationalEmergencyQuestion =
+    /\b(procedure|procedures|policy|policies|hours|open|where is|location|phone|number|contact|what is the emergency|tell me about emergency)\b/.test(
+      query
+    ) &&
+    !/(chest pain|heart attack|stroke|cannot breathe|can't breathe|difficulty breathing|shortness of breath|dying|unconscious|seizure|severe bleed|bleeding heavily)/.test(
+      query
+    );
+
+  if (isInformationalEmergencyQuestion) {
+    return false;
+  }
+
+  return (
+    query.includes('chest pain') ||
+    query.includes('heart attack') ||
+    query.includes('stroke') ||
+    query.includes('cannot breathe') ||
+    query.includes("can't breathe") ||
+    query.includes('difficulty breathing') ||
+    query.includes('shortness of breath') ||
+    query.includes('dying') ||
+    query.includes('unconscious') ||
+    query.includes('seizure') ||
+    query.includes('severe bleed') ||
+    query.includes('bleeding heavily') ||
+    query.includes('emergency help') ||
+    query.includes('having an emergency') ||
+    query.includes('medical emergency')
+  );
+}
+
+function isPersonalPatientLookupQuery(userMsg: string): boolean {
+  const query = userMsg.toLowerCase().trim();
+  // How-to / procedural questions belong to General Knowledge RAG
+  if (/^(how do i|how can i|how to|where do i|where can i|explain how)\b/.test(query)) {
+    return false;
+  }
+
+  return (
+    query.includes('my appointment') ||
+    query.includes('upcoming appointment') ||
+    query.includes('check appointment') ||
+    query.includes('when is my visit') ||
+    query.includes('my visit') ||
+    query.includes('scheduled visit') ||
+    query.includes('appointment status') ||
+    query.includes('check my upcoming') ||
+    query.includes('my upcoming visit') ||
+    query.includes('my next appointment') ||
+    query.includes('show my appointment')
+  );
+}
+
+app.get('/api/ai/rag/status', async (_req: Request, res: Response) => {
+  try {
+    const pythonHealth = await checkPythonRagHealth();
+    const nodeStats = getNodeRagEngine().getStats();
+
+    return res.json({
+      success: true,
+      activeEngine: pythonHealth.reachable ? 'python-fastapi' : 'node-advanced-rag',
+      pythonService: pythonHealth,
+      nodeEngine: {
+        ready: nodeStats.chunksIndexed > 0,
+        ...nodeStats,
+      },
+    });
+  } catch (err: any) {
+    return res.status(500).json({
+      success: false,
+      message: err?.message || 'Unable to inspect RAG engine status.',
+    });
+  }
+});
+
 app.post('/api/ai/chat', async (req: Request, res: Response) => {
-  const { message, history } = req.body;
+  const { message, history, sessionId } = req.body;
 
   if (!message || typeof message !== 'string' || !message.trim()) {
     return res.status(400).json({
@@ -7515,146 +7598,117 @@ app.post('/api/ai/chat', async (req: Request, res: Response) => {
     });
   }
 
-  const authHeader = req.headers['authorization'];
-  const patientContext = await resolvePatientContext(authHeader);
+  const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
-  // Check if GEMINI_API_KEY is configured
-  const apiKey = process.env.GEMINI_API_KEY?.trim();
-
-  if (apiKey) {
-    try {
-      const ai = new GoogleGenAI({
-        apiKey,
-        httpOptions: {
-          headers: {
-            'User-Agent': 'aistudio-build',
-          },
+  // Priority 1: Acute medical emergency safety guardrail
+  if (isAcuteEmergencyQuery(userPrompt)) {
+    return res.json({
+      success: true,
+      reply:
+        "⚠️ **CRITICAL MEDICAL EMERGENCY ADVISORY**\n\nIf you or someone nearby is experiencing acute chest pain, shortness of breath, severe trauma, or signs of stroke, **please call 911 immediately** or proceed directly to our nearest Emergency Room.\n\n• **MediAI Main Campus Emergency Department:** Open 24/7/365\n• **Direct Emergency Line:** +1 (555) 234-8099\n• **Address:** 400 Medical Center Way, Suite 100, Metro Medical District\n\nPlease do not delay emergency medical intervention.",
+      timestamp,
+      quickActions: [{ label: 'Call 911 / Emergency Info', action: 'contact-support' }],
+      isConfigured: true,
+      sources: [
+        {
+          source: '04_visiting_hours_and_emergency_procedures.md',
+          title: 'MediAI Hospital Visiting Hours and Emergency Procedures',
+          section: 'Emergency Medical Procedures',
+          chunkId: 'emergency-guardrail',
+          snippet: 'Call 911 immediately or proceed to MediAI Main Campus Emergency Department (Open 24/7/365, Direct Emergency Line: +1 (555) 234-8099).',
+          score: 1,
         },
-      });
-
-      // Construct system instruction with verified hospital data & patient context
-      const systemInstruction = `You are the official AI Hospital Assistant for "MediAI Hospital Patient Experience & Operations Platform".
-You are a compassionate, professional, and reliable 24/7 healthcare companion.
-
-Approved MediAI Hospital Information:
-1. Campuses & Branches:
-- Main Campus: 400 Medical Center Way, Suite 100, Metro Medical District. Tel: +1 (555) 234-8000. 24/7 Emergency & Inpatient | Outpatient: 8:00 AM - 8:00 PM.
-- West Ambulatory Pavilion: 1850 Valley View Boulevard, Westwood Heights. Tel: +1 (555) 234-8100. Mon-Fri: 7:30 AM - 6:30 PM | Sat: 8:00 AM - 2:00 PM.
-- Heart & Vascular Specialty Institute: 920 Cardio Boulevard, Building B, Central Health District. Tel: +1 (555) 234-8200. Mon-Fri: 8:00 AM - 6:00 PM.
-- Neurosciences & Pediatric Specialty Care: 310 Pediatric Way, North Hills Campus. Tel: +1 (555) 234-8300. Mon-Fri: 8:00 AM - 5:30 PM | Sat: 9:00 AM - 1:00 PM.
-
-2. Accredited Specialties:
-Cardiology & Vascular Medicine, Neurology & Neurosciences, General Internal Medicine, Emergency Medicine & Trauma, Pediatrics & Neonatology, Oncology & Hematology, Orthopedic Surgery, Obstetrics & Gynecology, Radiology & Diagnostic Imaging, Pulmonology & Critical Care.
-
-3. Visiting Hours:
-- General Inpatient Wards: 10:00 AM – 8:00 PM daily (maximum 2 visitors per bedside).
-- ICU: 12:00 PM – 2:00 PM and 5:00 PM – 7:00 PM (immediate family only, 2 visitors per bedside).
-- Pediatrics: 24/7 bedside access for parents/guardians.
-- Emergency Department: Open 24/7 at Main Campus.
-
-4. Authenticated Patient Data:
-${
-  patientContext.isAuthenticated
-    ? `Patient Name: ${patientContext.patientName} (MRN: ${patientContext.patientId})
-Upcoming Scheduled Visits:
-${
-  patientContext.appointments.length > 0
-    ? patientContext.appointments
-        .map(
-          (a) =>
-            `- Confirmation ${a.id}: ${a.date} at ${a.time} with ${a.doctor} (${a.specialty}) at ${a.branch}. Status: ${a.status}. Reason: ${a.reason || 'Consultation'}`
-        )
-        .join('\n')
-    : 'No upcoming appointments currently scheduled.'
-}`
-    : 'The user is not authenticated. If they ask about their personal appointments, politely ask them to sign in to access their schedule.'
-}
-
-Healthcare Privacy & Safety Rules:
-- If the user describes life-threatening symptoms (e.g. crushing chest pain, severe breathlessness, stroke signs), immediately advise them to dial 911 or visit the MediAI 24/7 Emergency Room.
-- Do NOT diagnose medical conditions or recommend specific prescription dosages.
-- Direct patients to use their patient portal tabs: "Appointments" to book/reschedule, "Lab Results" for diagnostic reports, and "Prescriptions" for medication details.
-- Provide clean, readable formatting with bold highlights and bullet points.`;
-
-      // Format previous history into Gemini contents array
-      const contents: Array<any> = [];
-
-      if (Array.isArray(history)) {
-        for (const item of history.slice(-6)) {
-          if (item && item.content) {
-            contents.push({
-              role: item.role === 'model' ? 'model' : 'user',
-              parts: [{ text: String(item.content) }],
-            });
-          }
-        }
-      }
-
-      contents.push({
-        role: 'user',
-        parts: [{ text: userPrompt }],
-      });
-
-      const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('AI generation timed out after 5000ms')), 5000)
-      );
-
-      const generatePromise = ai.models.generateContent({
-        model: 'gemini-3.8-flash',
-        contents,
-        config: {
-          systemInstruction,
-          temperature: 0.7,
-        },
-      });
-
-      const response: any = await Promise.race([generatePromise, timeoutPromise]);
-
-      const replyText = response.text || 'I am here to assist with hospital services and scheduling.';
-
-      // Determine quick actions based on topic
-      const quickActions: Array<any> = [];
-      const lowerReply = replyText.toLowerCase() + ' ' + userPrompt.toLowerCase();
-      if (lowerReply.includes('book') || lowerReply.includes('schedule')) {
-        quickActions.push({ label: 'Book New Appointment', action: 'book-appointment' });
-      }
-      if (lowerReply.includes('appointment') || lowerReply.includes('visit')) {
-        quickActions.push({ label: 'View Appointments', action: 'view-appointments' });
-      }
-      if (lowerReply.includes('lab') || lowerReply.includes('test')) {
-        quickActions.push({ label: 'View Lab Reports', action: 'view-labs' });
-      }
-
-      return res.json({
-        success: true,
-        reply: replyText,
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        quickActions: quickActions.slice(0, 3),
-        isConfigured: true,
-      });
-    } catch (genAiError: any) {
-      console.warn('Gemini API call failed, falling back to verified hospital reply:', genAiError?.message || genAiError);
-      // Fallback to verified hospital reply
-      const fallback = generateVerifiedHospitalReply(userPrompt, patientContext);
-      return res.json({
-        success: true,
-        reply: `${fallback.reply}\n\n*(Note: Live AI model experienced a temporary network latency; information verified from MediAI hospital directory.)*`,
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        quickActions: fallback.quickActions,
-        isConfigured: true,
-      });
-    }
+      ],
+    });
   }
 
-  // If Gemini API is not configured in environment
-  const fallback = generateVerifiedHospitalReply(userPrompt, patientContext);
-  return res.json({
-    success: true,
-    reply: `${fallback.reply}\n\n*(Notice: Real-time Gemini API key is currently pending server configuration. Responding with verified MediAI hospital directory information.)*`,
-    timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-    quickActions: fallback.quickActions,
-    isConfigured: false,
-  });
+  // Priority 2: Patient-specific live account lookup (strictly separated from General RAG)
+  if (isPersonalPatientLookupQuery(userPrompt)) {
+    const authHeader = req.headers['authorization'];
+    const patientContext = await resolvePatientContext(authHeader);
+    const personalReply = generateVerifiedHospitalReply(userPrompt, patientContext);
+
+    return res.json({
+      success: true,
+      reply: personalReply.reply,
+      timestamp,
+      quickActions: personalReply.quickActions,
+      isConfigured: true,
+      sources: [],
+    });
+  }
+
+  // Priority 3: General Hospital Knowledge Advanced RAG Pipeline
+  // Routes to Python FastAPI microservice (RAG_SERVICE_URL) when available,
+  // or executes the compatible 14-stage Node.js Advanced RAG engine over rag_service/data/.
+  const normalizedHistory: RagHistoryItem[] = Array.isArray(history)
+    ? history
+        .slice(-10)
+        .filter((item: any) => item && typeof item.content === 'string' && item.content.trim())
+        .map((item: any) => ({
+          role: item.role === 'user' ? 'user' : 'model',
+          content: String(item.content),
+        }))
+    : [];
+
+  try {
+    const ragResult = await queryAdvancedRag({
+      question: userPrompt,
+      history: normalizedHistory,
+      sessionId: typeof sessionId === 'string' && sessionId.trim() ? sessionId.trim() : 'mediai-general',
+    });
+
+    const isUnknownFallback =
+      ragResult.answer.trim().toLowerCase() === FALLBACK_UNKNOWN_ANSWER.toLowerCase();
+
+    const quickActions: Array<{
+      label: string;
+      action:
+        | 'book-appointment'
+        | 'view-appointments'
+        | 'view-labs'
+        | 'view-prescriptions'
+        | 'view-feedback'
+        | 'contact-support';
+    }> = [];
+
+    if (!isUnknownFallback && ragResult.intent === 'DOCUMENT') {
+      const lowerCombined = `${ragResult.answer.toLowerCase()} ${userPrompt.toLowerCase()}`;
+      if (lowerCombined.includes('book') || lowerCombined.includes('schedule')) {
+        quickActions.push({ label: 'Book New Appointment', action: 'book-appointment' });
+      }
+      if (lowerCombined.includes('appointment') || lowerCombined.includes('consultation')) {
+        quickActions.push({ label: 'View Appointments', action: 'view-appointments' });
+      }
+      if (lowerCombined.includes('lab result') || lowerCombined.includes('diagnostic')) {
+        quickActions.push({ label: 'View Lab Reports', action: 'view-labs' });
+      }
+    } else if (ragResult.intent === 'GENERAL') {
+      quickActions.push(
+        { label: 'Book New Appointment', action: 'book-appointment' },
+        { label: 'View Appointments', action: 'view-appointments' },
+        { label: 'View Lab Reports', action: 'view-labs' }
+      );
+    }
+
+    return res.json({
+      success: true,
+      reply: ragResult.answer,
+      timestamp,
+      quickActions: quickActions.slice(0, 3),
+      isConfigured: ragResult.isConfigured,
+      sources: ragResult.sources,
+      ragEngine: ragResult.engine,
+      intent: ragResult.intent,
+    });
+  } catch (ragErr: any) {
+    console.error('[Advanced RAG] Pipeline execution error:', ragErr?.message || ragErr);
+    return res.status(503).json({
+      success: false,
+      message: 'The MediAI Knowledge Assistant is temporarily unavailable. Please try again shortly.',
+      isConfigured: false,
+    });
+  }
 });
 
 // ============================================================================
