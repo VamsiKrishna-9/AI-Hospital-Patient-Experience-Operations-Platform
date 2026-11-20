@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-export interface RagSource {
+export interface AssistantSource {
   source: string;
   title: string;
   section: string;
@@ -22,19 +22,20 @@ export interface ChatMessage {
     label: string;
     action: 'book-appointment' | 'view-appointments' | 'view-labs' | 'view-prescriptions' | 'view-feedback' | 'contact-support';
   }>;
-  sources?: RagSource[];
+  sources?: AssistantSource[];
   isError?: boolean;
 }
 
 export interface AiChatResponse {
   success: boolean;
   reply: string;
+  sessionId?: string;
   timestamp: string;
   quickActions?: Array<{
     label: string;
     action: 'book-appointment' | 'view-appointments' | 'view-labs' | 'view-prescriptions' | 'view-feedback' | 'contact-support';
   }>;
-  sources?: RagSource[];
+  sources?: AssistantSource[];
   isConfigured?: boolean;
   message?: string;
   isError?: boolean;
@@ -43,6 +44,7 @@ export interface AiChatResponse {
 import { authService } from './authService';
 
 const CHAT_HISTORY_STORAGE_KEY = 'mediai_ai_assistant_history';
+const CHAT_SESSION_STORAGE_KEY = 'mediai_ai_assistant_session_id';
 const CHATBOT_ENABLED_STORAGE_KEY = 'mediai_ai_assistant_enabled';
 
 class AiChatService {
@@ -165,24 +167,56 @@ class AiChatService {
   }
 
   /**
-   * Clear conversation history
+   * Retrieve or generate a stable per-conversation session ID (1..128 chars)
+   * required by the Railway FastAPI Advanced RAG API.
+   */
+  public getSessionId(): string {
+    try {
+      const existing = sessionStorage.getItem(CHAT_SESSION_STORAGE_KEY);
+      if (existing && existing.trim().length > 0 && existing.trim().length <= 128) {
+        return existing.trim();
+      }
+      const generated =
+        typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+          ? `mediai-${crypto.randomUUID()}`
+          : `mediai-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+      sessionStorage.setItem(CHAT_SESSION_STORAGE_KEY, generated);
+      return generated;
+    } catch {
+      return `mediai-${Date.now()}`;
+    }
+  }
+
+  /**
+   * Clear conversation history and reset remote conversation session
    */
   public clearHistory(): void {
     try {
+      const previousSessionId = sessionStorage.getItem(CHAT_SESSION_STORAGE_KEY);
       sessionStorage.removeItem(CHAT_HISTORY_STORAGE_KEY);
+      sessionStorage.removeItem(CHAT_SESSION_STORAGE_KEY);
+
+      if (previousSessionId) {
+        fetch(`/api/ai/session/${encodeURIComponent(previousSessionId)}`, {
+          method: 'DELETE',
+        }).catch(() => {
+          // Best-effort remote session cleanup
+        });
+      }
     } catch (err) {
       console.error('[AI Assistant] History clearance error:', err);
     }
   }
 
   /**
-   * Send message to backend Gemini endpoint
+   * Send message to MediAI backend proxy -> Railway Advanced RAG API
    */
   public async sendMessage(
     message: string,
-    history: ChatMessage[] = []
+    _history: ChatMessage[] = []
   ): Promise<AiChatResponse> {
     const token = this.getAuthToken();
+    const sessionId = this.getSessionId();
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
     };
@@ -190,22 +224,13 @@ class AiChatService {
       headers['Authorization'] = `Bearer ${token}`;
     }
 
-    // Format last 8 history messages for context
-    const formattedHistory = history
-      .slice(-8)
-      .filter((m) => !m.isError)
-      .map((m) => ({
-        role: m.role,
-        content: m.content,
-      }));
-
     try {
       const res = await fetch('/api/ai/chat', {
         method: 'POST',
         headers,
         body: JSON.stringify({
           message,
-          history: formattedHistory,
+          session_id: sessionId,
         }),
       });
 
@@ -221,18 +246,38 @@ class AiChatService {
         };
       }
 
+      if (typeof data.reply !== 'string' || !data.reply.trim()) {
+        return {
+          success: false,
+          reply: 'Received an empty or invalid response from the MediAI assistant service. Please try again.',
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          isError: true,
+        };
+      }
+
+      const returnedSessionId =
+        typeof data.sessionId === 'string' && data.sessionId.trim()
+          ? data.sessionId.trim()
+          : sessionId;
+      try {
+        sessionStorage.setItem(CHAT_SESSION_STORAGE_KEY, returnedSessionId);
+      } catch {
+        // Ignore storage write error
+      }
+
       return {
         success: true,
-        reply: data.reply || 'I am ready to assist you with hospital information and appointments.',
+        reply: data.reply,
+        sessionId: returnedSessionId,
         timestamp: data.timestamp || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         quickActions: data.quickActions,
         sources: Array.isArray(data.sources) ? data.sources : undefined,
         isConfigured: data.isConfigured !== false,
       };
-    } catch (error: any) {
+    } catch {
       return {
         success: false,
-        reply: 'Network connection error: Unable to reach the MediAI assistant service. Please check your connectivity.',
+        reply: 'Network connection error: Unable to reach the MediAI assistant service. Please check your connectivity and try again.',
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         isError: true,
       };
